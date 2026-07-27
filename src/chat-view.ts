@@ -18,6 +18,35 @@ import type { ToolPreview } from "./agent-tools";
 
 export const BRAIN_VIEW_TYPE = "obsidian-brain-chat";
 
+interface BrainCommand {
+  name: string;
+  usage: string;
+  description: string;
+}
+
+const BRAIN_COMMANDS: BrainCommand[] = [
+  { name: "help", usage: "/help", description: "Show the command reference" },
+  { name: "status", usage: "/status", description: "Show the active vault, chat, model, retrieval, and skills" },
+  { name: "new", usage: "/new", description: "Start a new chat" },
+  { name: "chats", usage: "/chats [query]", description: "List saved chats" },
+  { name: "open", usage: "/open <number|title>", description: "Open a saved chat from /chats" },
+  { name: "rename", usage: "/rename <title>", description: "Rename the current chat" },
+  { name: "delete", usage: "/delete --confirm", description: "Move the current chat to vault trash" },
+  { name: "models", usage: "/models [all|free|paid|favorites] [query]", description: "List and filter OpenRouter models" },
+  { name: "model", usage: "/model <number|id>", description: "Switch model using /models results or an exact ID" },
+  { name: "favorite", usage: "/favorite [number|id]", description: "Toggle a model favorite" },
+  { name: "refresh", usage: "/refresh", description: "Refresh the OpenRouter model catalog" },
+  { name: "skills", usage: "/skills", description: "List installed SKILL.md skills" },
+  { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
+  { name: "memory", usage: "/memory <text>", description: "Save a low-risk Markdown memory fragment" },
+  { name: "index", usage: "/index rebuild", description: "Rebuild the local vault retrieval index" },
+  { name: "settings", usage: "/settings", description: "Open Obsidian Brain settings" },
+  { name: "clear", usage: "/clear", description: "Clear terminal output while retaining conversation context" },
+  { name: "approve", usage: "/approve", description: "Approve the pending tool action" },
+  { name: "deny", usage: "/deny", description: "Deny the pending tool action" },
+  { name: "stop", usage: "/stop", description: "Stop the active generation" }
+];
+
 const createSystemMessage = (): ChatMessage => ({
   role: "system",
   content: [
@@ -122,6 +151,8 @@ class ConfirmModal extends Modal {
 export class BrainChatView extends ItemView {
   private transcriptEl!: HTMLElement;
   private statusEl!: HTMLElement;
+  private contextChatEl!: HTMLElement;
+  private contextModelEl!: HTMLElement;
   private chatSelect!: HTMLSelectElement;
   private renameChatButton!: HTMLButtonElement;
   private deleteChatButton!: HTMLButtonElement;
@@ -134,7 +165,10 @@ export class BrainChatView extends ItemView {
   private modelDetailsEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
   private sendButton!: HTMLButtonElement;
+  private commandSuggestionsEl!: HTMLElement;
+  private commandHintEl!: HTMLElement;
   private abortController: AbortController | null = null;
+  private pendingApproval: { finish: (approved: boolean) => void } | null = null;
   private activeAssistantBody: HTMLElement | null = null;
   private activePartial = "";
   private messages: ChatMessage[] = [createSystemMessage()];
@@ -142,6 +176,12 @@ export class BrainChatView extends ItemView {
   private chatSummaries: ChatSummary[] = [];
   private readonly markdownComponents = new Map<HTMLElement, Component>();
   private readonly turnCitations = new Set<string>();
+  private commandHistory: string[] = [];
+  private historyIndex = 0;
+  private suggestionIndex = 0;
+  private visibleSuggestions: BrainCommand[] = [];
+  private lastModelResults: OpenRouterModel[] = [];
+  private lastChatResults: ChatSummary[] = [];
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: ObsidianBrainPlugin) {
     super(leaf);
@@ -175,11 +215,23 @@ export class BrainChatView extends ItemView {
   private renderHeader(): void {
     const header = this.containerEl.createDiv({ cls: "obsidian-brain-header" });
     const titleRow = header.createDiv({ cls: "obsidian-brain-title-row" });
-    titleRow.createEl("h3", { text: "OBSIDIAN_BRAIN" });
+    const identity = titleRow.createDiv({ cls: "obsidian-brain-identity" });
+    identity.createSpan({ cls: "obsidian-brain-terminal-mark", text: "●" });
+    identity.createEl("h3", { text: "brain" });
+    identity.createSpan({ cls: "obsidian-brain-vault", text: `@${this.app.vault.getName()}` });
     this.statusEl = titleRow.createSpan({ cls: "obsidian-brain-status", text: "ready" });
 
-    const chatRow = header.createDiv({ cls: "obsidian-brain-session-row" });
-    chatRow.createSpan({ cls: "obsidian-brain-prompt-label", text: "chat>" });
+    const contextRow = header.createDiv({ cls: "obsidian-brain-context-row" });
+    contextRow.createSpan({ cls: "obsidian-brain-context-prefix", text: "~/" });
+    this.contextChatEl = contextRow.createSpan({ cls: "obsidian-brain-context-chat", text: "new" });
+    contextRow.createSpan({ cls: "obsidian-brain-context-divider", text: "│" });
+    this.contextModelEl = contextRow.createSpan({ cls: "obsidian-brain-context-model" });
+    this.modelDetailsEl = contextRow.createSpan({ cls: "obsidian-brain-model-details" });
+
+    // Native controls remain as an accessibility/state fallback. The terminal
+    // command layer is the primary interface.
+    const internal = header.createDiv({ cls: "obsidian-brain-internal-controls" });
+    const chatRow = internal.createDiv();
     this.chatSelect = chatRow.createEl("select", { attr: { "aria-label": "Saved chat" } });
     this.chatSelect.addEventListener("change", () => {
       if (this.chatSelect.value) void this.openChat(this.chatSelect.value);
@@ -188,7 +240,7 @@ export class BrainChatView extends ItemView {
     this.renameChatButton = this.iconButton(chatRow, "pencil", "Rename chat", () => void this.renameCurrentChat());
     this.deleteChatButton = this.iconButton(chatRow, "trash-2", "Delete chat", () => void this.deleteCurrentChat());
 
-    const browserRow = header.createDiv({ cls: "obsidian-brain-model-browser" });
+    const browserRow = internal.createDiv();
     this.modelSearch = browserRow.createEl("input", {
       type: "search",
       attr: { placeholder: "Search models…", "aria-label": "Search OpenRouter models" }
@@ -204,33 +256,92 @@ export class BrainChatView extends ItemView {
       void this.refreshModelCatalog()
     );
 
-    const modelRow = header.createDiv({ cls: "obsidian-brain-model-row" });
-    modelRow.createSpan({ cls: "obsidian-brain-prompt-label", text: "model>" });
+    const modelRow = internal.createDiv();
     this.modelSelect = modelRow.createEl("select", { attr: { "aria-label": "OpenRouter model" } });
     this.favoriteButton = this.iconButton(modelRow, "star", "Favorite model", () => void this.toggleFavorite());
     this.refreshModelOptions();
     this.modelSelect.addEventListener("change", () => void this.selectModel(this.modelSelect.value));
-    this.modelDetailsEl = header.createDiv({ cls: "obsidian-brain-model-details" });
     this.renderModelDetails();
+    this.renderPromptContext();
   }
 
   private renderComposer(): void {
     const composer = this.containerEl.createDiv({ cls: "obsidian-brain-composer" });
+    this.commandSuggestionsEl = composer.createDiv({ cls: "obsidian-brain-command-suggestions" });
     const row = composer.createDiv({ cls: "obsidian-brain-composer-row" });
-    this.inputEl = row.createEl("textarea", { attr: { placeholder: "Message the vault brain…" } });
-    this.sendButton = row.createEl("button", { text: "Send", cls: "mod-cta" });
+    row.createSpan({ cls: "obsidian-brain-shell-prompt", text: "brain>" });
+    this.inputEl = row.createEl("textarea", {
+      attr: {
+        placeholder: "ask the vault or type /help",
+        "aria-label": "Obsidian Brain terminal input",
+        rows: "1",
+        spellcheck: "true"
+      }
+    });
+    this.sendButton = row.createEl("button", {
+      text: "↵",
+      cls: "obsidian-brain-run-button",
+      attr: { "aria-label": "Run", title: "Run command or send message" }
+    });
+    this.commandHintEl = composer.createDiv({
+      cls: "obsidian-brain-command-hint",
+      text: "enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop"
+    });
     const submit = async () => {
+      const text = this.inputEl.value.trim();
+      if (this.pendingApproval) {
+        if (text === "/approve" || text === "/deny") {
+          this.inputEl.value = "";
+          this.pendingApproval.finish(text === "/approve");
+          this.addCommandEcho(text);
+          this.hideCommandSuggestions();
+        } else {
+          this.statusEl.setText("type /approve or /deny");
+        }
+        return;
+      }
       if (this.abortController) {
         this.abortController.abort();
         return;
       }
-      const text = this.inputEl.value.trim();
       if (!text) return;
       this.inputEl.value = "";
+      this.rememberInput(text);
+      this.hideCommandSuggestions();
       await this.handleInput(text);
     };
     this.sendButton.addEventListener("click", () => void submit());
+    this.inputEl.addEventListener("input", () => {
+      this.resizeInput();
+      this.updateCommandSuggestions();
+    });
     this.inputEl.addEventListener("keydown", (event) => {
+      if (event.ctrlKey && event.key.toLocaleLowerCase() === "c" && this.abortController) {
+        event.preventDefault();
+        this.abortController.abort();
+        return;
+      }
+      if (event.key === "Tab" && this.visibleSuggestions.length > 0) {
+        event.preventDefault();
+        this.completeSuggestion();
+        return;
+      }
+      if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.shiftKey) {
+        if (this.visibleSuggestions.length > 0) {
+          event.preventDefault();
+          this.moveSuggestion(event.key === "ArrowUp" ? -1 : 1);
+          return;
+        }
+        if (!this.inputEl.value.includes("\n")) {
+          event.preventDefault();
+          this.moveHistory(event.key === "ArrowUp" ? -1 : 1);
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        this.hideCommandSuggestions();
+        return;
+      }
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         void submit();
@@ -240,27 +351,15 @@ export class BrainChatView extends ItemView {
 
   private async handleInput(text: string): Promise<void> {
     if (this.abortController) return;
+    if (text.startsWith("/")) {
+      this.addCommandEcho(text);
+      await this.executeCommand(text);
+      return;
+    }
     this.addMessage("user", text);
     this.messages.push({ role: "user", content: text });
     await this.ensureCurrentChat(text);
     await this.persistCurrentChat();
-
-    if (text === "/skill" || text.startsWith("/skill ")) {
-      await this.handleSkillCommand(text.slice("/skill".length).trim());
-      return;
-    }
-
-    if (text.startsWith("/memory ")) {
-      const content = text.slice("/memory ".length).trim();
-      if (!content) return;
-      const file = await this.plugin.saveLowRiskMemory(content, "chat command");
-      const response = `Saved a low-risk memory fragment: [[${file.path.replace(/\.md$/, "")}]].`;
-      const body = this.addMessage("assistant", response);
-      await this.renderAssistantMarkdown(body, response);
-      this.messages.push({ role: "assistant", content: response });
-      await this.persistCurrentChat();
-      return;
-    }
 
     await this.prepareSkillContext(text);
     this.turnCitations.clear();
@@ -308,6 +407,306 @@ export class BrainChatView extends ItemView {
       this.setGenerating(false);
       this.inputEl.focus();
     }
+  }
+
+  private async executeCommand(raw: string): Promise<void> {
+    const [token = "", ...parts] = raw.trim().split(/\s+/);
+    const command = token.slice(1).toLocaleLowerCase();
+    const argument = raw.trim().slice(token.length).trim();
+
+    try {
+      switch (command) {
+        case "help":
+        case "commands":
+          await this.addTerminalOutput([
+            "### commands",
+            "",
+            ...BRAIN_COMMANDS.map((item) => `- \`${item.usage}\` — ${item.description}`)
+          ].join("\n"));
+          return;
+        case "status": {
+          const retrieval = this.plugin.retrievalIndex.getStatus();
+          const skills = this.plugin.skillRegistry.list();
+          await this.addTerminalOutput([
+            "```text",
+            `vault      ${this.app.vault.getName()}`,
+            `chat       ${this.currentChat?.title ?? "new / unsaved"}`,
+            `model      ${this.plugin.settings.interactiveModel}`,
+            `retrieval  ${retrieval.ready ? "ready" : "building"} · ${retrieval.indexedNotes} notes · ${retrieval.chunks} chunks`,
+            `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
+            `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
+            `pending    ${this.pendingApproval ? "approval" : "none"}`,
+            "```"
+          ].join("\n"));
+          return;
+        }
+        case "new":
+          this.startNewChat();
+          await this.addTerminalOutput("new chat ready");
+          return;
+        case "chats":
+          await this.listChats(argument);
+          return;
+        case "open":
+          await this.openChatCommand(argument);
+          return;
+        case "rename":
+          await this.renameChatCommand(argument);
+          return;
+        case "delete":
+          await this.deleteChatCommand(parts);
+          return;
+        case "models":
+          await this.listModelsCommand(parts);
+          return;
+        case "model":
+          await this.selectModelCommand(argument);
+          return;
+        case "favorite":
+          await this.favoriteModelCommand(argument);
+          return;
+        case "refresh":
+          await this.refreshModelCatalog();
+          await this.addTerminalOutput(`model catalog refreshed · ${this.plugin.modelCatalog.length} models`);
+          return;
+        case "skills":
+          await this.handleSkillCommand("");
+          return;
+        case "skill":
+          await this.handleSkillCommand(argument);
+          return;
+        case "memory":
+          await this.saveMemoryCommand(argument);
+          return;
+        case "index":
+          if (parts[0]?.toLocaleLowerCase() !== "rebuild") {
+            await this.addTerminalOutput("usage: `/index rebuild`", "error");
+            return;
+          }
+          this.statusEl.setText("indexing…");
+          await this.plugin.rebuildRetrievalIndex();
+          this.statusEl.setText("ready");
+          await this.addTerminalOutput(`retrieval index rebuilt · ${this.plugin.retrievalIndex.getStatus().indexedNotes} notes`);
+          return;
+        case "settings": {
+          const controller = (this.app as App & {
+            setting?: { open: () => void; openTabById: (id: string) => void };
+          }).setting;
+          if (!controller) {
+            await this.addTerminalOutput("Obsidian settings are unavailable in this environment", "error");
+            return;
+          }
+          controller.open();
+          controller.openTabById(this.plugin.manifest.id);
+          return;
+        }
+        case "clear":
+          this.disposeMarkdownComponents();
+          this.transcriptEl.empty();
+          await this.addTerminalOutput("display cleared · conversation context retained");
+          return;
+        case "approve":
+        case "deny":
+          await this.addTerminalOutput("no tool action is awaiting approval", "error");
+          return;
+        case "stop":
+          if (this.abortController) this.abortController.abort();
+          else await this.addTerminalOutput("nothing is running");
+          return;
+        case "":
+          await this.addTerminalOutput("type `/help` to list commands");
+          return;
+        default:
+          await this.addTerminalOutput(`unknown command: \`/${command}\`\n\nType \`/help\` to list commands.`, "error");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.statusEl.setText("error");
+      await this.addTerminalOutput(`command failed: ${message}`, "error");
+      this.plugin.reportError(error);
+    }
+  }
+
+  private async listChats(query: string): Promise<void> {
+    await this.refreshChatSummaries(false);
+    const normalized = query.toLocaleLowerCase();
+    this.lastChatResults = this.chatSummaries
+      .filter((chat) => !normalized || `${chat.title} ${chat.path}`.toLocaleLowerCase().includes(normalized))
+      .slice(0, 30);
+    if (this.lastChatResults.length === 0) {
+      await this.addTerminalOutput("no saved chats matched");
+      return;
+    }
+    await this.addTerminalOutput([
+      "| # | Chat | Updated |",
+      "| -: | --- | --- |",
+      ...this.lastChatResults.map((chat, index) =>
+        `| ${index + 1} | ${this.escapeTable(chat.title)} | ${this.formatDate(chat.updatedAt)} |`
+      ),
+      "",
+      "Open one with `/open <number>`."
+    ].join("\n"));
+  }
+
+  private async openChatCommand(argument: string): Promise<void> {
+    if (!argument) {
+      await this.addTerminalOutput("usage: `/open <number|title>`", "error");
+      return;
+    }
+    if (this.lastChatResults.length === 0) await this.listChats("");
+    const numeric = Number.parseInt(argument, 10);
+    const chat = Number.isInteger(numeric) && String(numeric) === argument
+      ? this.lastChatResults[numeric - 1]
+      : this.chatSummaries.find((item) =>
+        item.title.toLocaleLowerCase().includes(argument.toLocaleLowerCase()) ||
+        item.path.toLocaleLowerCase() === argument.toLocaleLowerCase()
+      );
+    if (!chat) {
+      await this.addTerminalOutput(`chat not found: \`${argument}\``, "error");
+      return;
+    }
+    await this.openChat(chat.path);
+  }
+
+  private async renameChatCommand(title: string): Promise<void> {
+    if (!this.currentChat) {
+      await this.addTerminalOutput("there is no saved chat to rename", "error");
+      return;
+    }
+    if (!title) {
+      await this.addTerminalOutput("usage: `/rename <title>`", "error");
+      return;
+    }
+    this.currentChat = await this.plugin.chatStore.rename(this.currentChat, title);
+    await this.refreshChatSummaries();
+    this.renderPromptContext();
+    this.statusEl.setText("renamed");
+    await this.addTerminalOutput(`renamed chat to **${this.currentChat.title}**`);
+  }
+
+  private async deleteChatCommand(parts: string[]): Promise<void> {
+    if (!this.currentChat) {
+      await this.addTerminalOutput("there is no saved chat to delete", "error");
+      return;
+    }
+    if (!parts.includes("--confirm")) {
+      await this.addTerminalOutput(
+        `This moves **${this.currentChat.title}** to vault trash.\n\nRun \`/delete --confirm\` to continue.`,
+        "warning"
+      );
+      return;
+    }
+    const title = this.currentChat.title;
+    await this.plugin.chatStore.remove(this.currentChat);
+    this.startNewChat();
+    await this.refreshChatSummaries();
+    await this.addTerminalOutput(`moved **${title}** to vault trash`);
+  }
+
+  private async listModelsCommand(parts: string[]): Promise<void> {
+    const knownFilters = new Set(["all", "free", "paid", "favorites"]);
+    const requested = parts[0]?.toLocaleLowerCase() ?? "";
+    const filter = knownFilters.has(requested) ? requested : "all";
+    const query = (knownFilters.has(requested) ? parts.slice(1) : parts).join(" ").toLocaleLowerCase();
+    const favorites = new Set(this.plugin.settings.favoriteModels);
+    this.lastModelResults = this.plugin.modelCatalog.filter((model) => {
+      if (query && !`${model.id} ${model.name ?? ""}`.toLocaleLowerCase().includes(query)) return false;
+      if (filter === "favorites" && !favorites.has(model.id)) return false;
+      if (filter === "free" && !this.isFreeModel(model)) return false;
+      if (filter === "paid" && this.isFreeModel(model)) return false;
+      return true;
+    }).slice(0, 30);
+    if (this.lastModelResults.length === 0) {
+      await this.addTerminalOutput("no models matched · try `/refresh`");
+      return;
+    }
+    await this.addTerminalOutput([
+      "| # | Model | Price | Context |",
+      "| -: | --- | --- | ---: |",
+      ...this.lastModelResults.map((model, index) => {
+        const selected = model.id === this.plugin.settings.interactiveModel ? " **← active**" : "";
+        const favorite = favorites.has(model.id) ? " ★" : "";
+        const context = model.context_length ?? model.top_provider?.context_length ?? 0;
+        return `| ${index + 1} | \`${model.id}\`${favorite}${selected} | ${this.isFreeModel(model) ? "free" : "paid"} | ${context ? this.formatNumber(context) : "?"} |`;
+      }),
+      "",
+      "Switch with `/model <number>` · toggle favorite with `/favorite <number>`."
+    ].join("\n"));
+  }
+
+  private resolveModel(argument: string): OpenRouterModel | undefined {
+    const numeric = Number.parseInt(argument, 10);
+    if (Number.isInteger(numeric) && String(numeric) === argument) return this.lastModelResults[numeric - 1];
+    const normalized = argument.toLocaleLowerCase();
+    return this.plugin.modelCatalog.find((model) =>
+      model.id.toLocaleLowerCase() === normalized ||
+      model.name?.toLocaleLowerCase() === normalized
+    );
+  }
+
+  private async selectModelCommand(argument: string): Promise<void> {
+    if (!argument) {
+      await this.addTerminalOutput(`active model: \`${this.plugin.settings.interactiveModel}\``);
+      return;
+    }
+    const model = this.resolveModel(argument);
+    if (!model) {
+      await this.addTerminalOutput(`model not found: \`${argument}\` · use \`/models\` first`, "error");
+      return;
+    }
+    await this.selectModel(model.id);
+    await this.addTerminalOutput(`model → \`${model.id}\``);
+  }
+
+  private async favoriteModelCommand(argument: string): Promise<void> {
+    const model = argument ? this.resolveModel(argument) : this.plugin.getModel();
+    if (!model) {
+      await this.addTerminalOutput("model not found · use `/models` first", "error");
+      return;
+    }
+    await this.toggleFavorite(model.id);
+    const favorite = this.plugin.settings.favoriteModels.includes(model.id);
+    await this.addTerminalOutput(`${favorite ? "favorited" : "unfavorited"} \`${model.id}\``);
+  }
+
+  private async saveMemoryCommand(content: string): Promise<void> {
+    if (!content) {
+      await this.addTerminalOutput("usage: `/memory <text>`", "error");
+      return;
+    }
+    const file = await this.plugin.saveLowRiskMemory(content, "chat command");
+    await this.addTerminalOutput(`saved memory fragment · [[${file.path.replace(/\.md$/, "")}]]`);
+  }
+
+  private addCommandEcho(command: string): void {
+    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+    const line = this.transcriptEl.createDiv({ cls: "obsidian-brain-command-echo" });
+    line.createSpan({ cls: "obsidian-brain-line-prefix", text: "$" });
+    line.createSpan({ text: command });
+    line.scrollIntoView({ block: "end" });
+  }
+
+  private async addTerminalOutput(markdown: string, state: "system" | "warning" | "error" = "system"): Promise<void> {
+    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+    const output = this.transcriptEl.createDiv({ cls: `obsidian-brain-terminal-output is-${state}` });
+    output.createSpan({ cls: "obsidian-brain-line-prefix", text: state === "error" ? "!" : state === "warning" ? "?" : "›" });
+    const body = output.createDiv({ cls: "obsidian-brain-terminal-output-body markdown-rendered obsidian-brain-markdown" });
+    await this.renderInlineMarkdown(body, markdown);
+    output.scrollIntoView({ block: "end" });
+  }
+
+  private escapeTable(value: string): string {
+    return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  }
+
+  private formatDate(value: string): string {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
   }
 
   private async runAgentLoop(signal: AbortSignal): Promise<void> {
@@ -482,19 +881,32 @@ export class BrainChatView extends ItemView {
         void this.renderInlineMarkdown(links, [...new Set(citations)].join(" · "));
       },
       requestApproval: (signal) => new Promise<boolean>((resolve) => {
-        const approve = actions.createEl("button", { text: "Approve", cls: "mod-cta" });
-        const deny = actions.createEl("button", { text: "Deny" });
+        const approve = actions.createEl("button", { text: "/approve", cls: "mod-cta" });
+        const deny = actions.createEl("button", { text: "/deny" });
         let settled = false;
         const finish = (approved: boolean) => {
           if (settled) return;
           settled = true;
           signal.removeEventListener("abort", onAbort);
+          if (this.pendingApproval?.finish === finish) this.pendingApproval = null;
           actions.empty();
+          this.inputEl.value = "";
+          this.inputEl.placeholder = "ask the vault or type /help";
+          this.inputEl.disabled = Boolean(this.abortController);
+          this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
+          this.sendButton.setText(this.abortController ? "^C" : "↵");
           resolve(approved);
         };
         const onAbort = () => finish(false);
         approve.addEventListener("click", () => finish(true));
         deny.addEventListener("click", () => finish(false));
+        this.pendingApproval = { finish };
+        this.inputEl.disabled = false;
+        this.inputEl.placeholder = "/approve or /deny";
+        this.commandHintEl.setText("approval pending  ·  type /approve or /deny");
+        this.sendButton.setText("↵");
+        this.statusEl.setText("approval");
+        this.inputEl.focus();
         signal.addEventListener("abort", onAbort, { once: true });
         if (signal.aborted) finish(false);
       })
@@ -519,10 +931,7 @@ export class BrainChatView extends ItemView {
       const response = skills.length > 0
         ? `## Installed skills\n\n${skills.map((skill) => `- **${skill.name}** — ${skill.description}`).join("\n")}`
         : "No `SKILL.md` skills are installed.";
-      const body = this.addMessage("assistant", response);
-      await this.renderAssistantMarkdown(body, response);
-      this.messages.push({ role: "assistant", content: response });
-      await this.persistCurrentChat();
+      await this.addTerminalOutput(response);
       return;
     }
     try {
@@ -530,16 +939,11 @@ export class BrainChatView extends ItemView {
       const response = activated
         ? `Activated the **${name}** skill for this conversation.`
         : `The **${name}** skill is already active.`;
-      const body = this.addMessage("assistant", response);
-      await this.renderAssistantMarkdown(body, response);
-      this.messages.push({ role: "assistant", content: response });
       await this.persistCurrentChat();
+      await this.addTerminalOutput(response);
     } catch (error) {
       const response = error instanceof Error ? error.message : String(error);
-      const body = this.addMessage("assistant", `Skill error: ${response}`);
-      await this.renderAssistantMarkdown(body, `**Skill error:** ${response}`);
-      this.messages.push({ role: "assistant", content: `Skill error: ${response}` });
-      await this.persistCurrentChat();
+      await this.addTerminalOutput(`skill error: ${response}`, "error");
     }
   }
 
@@ -603,6 +1007,7 @@ export class BrainChatView extends ItemView {
     if (updateSelection && this.currentChat) this.chatSelect.value = this.currentChat.path;
     else if (this.currentChat) this.chatSelect.value = this.currentChat.path;
     this.updateSessionControls();
+    this.renderPromptContext();
   }
 
   private async openChat(path: string): Promise<void> {
@@ -620,6 +1025,7 @@ export class BrainChatView extends ItemView {
       this.updateSessionControls();
       this.statusEl.setText("chat loaded");
       await this.persistCurrentChat();
+      this.renderPromptContext();
     } catch (error) {
       this.plugin.reportError(error);
       await this.refreshChatSummaries();
@@ -636,6 +1042,7 @@ export class BrainChatView extends ItemView {
     this.chatSelect.value = "";
     this.updateSessionControls();
     this.statusEl.setText("new chat");
+    this.renderPromptContext();
     this.inputEl.focus();
   }
 
@@ -660,6 +1067,7 @@ export class BrainChatView extends ItemView {
       this.currentChat = await this.plugin.chatStore.rename(this.currentChat, title);
       await this.refreshChatSummaries();
       this.statusEl.setText("renamed");
+      this.renderPromptContext();
     } catch (error) {
       this.plugin.reportError(error);
     }
@@ -707,10 +1115,101 @@ export class BrainChatView extends ItemView {
   }
 
   private renderEmptyState(): void {
-    this.transcriptEl.createDiv({
-      cls: "obsidian-brain-empty",
-      text: "Vault tools and saved chats are ready.\n\nEnter sends; Shift+Enter adds a new line. Read actions run automatically; writes require approval."
+    const empty = this.transcriptEl.createDiv({ cls: "obsidian-brain-empty" });
+    empty.createDiv({ cls: "obsidian-brain-empty-mark", text: "OBSIDIAN_BRAIN" });
+    empty.createDiv({ text: "vault agent online" });
+    empty.createDiv({ cls: "obsidian-brain-empty-hint", text: "type /help for commands · plain text starts a conversation" });
+  }
+
+  private renderPromptContext(): void {
+    if (!this.contextChatEl || !this.contextModelEl) return;
+    this.contextChatEl.setText(this.currentChat?.title ?? "new");
+    this.contextChatEl.title = this.currentChat?.path ?? "Unsaved chat";
+    this.contextModelEl.setText(this.plugin.settings.interactiveModel);
+    this.contextModelEl.title = this.plugin.settings.interactiveModel;
+  }
+
+  private resizeInput(): void {
+    this.inputEl.style.height = "auto";
+    this.inputEl.style.height = `${Math.min(this.inputEl.scrollHeight, 160)}px`;
+  }
+
+  private rememberInput(text: string): void {
+    if (this.commandHistory.at(-1) !== text) this.commandHistory.push(text);
+    if (this.commandHistory.length > 100) this.commandHistory.shift();
+    this.historyIndex = this.commandHistory.length;
+  }
+
+  private moveHistory(direction: number): void {
+    if (this.commandHistory.length === 0) return;
+    this.historyIndex = Math.max(0, Math.min(this.commandHistory.length, this.historyIndex + direction));
+    this.inputEl.value = this.historyIndex === this.commandHistory.length
+      ? ""
+      : this.commandHistory[this.historyIndex] ?? "";
+    this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
+    this.resizeInput();
+    this.updateCommandSuggestions();
+  }
+
+  private updateCommandSuggestions(): void {
+    const value = this.inputEl.value;
+    if (!value.startsWith("/") || value.includes("\n") || value.includes(" ")) {
+      this.hideCommandSuggestions();
+      return;
+    }
+    const query = value.slice(1).toLocaleLowerCase();
+    this.visibleSuggestions = BRAIN_COMMANDS
+      .filter((command) => command.name.startsWith(query))
+      .slice(0, 8);
+    this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
+    this.renderCommandSuggestions();
+  }
+
+  private renderCommandSuggestions(): void {
+    this.commandSuggestionsEl.empty();
+    if (this.visibleSuggestions.length === 0) {
+      this.commandSuggestionsEl.removeClass("is-visible");
+      return;
+    }
+    this.commandSuggestionsEl.addClass("is-visible");
+    this.visibleSuggestions.forEach((command, index) => {
+      const item = this.commandSuggestionsEl.createDiv({
+        cls: `obsidian-brain-command-suggestion${index === this.suggestionIndex ? " is-selected" : ""}`
+      });
+      item.createEl("code", { text: command.usage });
+      item.createSpan({ text: command.description });
+      item.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        this.suggestionIndex = index;
+        this.completeSuggestion();
+      });
     });
+  }
+
+  private hideCommandSuggestions(): void {
+    this.visibleSuggestions = [];
+    this.suggestionIndex = 0;
+    if (!this.commandSuggestionsEl) return;
+    this.commandSuggestionsEl.empty();
+    this.commandSuggestionsEl.removeClass("is-visible");
+  }
+
+  private moveSuggestion(direction: number): void {
+    if (this.visibleSuggestions.length === 0) return;
+    this.suggestionIndex = (
+      this.suggestionIndex + direction + this.visibleSuggestions.length
+    ) % this.visibleSuggestions.length;
+    this.renderCommandSuggestions();
+  }
+
+  private completeSuggestion(): void {
+    const command = this.visibleSuggestions[this.suggestionIndex];
+    if (!command) return;
+    this.inputEl.value = `/${command.name}${command.usage.includes(" ") ? " " : ""}`;
+    this.inputEl.focus();
+    this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
+    this.hideCommandSuggestions();
+    this.resizeInput();
   }
 
   private refreshModelOptions(): void {
@@ -747,17 +1246,17 @@ export class BrainChatView extends ItemView {
       if (this.currentChat) await this.persistCurrentChat();
       this.renderModelDetails();
       this.updateFavoriteButton();
+      this.renderPromptContext();
     } catch (error) {
       this.plugin.reportError(error);
     }
   }
 
-  private async toggleFavorite(): Promise<void> {
+  private async toggleFavorite(modelId = this.plugin.settings.interactiveModel): Promise<void> {
     try {
-      const model = this.plugin.settings.interactiveModel;
       const favorites = new Set(this.plugin.settings.favoriteModels);
-      if (favorites.has(model)) favorites.delete(model);
-      else favorites.add(model);
+      if (favorites.has(modelId)) favorites.delete(modelId);
+      else favorites.add(modelId);
       this.plugin.settings.favoriteModels = [...favorites];
       await this.plugin.saveSettings();
       this.refreshModelOptions();
@@ -770,8 +1269,9 @@ export class BrainChatView extends ItemView {
     if (!this.modelDetailsEl) return;
     this.modelDetailsEl.empty();
     const model = this.plugin.getModel();
+    this.renderPromptContext();
     if (!model) {
-      this.modelDetailsEl.setText("Metadata unavailable · refresh the OpenRouter model catalog");
+      this.modelDetailsEl.setText("· metadata unavailable");
       return;
     }
     const context = model.context_length ?? model.top_provider?.context_length;
@@ -792,7 +1292,7 @@ export class BrainChatView extends ItemView {
       supported.has("reasoning") ? "reasoning" : null,
       supported.has("structured_outputs") || supported.has("response_format") ? "structured output" : null
     ].filter((value): value is string => Boolean(value));
-    this.modelDetailsEl.setText(`${contextLabel} · ${pricing} · ${capabilities.join(" · ")}`);
+    this.modelDetailsEl.setText(`· ${contextLabel} · ${pricing} · ${capabilities.join(" · ")}`);
     this.modelDetailsEl.toggleClass("is-tool-incompatible", supported.size > 0 && !supported.has("tools"));
   }
 
@@ -858,7 +1358,10 @@ export class BrainChatView extends ItemView {
     this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
     const message = this.transcriptEl.createDiv({ cls: "obsidian-brain-message" });
     message.dataset.role = role;
-    message.createDiv({ cls: "obsidian-brain-message-label", text: role });
+    message.createDiv({
+      cls: "obsidian-brain-message-label",
+      text: role === "user" ? "you>" : "brain>"
+    });
     const body = message.createDiv({ cls: "obsidian-brain-message-body", text });
     message.scrollIntoView({ block: "end" });
     return body;
@@ -895,7 +1398,9 @@ export class BrainChatView extends ItemView {
 
   private setGenerating(generating: boolean): void {
     this.statusEl.setText(generating ? "generating…" : this.statusEl.getText());
-    this.sendButton.setText(generating ? "Stop" : "Send");
+    this.sendButton.setText(generating ? "^C" : "↵");
+    this.sendButton.setAttribute("aria-label", generating ? "Stop generation" : "Run");
+    this.sendButton.title = generating ? "Stop generation (Ctrl+C)" : "Run command or send message";
     this.sendButton.toggleClass("obsidian-brain-stop", generating);
     this.modelSelect.disabled = generating;
     this.modelSearch.disabled = generating;
@@ -905,7 +1410,11 @@ export class BrainChatView extends ItemView {
     this.chatSelect.disabled = generating;
     this.newChatButton.disabled = generating;
     this.updateSessionControls();
-    this.inputEl.disabled = generating;
+    this.inputEl.disabled = generating && !this.pendingApproval;
+    if (!generating) {
+      this.inputEl.placeholder = "ask the vault or type /help";
+      this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
+    }
   }
 
   private serializeToolResult(result: unknown): string {

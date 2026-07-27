@@ -4,7 +4,8 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 
 ## First foundation
 
-- Obsidian chat `ItemView` with a terminal-inspired interface.
+- Obsidian chat `ItemView` with a command-first terminal interface.
+- Slash-command completion, keyboard history, and command-operated chats, models, skills, memory, indexing, and approvals.
 - Real multi-turn OpenRouter chat completions with incremental SSE rendering.
 - Stop-generation control backed by request cancellation.
 - Native OpenRouter tool calling with iterative tool-result feedback.
@@ -16,12 +17,12 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
 - Bundled EXP skill with a calibrated 25-1000 accomplishment-first rubric.
-- Markdown-backed chats with new/open/continue/rename/trash session controls.
+- Markdown-backed chats with command-operated new/open/continue/rename/trash session controls.
 - Automatic context budgeting with model-generated summaries and safe trimming.
-- Searchable OpenRouter catalog with favorites and free/paid filters.
+- Command-searchable OpenRouter catalog with favorites and free/paid filters.
 - Model context, pricing, modality, reasoning, structured-output, and tool metadata.
 - Secure OpenRouter secret selection through Obsidian `SecretStorage`.
-- Synced `Brain/` folders for chats, memory, calibration, settings, and queued work.
+- Ordinary local Markdown under `Brain/` for chats, memory, calibration, settings, and queued work. Sync is deliberately outside the plugin.
 - Safe Markdown read/search/create/frontmatter-update primitives.
 - Mobile-safe build: no Node filesystem, shell, or desktop-only dependencies at runtime.
 
@@ -39,6 +40,39 @@ Copy `main.js`, `manifest.json`, and `styles.css` to the target vault plugin dir
 The Obsidian view is the only UI implementation and visual source of truth;
 there is no separate browser preview to keep in sync.
 
+## Terminal commands
+
+Type `/` to open completion. Use `Tab` to complete, arrow keys to navigate
+suggestions or input history, `Enter` to run, `Shift+Enter` for a newline, and
+`Ctrl+C` to stop generation.
+
+```text
+/help
+/status
+/new
+/chats [query]
+/open <number|title>
+/rename <title>
+/delete --confirm
+/models [all|free|paid|favorites] [query]
+/model <number|id>
+/favorite [number|id]
+/refresh
+/skills
+/skill <name>
+/memory <text>
+/index rebuild
+/settings
+/clear
+/approve
+/deny
+/stop
+```
+
+Plain text still starts or continues a model conversation. Read tools execute
+automatically. Write and sensitive-read previews pause the agent and accept
+`/approve` or `/deny` directly from the terminal prompt.
+
 ## Theme integration
 
 The plugin uses Obsidian's semantic variables for backgrounds, text, borders,
@@ -48,15 +82,16 @@ can optionally customize the Brain surface by overriding these variables on
 
 ```css
 .obsidian-brain-view {
-  --brain-background: var(--background-primary);
+  --brain-bg: var(--background-primary);
   --brain-surface: var(--background-secondary);
   --brain-border: var(--background-modifier-border);
   --brain-text: var(--text-normal);
   --brain-muted: var(--text-muted);
-  --brain-accent: var(--interactive-accent);
-  --brain-assistant-accent: var(--text-accent);
-  --brain-error-background: var(--background-modifier-error);
+  --brain-accent: var(--text-accent);
+  --brain-success: var(--text-success);
+  --brain-warning: var(--text-warning);
+  --brain-error: var(--text-error);
   --brain-radius: var(--radius-s);
-  --brain-content-width: 48rem;
+  --brain-content-width: 58rem;
 }
 ```
