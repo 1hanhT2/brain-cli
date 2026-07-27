@@ -11,7 +11,7 @@ import {
   type ChatState
 } from "../src/chat-format";
 import { compactConversation, estimateMessageTokens } from "../src/context-manager";
-import { VaultRetrievalIndex } from "../src/retrieval-index";
+import { reciprocalRankFusion, VaultRetrievalIndex, type RankedChunk } from "../src/retrieval-index";
 import type { SkillRegistry } from "../src/skill-registry";
 import type { App, TFile } from "obsidian";
 import type { SensitiveContentGuard } from "../src/sensitive-content";
@@ -30,6 +30,11 @@ import {
   rankTrendingModels,
   type DailyModelRanking
 } from "../src/model-rankings";
+import { chunkMatchesFilters, prepareMarkdownChunks } from "../src/markdown-chunks";
+import { cosineSimilarity, MemorySemanticStore } from "../src/semantic-store";
+import type { SemanticChunkRecord } from "../src/semantic-types";
+import { SemanticIndexCoordinator } from "../src/semantic-index";
+import type { BrainSettings } from "../src/settings";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -279,6 +284,239 @@ test("local retrieval ranks relevant chunks and excludes sensitive notes", async
   assert.equal(result.results[0]?.path, "Study/Physics.md");
   assert.equal(result.results[0]?.citation, "[[Study/Physics#Mechanics]]");
   assert.equal(result.skippedSensitiveNotes, 1);
+});
+
+test("semantic chunking is deterministic and embeds curated metadata without YAML noise", () => {
+  const file = {
+    path: "TaskNotes/Read.md",
+    basename: "Read"
+  } as TFile;
+  const content = [
+    "---",
+    "id: internal-123",
+    "created: 2026-07-27",
+    "status: in-progress",
+    "priority: high",
+    "tags: [study, reading]",
+    "---",
+    "# Notes",
+    "Read fifteen pages and write a short reflection."
+  ].join("\n");
+  const frontmatter = {
+    id: "internal-123",
+    created: "2026-07-27",
+    status: "in-progress",
+    priority: "high",
+    tags: ["study", "reading"]
+  };
+  const first = prepareMarkdownChunks(file, content, frontmatter, false);
+  const second = prepareMarkdownChunks(file, content, frontmatter, false);
+  assert.equal(first.length, 1);
+  assert.equal(first[0]?.id, second[0]?.id);
+  assert.match(first[0]?.embeddingText ?? "", /status: in-progress/);
+  assert.match(first[0]?.embeddingText ?? "", /priority: high/);
+  assert.doesNotMatch(first[0]?.embeddingText ?? "", /internal-123|created:/);
+  assert.equal(first[0]?.lineStart, 8);
+  assert.equal(first[0]?.citation, "[[TaskNotes/Read#Notes]]");
+});
+
+test("semantic filters support folders, tags, and arbitrary frontmatter properties", () => {
+  const chunk = prepareMarkdownChunks(
+    { path: "TaskNotes/Study/Read.md", basename: "Read" } as TFile,
+    "# Notes\nActive recall",
+    { tags: ["study", "reading"], status: "in-progress", priority: 2 },
+    false
+  )[0]!;
+  assert.equal(chunkMatchesFilters(chunk as SemanticChunkRecord, {
+    folders: ["TaskNotes"],
+    tags: ["#study"],
+    properties: { status: "in-progress", priority: 2 }
+  }), true);
+  assert.equal(chunkMatchesFilters(chunk as SemanticChunkRecord, {
+    properties: { status: "done" }
+  }), false);
+});
+
+test("semantic store performs exact cosine search and respects filters", async () => {
+  const store = new MemorySemanticStore();
+  const record = (
+    id: string,
+    path: string,
+    vector: number[],
+    tags: string[]
+  ): SemanticChunkRecord => ({
+    id,
+    path,
+    heading: null,
+    lineStart: 1,
+    lineEnd: 1,
+    excerpt: id,
+    citation: `[[${path.replace(/\.md$/, "")}]]`,
+    embeddingText: id,
+    contentHash: id,
+    metadata: { tags },
+    sensitive: false,
+    vector: Float32Array.from(vector),
+    modelId: "embedding/test",
+    dimensions: vector.length,
+    indexVersion: 1,
+    chunkerVersion: 1,
+    metadataVersion: 1,
+    updatedAt: 1
+  });
+  await store.applyPath("Study/A.md", [record("a", "Study/A.md", [1, 0], ["study"])]);
+  await store.applyPath("Journal.md", [record("b", "Journal.md", [0, 1], ["journal"])]);
+  const results = await store.nearest(Float32Array.from([0.9, 0.1]), { tags: ["study"] }, 5);
+  assert.deepEqual(results.map((result) => result.chunk.id), ["a"]);
+  assert.ok(cosineSimilarity(Float32Array.from([1, 0]), Float32Array.from([1, 0])) > 0.999);
+});
+
+test("semantic coordinator checkpoints vectors and re-embeds only changed chunks", async () => {
+  const file = { path: "Study/Physics.md", basename: "Physics", extension: "md" } as TFile;
+  let content = "# Mechanics\nForce and acceleration.";
+  const app = {
+    vault: {
+      getMarkdownFiles: () => [file],
+      cachedRead: async () => content
+    },
+    metadataCache: {
+      getFileCache: () => ({ frontmatter: { tags: ["study"], status: "active" } })
+    }
+  } as unknown as App;
+  const settings: BrainSettings = {
+    brainFolder: "Brain",
+    openRouterSecretId: "",
+    interactiveModel: "openrouter/free",
+    backgroundModel: "openrouter/free",
+    favoriteModels: [],
+    embeddingModel: "embedding/test",
+    favoriteEmbeddingModels: [],
+    useOmnisearch: false,
+    useWebSearch: false,
+    semanticSearchEnabled: true,
+    semanticFolders: ["Study"],
+    includeSensitiveSemantic: false,
+    semanticSpendCapUsd: 0.25,
+    semanticVaultId: "test",
+    excludedPaths: [],
+    sensitiveTags: []
+  };
+  const store = new MemorySemanticStore();
+  let embeddingCalls = 0;
+  const provider = {
+    listEmbeddingModels: async () => [],
+    embed: async (_model: string, inputs: string[]) => {
+      embeddingCalls += 1;
+      return {
+        vectors: inputs.map(() => Float32Array.from([1, 0])),
+        promptTokens: 10,
+        totalTokens: 10
+      };
+    }
+  };
+  const coordinator = new SemanticIndexCoordinator(
+    app,
+    () => settings,
+    () => [],
+    { inspectFile: () => ({ sensitive: false, reasons: [] }) } as unknown as SensitiveContentGuard,
+    store,
+    provider,
+    () => [{ id: "embedding/test", pricing: { prompt: "0.000001" } }]
+  );
+  await coordinator.start("rebuild");
+  assert.equal(embeddingCalls, 1);
+  assert.equal((await store.getAll()).length, 1);
+  assert.equal(coordinator.getStatus().partial, false);
+
+  await coordinator.start("rebuild");
+  assert.equal(embeddingCalls, 1);
+
+  content = "# Mechanics\nForce, acceleration, and momentum.";
+  await coordinator.start("vault-change");
+  assert.equal(embeddingCalls, 2);
+  assert.match((await store.getAll())[0]?.excerpt ?? "", /momentum/);
+});
+
+test("semantic coordinator pauses before exceeding the configured spend cap", async () => {
+  const file = { path: "Study/Large.md", basename: "Large", extension: "md" } as TFile;
+  const app = {
+    vault: {
+      getMarkdownFiles: () => [file],
+      cachedRead: async () => `# Large\n${"expensive text ".repeat(300)}`
+    },
+    metadataCache: { getFileCache: () => null }
+  } as unknown as App;
+  const settings: BrainSettings = {
+    brainFolder: "Brain",
+    openRouterSecretId: "",
+    interactiveModel: "openrouter/free",
+    backgroundModel: "openrouter/free",
+    favoriteModels: [],
+    embeddingModel: "embedding/expensive",
+    favoriteEmbeddingModels: [],
+    useOmnisearch: false,
+    useWebSearch: false,
+    semanticSearchEnabled: true,
+    semanticFolders: ["Study"],
+    includeSensitiveSemantic: false,
+    semanticSpendCapUsd: 0.25,
+    semanticVaultId: "test-cap",
+    excludedPaths: [],
+    sensitiveTags: []
+  };
+  let calls = 0;
+  const coordinator = new SemanticIndexCoordinator(
+    app,
+    () => settings,
+    () => [],
+    { inspectFile: () => ({ sensitive: false, reasons: [] }) } as unknown as SensitiveContentGuard,
+    new MemorySemanticStore(),
+    {
+      listEmbeddingModels: async () => [],
+      embed: async () => {
+        calls += 1;
+        return { vectors: [], promptTokens: 0, totalTokens: 0 };
+      }
+    },
+    () => [{ id: "embedding/expensive", pricing: { prompt: "1" } }]
+  );
+  await coordinator.start("rebuild");
+  assert.equal(calls, 0);
+  assert.equal(coordinator.getStatus().state, "paused");
+  assert.match(coordinator.getStatus().lastError ?? "", /spend cap/);
+});
+
+test("hybrid rank fusion merges engines and caps chunks per note", () => {
+  const ranked = (
+    id: string,
+    path: string,
+    rank: number,
+    engine: "lexical" | "semantic"
+  ): RankedChunk => ({
+    id,
+    rank,
+    engine,
+    rawScore: 1 / rank,
+    result: {
+      chunkId: id,
+      path,
+      heading: null,
+      lineStart: rank,
+      lineEnd: rank,
+      excerpt: id,
+      score: 0,
+      citation: `[[${path.replace(/\.md$/, "")}]]`
+    }
+  });
+  const results = reciprocalRankFusion(
+    [ranked("shared", "A.md", 1, "lexical"), ranked("a2", "A.md", 2, "lexical"), ranked("a3", "A.md", 3, "lexical")],
+    [ranked("shared", "A.md", 1, "semantic"), ranked("b1", "B.md", 2, "semantic")],
+    4
+  );
+  assert.equal(results[0]?.chunkId, "shared");
+  assert.deepEqual(results[0]?.sourceEngines?.sort(), ["lexical", "semantic"]);
+  assert.ok(results.filter((result) => result.path === "A.md").length <= 2);
+  assert.ok(results.some((result) => result.path === "B.md"));
 });
 
 test("Omnisearch is opt-in and filters sensitive and excluded results", async () => {

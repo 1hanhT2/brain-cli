@@ -5,6 +5,7 @@ import {
   Modal,
   Notice,
   Setting,
+  TFolder,
   setIcon,
   type App,
   type WorkspaceLeaf
@@ -13,6 +14,7 @@ import type ObsidianBrainPlugin from "./main";
 import type { ChatMessage, ToolCall } from "./openrouter";
 import { requiresApproval } from "./permissions";
 import type { ToolRisk, OpenRouterModel } from "./types";
+import type { EmbeddingModel, RetrievalMode, SemanticIndexStatus } from "./semantic-types";
 import { titleFromMessage, type ChatState, type ChatSummary } from "./chat-format";
 import type { ToolPreview } from "./agent-tools";
 import { paginate, readLeadingPage, type Page } from "./pagination";
@@ -41,6 +43,12 @@ interface ConfigMenuItem {
 }
 
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
+const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
+
+const commandTokens = (value: string): string[] =>
+  [...value.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)]
+    .map((match) => match[1] ?? match[2] ?? match[3])
+    .filter((token): token is string => token !== undefined);
 
 const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "help", usage: "/help [page]", description: "Show the paged command reference" },
@@ -54,10 +62,15 @@ const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "model", usage: "/model <number|id>", description: "Switch model using /models results or an exact ID" },
   { name: "favorite", usage: "/favorite [number|id]", description: "Toggle a model favorite" },
   { name: "refresh", usage: "/refresh", description: "Refresh the OpenRouter model catalog" },
+  { name: "embeddings", usage: "/embeddings [all|favorites] [page] [query]", description: "List paged OpenRouter embedding models" },
+  { name: "embedding", usage: "/embedding <number|id> [--confirm]", description: "Select the semantic embedding model" },
+  { name: "embedding-favorite", usage: "/embedding-favorite [number|id]", description: "Toggle an embedding model favorite" },
   { name: "skills", usage: "/skills [page]", description: "List installed SKILL.md skills" },
   { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
   { name: "memory", usage: "/memory <text>", description: "Save a low-risk Markdown memory fragment" },
-  { name: "index", usage: "/index rebuild", description: "Rebuild the local vault retrieval index" },
+  { name: "search", usage: "/search <query> [--mode hybrid|semantic|lexical]", description: "Search the vault and show cited excerpts" },
+  { name: "index", usage: "/index status|rebuild|pause|resume|cancel|clear", description: "Inspect and control retrieval indexing" },
+  { name: "semantic", usage: "/semantic folders|cap <usd|unlimited>", description: "Configure semantic indexing" },
   { name: "config", usage: "/config", description: "Open the terminal settings menu" },
   { name: "setting", usage: "/setting", description: "Alias for /config" },
   { name: "settings", usage: "/settings", description: "Open the terminal settings menu (/settings native for Obsidian settings)" },
@@ -78,7 +91,7 @@ const createSystemMessage = (): ChatMessage => ({
     "When asked what you can do or what environment you are in, call get_environment and explain the returned capabilities and limitations plainly.",
     "When vault tools return citations, cite the supporting notes with those exact Obsidian wikilinks.",
     "A skill returned by get_environment or list_skills is installed and available. A skill becomes active for the current conversation only after its [Active skill: name] system message is present. Never say an available skill is not installed merely because it was not previously active.",
-    "Read tools run automatically. Every write requires the user's explicit approval in the interface.",
+    "Read tools run automatically. Direct sensitive-note reads require approval; semantic retrieval may include sensitive excerpts only when the user's global semantic consent is enabled. Every write requires explicit approval.",
     "Never claim that a tool succeeded unless its result says ok=true. Treat tool results as the source of truth."
   ].join("\n")
 });
@@ -202,10 +215,19 @@ export class BrainChatView extends ItemView {
   private suggestionIndex = 0;
   private visibleSuggestions: BrainCommand[] = [];
   private lastModelResults: OpenRouterModel[] = [];
+  private lastEmbeddingResults: EmbeddingModel[] = [];
   private lastChatResults: ChatSummary[] = [];
   private configMenuEl: HTMLElement | null = null;
   private configMenuSelection = 0;
   private configMenuBusy = false;
+  private sensitiveConsentPending = false;
+  private folderPickerEl: HTMLElement | null = null;
+  private folderPickerSelection = 0;
+  private folderPickerFolders: string[] = [];
+  private folderPickerSelected = new Set<string>();
+  private folderPickerEnableAfterConfirm = false;
+  private unsubscribeSemantic: (() => void) | null = null;
+  private semanticProgressEl: HTMLElement | null = null;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: ObsidianBrainPlugin) {
     super(leaf);
@@ -229,11 +251,15 @@ export class BrainChatView extends ItemView {
     this.renderEmptyState();
     this.renderComposer();
     await this.refreshChatSummaries();
+    this.unsubscribeSemantic = this.plugin.semanticIndex.subscribe((status) => this.renderSemanticStatus(status));
   }
 
   async onClose(): Promise<void> {
     this.abortController?.abort();
     this.closeConfigMenu(false);
+    this.closeFolderPicker(false);
+    this.unsubscribeSemantic?.();
+    this.unsubscribeSemantic = null;
     this.disposeMarkdownComponents();
   }
 
@@ -313,6 +339,10 @@ export class BrainChatView extends ItemView {
       text: "enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop"
     });
     const submit = async () => {
+      if (this.folderPickerEl) {
+        await this.confirmFolderPicker();
+        return;
+      }
       if (this.configMenuEl) {
         this.closeConfigMenu();
         return;
@@ -345,6 +375,30 @@ export class BrainChatView extends ItemView {
       this.updateCommandSuggestions();
     });
     this.inputEl.addEventListener("keydown", (event) => {
+      if (this.folderPickerEl) {
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          this.moveFolderSelection(event.key === "ArrowUp" ? -1 : 1);
+          return;
+        }
+        if (event.code === "Space" || event.key === " ") {
+          event.preventDefault();
+          this.toggleSelectedFolder();
+          return;
+        }
+        if (event.key === "Enter" && !event.isComposing) {
+          event.preventDefault();
+          void this.confirmFolderPicker();
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          this.closeFolderPicker();
+          return;
+        }
+        event.preventDefault();
+        return;
+      }
       if (this.configMenuEl) {
         if (event.key === "ArrowUp" || event.key === "ArrowDown") {
           event.preventDefault();
@@ -463,7 +517,7 @@ export class BrainChatView extends ItemView {
   }
 
   private async executeCommand(raw: string): Promise<void> {
-    const [token = "", ...parts] = raw.trim().split(/\s+/);
+    const [token = "", ...parts] = commandTokens(raw.trim());
     const command = token.slice(1).toLocaleLowerCase();
     const argument = raw.trim().slice(token.length).trim();
 
@@ -475,6 +529,7 @@ export class BrainChatView extends ItemView {
           return;
         case "status": {
           const retrieval = this.plugin.retrievalIndex.getStatus();
+          const semantic = retrieval.semantic;
           const skills = this.plugin.skillRegistry.list();
           await this.addTerminalOutput([
             "```text",
@@ -483,6 +538,9 @@ export class BrainChatView extends ItemView {
             `model      ${this.plugin.settings.interactiveModel}`,
             `retrieval  ${retrieval.ready ? "ready" : "building"} · ${retrieval.indexedNotes} notes · ${retrieval.chunks} chunks`,
             `lexical    ${retrieval.lexicalProvider}${retrieval.omnisearch.enabled && !retrieval.omnisearch.available ? " · Omnisearch unavailable, fallback active" : ""}`,
+            `semantic   ${semantic?.enabled ? `${semantic.state} · ${semantic.indexedNotes} notes · ${semantic.indexedChunks} chunks · ${semantic.modelId || "no model"}` : "disabled"}`,
+            `scope      ${semantic?.folders.join(", ") || "none"}`,
+            `index cost $${(semantic?.estimatedCostUsd ?? 0).toFixed(4)} / $${this.plugin.settings.semanticSpendCapUsd.toFixed(2)} cap`,
             `web        ${this.plugin.settings.useWebSearch ? "enabled · OpenRouter server tool" : "disabled"}`,
             `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
             `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
@@ -524,6 +582,15 @@ export class BrainChatView extends ItemView {
           await this.refreshModelCatalog();
           await this.addTerminalOutput(`model catalog refreshed · ${this.plugin.modelCatalog.length} models`);
           return;
+        case "embeddings":
+          await this.listEmbeddingModelsCommand(parts);
+          return;
+        case "embedding":
+          await this.selectEmbeddingModelCommand(parts);
+          return;
+        case "embedding-favorite":
+          await this.favoriteEmbeddingModelCommand(argument);
+          return;
         case "skills":
           await this.handleSkillCommand("", parts);
           return;
@@ -533,15 +600,14 @@ export class BrainChatView extends ItemView {
         case "memory":
           await this.saveMemoryCommand(argument);
           return;
+        case "search":
+          await this.searchCommand(parts);
+          return;
         case "index":
-          if (parts[0]?.toLocaleLowerCase() !== "rebuild") {
-            await this.addTerminalOutput("usage: `/index rebuild`", "error");
-            return;
-          }
-          this.statusEl.setText("indexing…");
-          await this.plugin.rebuildRetrievalIndex();
-          this.statusEl.setText("ready");
-          await this.addTerminalOutput(`retrieval index rebuilt · ${this.plugin.retrievalIndex.getStatus().indexedNotes} notes`);
+          await this.indexCommand(parts);
+          return;
+        case "semantic":
+          await this.semanticCommand(parts);
           return;
         case "config":
         case "setting":
@@ -844,6 +910,251 @@ export class BrainChatView extends ItemView {
     await this.addTerminalOutput(`${favorite ? "favorited" : "unfavorited"} \`${model.id}\``);
   }
 
+  private async listEmbeddingModelsCommand(parts: string[]): Promise<void> {
+    let cursor = 0;
+    const requested = parts[cursor]?.toLocaleLowerCase() ?? "";
+    const filter = EMBEDDING_FILTERS.has(requested) ? requested : "all";
+    if (EMBEDDING_FILTERS.has(requested)) cursor += 1;
+    const pageInput = readLeadingPage(parts.slice(cursor));
+    const queryText = pageInput.remaining.join(" ");
+    const query = queryText.toLocaleLowerCase();
+    if (this.plugin.embeddingModelCatalog.length === 0) {
+      this.statusEl.setText("loading embeddings…");
+      await this.plugin.refreshEmbeddingModels(false);
+      this.statusEl.setText("ready");
+    }
+    const favorites = new Set(this.plugin.settings.favoriteEmbeddingModels);
+    const models = this.plugin.embeddingModelCatalog.filter((model) => {
+      if (filter === "favorites" && !favorites.has(model.id)) return false;
+      return !query || `${model.id} ${model.name ?? ""} ${model.description ?? ""}`.toLocaleLowerCase().includes(query);
+    });
+    const paged = paginate(models, pageInput.page);
+    this.lastEmbeddingResults = paged.items;
+    if (models.length === 0) {
+      await this.addTerminalOutput("no embedding models matched");
+      return;
+    }
+    if (paged.outOfRange) {
+      await this.addPageOutOfRange("embedding model", paged);
+      return;
+    }
+    await this.addTerminalOutput([
+      "| # | Embedding model | Input price / 1M | Context |",
+      "| -: | --- | ---: | ---: |",
+      ...paged.items.map((model, index) => {
+        const active = model.id === this.plugin.settings.embeddingModel ? " **← active**" : "";
+        const favorite = favorites.has(model.id) ? " ★" : "";
+        const promptPrice = Number.parseFloat(model.pricing?.prompt ?? "");
+        const price = Number.isFinite(promptPrice) ? `$${(promptPrice * 1_000_000).toFixed(4)}` : "?";
+        return `| ${index + 1} | \`${model.id}\`${favorite}${active} | ${price} | ${model.context_length ? this.formatNumber(model.context_length) : "?"} |`;
+      }),
+      "",
+      "Select with `/embedding <number>` · favorite with `/embedding-favorite <number>`.",
+      "",
+      this.paginationLine(
+        paged,
+        "embedding models",
+        (target) => `/embeddings ${filter} ${target}${queryText ? ` ${queryText}` : ""}`
+      )
+    ].join("\n"));
+  }
+
+  private resolveEmbeddingModel(argument: string): EmbeddingModel | undefined {
+    const numeric = Number.parseInt(argument, 10);
+    if (Number.isInteger(numeric) && String(numeric) === argument) return this.lastEmbeddingResults[numeric - 1];
+    const normalized = argument.toLocaleLowerCase();
+    return this.plugin.embeddingModelCatalog.find((model) =>
+      model.id.toLocaleLowerCase() === normalized
+      || model.name?.toLocaleLowerCase() === normalized
+    );
+  }
+
+  private async selectEmbeddingModelCommand(parts: string[]): Promise<void> {
+    const argument = parts.find((part) => !part.startsWith("--")) ?? "";
+    if (!argument) {
+      await this.addTerminalOutput(
+        `active embedding model: \`${this.plugin.settings.embeddingModel || "none"}\``
+      );
+      return;
+    }
+    if (this.plugin.embeddingModelCatalog.length === 0) await this.plugin.refreshEmbeddingModels(false);
+    const model = this.resolveEmbeddingModel(argument);
+    if (!model) {
+      await this.addTerminalOutput(`embedding model not found: \`${argument}\` · use \`/embeddings\` first`, "error");
+      return;
+    }
+    const changing = Boolean(this.plugin.settings.embeddingModel)
+      && this.plugin.settings.embeddingModel !== model.id;
+    if (changing && !parts.includes("--confirm")) {
+      await this.addTerminalOutput(
+        `Changing embedding models clears the semantic index.\n\nRun \`/embedding ${model.id} --confirm\` to continue.`,
+        "warning"
+      );
+      return;
+    }
+    await this.plugin.selectEmbeddingModel(model.id);
+    await this.addTerminalOutput(`embedding model → \`${model.id}\`${changing ? " · semantic rebuild queued" : ""}`);
+    if (!this.plugin.settings.semanticSearchEnabled && this.plugin.settings.semanticFolders.length === 0) {
+      this.openFolderPicker(true);
+    }
+  }
+
+  private async favoriteEmbeddingModelCommand(argument: string): Promise<void> {
+    const model = argument
+      ? this.resolveEmbeddingModel(argument)
+      : this.plugin.embeddingModelCatalog.find((item) => item.id === this.plugin.settings.embeddingModel);
+    if (!model) {
+      await this.addTerminalOutput("embedding model not found · use `/embeddings` first", "error");
+      return;
+    }
+    const favorites = new Set(this.plugin.settings.favoriteEmbeddingModels);
+    if (favorites.has(model.id)) favorites.delete(model.id);
+    else favorites.add(model.id);
+    this.plugin.settings.favoriteEmbeddingModels = [...favorites];
+    await this.plugin.saveSettings();
+    await this.addTerminalOutput(`${favorites.has(model.id) ? "favorited" : "unfavorited"} \`${model.id}\``);
+  }
+
+  private async searchCommand(parts: string[]): Promise<void> {
+    const flagStart = parts.findIndex((part) => part.startsWith("--"));
+    const queryParts = flagStart < 0 ? parts : parts.slice(0, flagStart);
+    const flagParts = flagStart < 0 ? [] : parts.slice(flagStart);
+    const query = queryParts.join(" ").trim();
+    if (!query) {
+      await this.addTerminalOutput(
+        "usage: `/search <query> [--mode hybrid|semantic|lexical] [--folder path] [--tag tag] [--property key=value] [--limit n]`",
+        "error"
+      );
+      return;
+    }
+    let mode: RetrievalMode = "hybrid";
+    let limit = 8;
+    const folders: string[] = [];
+    const tags: string[] = [];
+    const properties: Record<string, string> = {};
+    for (let index = 0; index < flagParts.length; index += 1) {
+      const flag = flagParts[index];
+      const value = flagParts[index + 1];
+      if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}.`);
+      if (flag === "--mode") {
+        if (!["hybrid", "semantic", "lexical"].includes(value)) throw new Error("Search mode must be hybrid, semantic, or lexical.");
+        mode = value as RetrievalMode;
+      } else if (flag === "--folder") folders.push(value);
+      else if (flag === "--tag") tags.push(value);
+      else if (flag === "--property") {
+        const separator = value.indexOf("=");
+        if (separator <= 0) throw new Error("Properties use key=value.");
+        properties[value.slice(0, separator)] = value.slice(separator + 1);
+      } else if (flag === "--limit") {
+        limit = Number.parseInt(value, 10);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 20) throw new Error("Search limit must be from 1 to 20.");
+      } else throw new Error(`Unknown search option: ${flag}.`);
+      index += 1;
+    }
+    this.statusEl.setText("searching…");
+    const search = await this.plugin.retrievalIndex.search(query, limit, {
+      mode,
+      folders: folders.length ? folders : undefined,
+      tags: tags.length ? tags : undefined,
+      properties: Object.keys(properties).length ? properties : undefined
+    });
+    this.statusEl.setText("ready");
+    if (search.results.length === 0) {
+      await this.addTerminalOutput(
+        `no ${mode} results${search.fallback ? ` · ${search.fallback} fallback active` : ""}`
+      );
+      return;
+    }
+    await this.addTerminalOutput([
+      "| # | Source | Note | Lines | Excerpt |",
+      "| -: | --- | --- | ---: | --- |",
+      ...search.results.map((result, index) =>
+        `| ${index + 1} | ${(result.sourceEngines ?? [mode]).join("+")} | ${result.citation} | ${result.lineStart}-${result.lineEnd} | ${this.escapeTable(result.excerpt.replace(/\s+/g, " ").slice(0, 240))} |`
+      ),
+      "",
+      [
+        `mode: ${search.mode}`,
+        search.fallback ? `${search.fallback} fallback` : null,
+        search.partial ? "semantic coverage partial" : null
+      ].filter(Boolean).join(" · ")
+    ].join("\n"));
+  }
+
+  private async indexCommand(parts: string[]): Promise<void> {
+    const action = parts[0]?.toLocaleLowerCase() || "status";
+    const semantic = this.plugin.semanticIndex;
+    if (action === "status") {
+      await this.addTerminalOutput(this.semanticStatusMarkdown(semantic.getStatus()));
+      return;
+    }
+    if (action === "rebuild" && parts[1]?.toLocaleLowerCase() !== "semantic") {
+      this.statusEl.setText("indexing…");
+      await this.plugin.rebuildRetrievalIndex();
+      this.statusEl.setText("ready");
+      await this.addTerminalOutput(`lexical retrieval index rebuilt · ${this.plugin.retrievalIndex.getStatus().indexedNotes} notes`);
+      return;
+    }
+    if (action === "rebuild" && parts[1]?.toLocaleLowerCase() === "semantic") {
+      await semantic.start("rebuild", parts.includes("--uncapped"));
+      await this.addTerminalOutput(this.semanticStatusMarkdown(semantic.getStatus()));
+      return;
+    }
+    if (action === "pause") semantic.pause();
+    else if (action === "resume") await semantic.resume(parts.includes("--uncapped"));
+    else if (action === "cancel") semantic.cancel();
+    else if (action === "clear") {
+      if (parts[1]?.toLocaleLowerCase() !== "semantic" || !parts.includes("--confirm")) {
+        await this.addTerminalOutput("Run `/index clear semantic --confirm` to delete the local semantic cache.", "warning");
+        return;
+      }
+      await semantic.clear();
+    } else {
+      await this.addTerminalOutput(
+        "usage: `/index status|rebuild|rebuild semantic [--uncapped]|pause|resume [--uncapped]|cancel|clear semantic --confirm`",
+        "error"
+      );
+      return;
+    }
+    await this.addTerminalOutput(this.semanticStatusMarkdown(semantic.getStatus()));
+  }
+
+  private async semanticCommand(parts: string[]): Promise<void> {
+    const action = parts[0]?.toLocaleLowerCase() ?? "";
+    if (action === "folders") {
+      this.openFolderPicker(false);
+      return;
+    }
+    if (action === "cap") {
+      const value = parts[1]?.toLocaleLowerCase();
+      const parsed = value === "unlimited" ? 0 : Number.parseFloat(value ?? "");
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        await this.addTerminalOutput("usage: `/semantic cap <usd|unlimited>`", "error");
+        return;
+      }
+      this.plugin.settings.semanticSpendCapUsd = parsed;
+      await this.plugin.saveSettings();
+      await this.addTerminalOutput(`semantic spend cap → ${parsed === 0 ? "unlimited" : `$${parsed.toFixed(2)}`}`);
+      return;
+    }
+    await this.addTerminalOutput("usage: `/semantic folders` or `/semantic cap <usd|unlimited>`", "error");
+  }
+
+  private semanticStatusMarkdown(status: SemanticIndexStatus): string {
+    return [
+      "```text",
+      `state       ${status.enabled ? status.state : "disabled"}`,
+      `model       ${status.modelId || "none"}`,
+      `scope       ${status.folders.join(", ") || "none"}`,
+      `indexed     ${status.indexedNotes} notes · ${status.indexedChunks} chunks`,
+      `progress    ${status.completedChunks} complete · ${status.failedChunks} failed · ${status.queuedNotes} notes queued`,
+      `sensitive   ${this.plugin.settings.includeSensitiveSemantic ? "included by global consent" : `${status.skippedSensitiveNotes} skipped`}`,
+      `usage       ${this.formatNumber(status.promptTokens)} tokens · $${status.estimatedCostUsd.toFixed(4)} estimated`,
+      `coverage    ${status.partial ? "partial" : "complete"}`,
+      `error       ${status.lastError ?? "none"}`,
+      "```"
+    ].join("\n");
+  }
+
   private async saveMemoryCommand(content: string): Promise<void> {
     if (!content) {
       await this.addTerminalOutput("usage: `/memory <text>`", "error");
@@ -911,6 +1222,60 @@ export class BrainChatView extends ItemView {
             this.plugin.settings.useWebSearch = previous;
             throw error;
           }
+        }
+      },
+      {
+        id: "semantic",
+        label: "Enable hybrid semantic search",
+        description: "Embed selected folders through OpenRouter and fuse semantic results with lexical search.",
+        checked: () => this.plugin.settings.semanticSearchEnabled,
+        detail: () => {
+          const status = this.plugin.semanticIndex.getStatus();
+          if (!this.plugin.settings.embeddingModel) return "model required";
+          if (this.plugin.settings.semanticFolders.length === 0) return "folder scope required";
+          return this.plugin.settings.semanticSearchEnabled
+            ? `${status.state} · ${status.indexedChunks} chunks`
+            : "disabled";
+        },
+        toggle: async () => {
+          if (this.plugin.settings.semanticSearchEnabled) {
+            await this.plugin.setSemanticSearchEnabled(false);
+            return;
+          }
+          if (!this.plugin.settings.embeddingModel) {
+            this.closeConfigMenu();
+            await this.listEmbeddingModelsCommand([]);
+            await this.addTerminalOutput("Choose one with `/embedding <number|id>`. Folder selection will follow.");
+            return;
+          }
+          if (this.plugin.settings.semanticFolders.length === 0) {
+            this.closeConfigMenu(false);
+            this.openFolderPicker(true);
+            return;
+          }
+          await this.plugin.setSemanticSearchEnabled(true);
+        }
+      },
+      {
+        id: "sensitive-semantic",
+        label: "Include sensitive notes in semantic search",
+        description: "Global consent to send sensitive chunks for embedding and retrieve them without per-search approval.",
+        checked: () => this.plugin.settings.includeSensitiveSemantic,
+        detail: () => this.sensitiveConsentPending
+          ? "press Space again to confirm both disclosures"
+          : this.plugin.settings.includeSensitiveSemantic ? "enabled · global consent active" : "disabled · two-step confirmation",
+        toggle: async () => {
+          if (this.plugin.settings.includeSensitiveSemantic) {
+            this.sensitiveConsentPending = false;
+            await this.plugin.setSensitiveSemanticEnabled(false);
+            return;
+          }
+          if (!this.sensitiveConsentPending) {
+            this.sensitiveConsentPending = true;
+            return;
+          }
+          this.sensitiveConsentPending = false;
+          await this.plugin.setSensitiveSemanticEnabled(true);
         }
       }
     ];
@@ -1018,6 +1383,175 @@ export class BrainChatView extends ItemView {
     this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
     this.statusEl.setText("ready");
     this.inputEl.focus();
+  }
+
+  private openFolderPicker(enableAfterConfirm: boolean): void {
+    if (this.folderPickerEl) return;
+    this.closeConfigMenu(false);
+    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+    const output = this.transcriptEl.createDiv({
+      cls: "obsidian-brain-terminal-output obsidian-brain-config-output is-system"
+    });
+    output.createSpan({ cls: "obsidian-brain-line-prefix", text: "›" });
+    this.folderPickerEl = output.createDiv({
+      cls: "obsidian-brain-terminal-output-body obsidian-brain-config-menu"
+    });
+    this.folderPickerFolders = ["/", ...this.app.vault.getAllLoadedFiles()
+      .filter((file): file is TFolder => file instanceof TFolder)
+      .map((folder) => folder.path)
+      .filter(Boolean)
+      .sort((left, right) => left.localeCompare(right))];
+    this.folderPickerSelected = new Set(this.plugin.settings.semanticFolders);
+    this.folderPickerSelection = 0;
+    this.folderPickerEnableAfterConfirm = enableAfterConfirm;
+    this.inputEl.value = "";
+    this.inputEl.readOnly = true;
+    this.inputEl.placeholder = "semantic folder picker active";
+    this.commandHintEl.setText("↑/↓ select  ·  space toggle  ·  enter save  ·  esc cancel");
+    this.statusEl.setText("folder scope");
+    this.hideCommandSuggestions();
+    this.renderFolderPicker();
+    output.scrollIntoView({ block: "end" });
+    this.inputEl.focus();
+  }
+
+  private renderFolderPicker(): void {
+    if (!this.folderPickerEl) return;
+    this.folderPickerEl.empty();
+    this.folderPickerEl.createDiv({ cls: "obsidian-brain-config-title", text: "semantic folders" });
+    this.folderPickerEl.createDiv({
+      cls: "obsidian-brain-config-section",
+      text: "selected folders include all descendants"
+    });
+    if (this.folderPickerFolders.length === 0) {
+      this.folderPickerEl.createDiv({ cls: "obsidian-brain-config-closed", text: "no vault folders found" });
+    }
+    this.folderPickerFolders.forEach((folder, index) => {
+      const depth = folder === "/" ? 0 : folder.split("/").length - 1;
+      const row = this.folderPickerEl!.createDiv({
+        cls: `obsidian-brain-config-item${index === this.folderPickerSelection ? " is-selected" : ""}`,
+        attr: {
+          role: "checkbox",
+          "aria-checked": String(this.folderPickerSelected.has(folder)),
+          "aria-label": folder
+        }
+      });
+      row.createSpan({ cls: "obsidian-brain-config-cursor", text: index === this.folderPickerSelection ? ">" : " " });
+      row.createSpan({
+        cls: "obsidian-brain-config-checkbox",
+        text: this.folderPickerSelected.has(folder) ? "[x]" : "[ ]"
+      });
+      row.createDiv({
+        cls: "obsidian-brain-config-label",
+        text: folder === "/" ? "(vault root)" : `${"  ".repeat(depth)}${folder.split("/").at(-1) ?? folder}`
+      });
+      row.createSpan({ cls: "obsidian-brain-config-detail", text: folder });
+      row.addEventListener("mouseenter", () => {
+        this.folderPickerSelection = index;
+        this.renderFolderPicker();
+      });
+      row.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        this.folderPickerSelection = index;
+        this.toggleSelectedFolder();
+      });
+    });
+    this.folderPickerEl.createDiv({
+      cls: "obsidian-brain-config-footer",
+      text: `${this.folderPickerSelected.size} selected · space toggle · enter save`
+    });
+  }
+
+  private moveFolderSelection(direction: number): void {
+    if (this.folderPickerFolders.length === 0) return;
+    this.folderPickerSelection = (
+      this.folderPickerSelection + direction + this.folderPickerFolders.length
+    ) % this.folderPickerFolders.length;
+    this.renderFolderPicker();
+  }
+
+  private toggleSelectedFolder(): void {
+    const folder = this.folderPickerFolders[this.folderPickerSelection];
+    if (!folder) return;
+    if (this.folderPickerSelected.has(folder)) this.folderPickerSelected.delete(folder);
+    else this.folderPickerSelected.add(folder);
+    this.renderFolderPicker();
+  }
+
+  private async confirmFolderPicker(): Promise<void> {
+    if (!this.folderPickerEl) return;
+    if (this.folderPickerSelected.size === 0) {
+      this.statusEl.setText("select at least one folder");
+      return;
+    }
+    const selected = (this.folderPickerSelected.has("/")
+      ? ["/"]
+      : [...this.folderPickerSelected].filter((folder) =>
+      ![...this.folderPickerSelected].some((candidate) =>
+        candidate !== folder && folder.startsWith(`${candidate}/`)
+      )
+    )).sort((left, right) => left.localeCompare(right));
+    const enable = this.folderPickerEnableAfterConfirm;
+    this.plugin.settings.semanticFolders = selected;
+    await this.plugin.saveSettings();
+    this.closeFolderPicker();
+    if (enable) await this.plugin.setSemanticSearchEnabled(true);
+    else if (this.plugin.settings.semanticSearchEnabled) {
+      void this.plugin.semanticIndex.reconfigure().catch((error) => this.plugin.reportError(error));
+    }
+    await this.addTerminalOutput(`semantic scope → ${selected.map((folder) => `\`${folder}\``).join(", ")}`);
+  }
+
+  private closeFolderPicker(showClosedState = true): void {
+    if (!this.folderPickerEl) return;
+    const picker = this.folderPickerEl;
+    this.folderPickerEl = null;
+    if (showClosedState) {
+      picker.empty();
+      picker.createDiv({ cls: "obsidian-brain-config-closed", text: "folder picker closed" });
+    } else picker.parentElement?.remove();
+    this.inputEl.readOnly = false;
+    this.inputEl.placeholder = "ask the vault or type /help";
+    this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
+    this.statusEl.setText("ready");
+    this.inputEl.focus();
+  }
+
+  private renderSemanticStatus(status: SemanticIndexStatus): void {
+    if (!this.statusEl) return;
+    if (status.state === "running") {
+      this.statusEl.setText(`embedding ${status.completedChunks} · ${status.queuedNotes} notes`);
+    } else if (status.state === "paused") {
+      this.statusEl.setText("semantic paused");
+    } else if (status.state === "error") {
+      this.statusEl.setText("semantic error");
+    }
+    const shouldRender = status.state === "running"
+      || status.state === "paused"
+      || status.state === "cancelled"
+      || status.state === "error"
+      || Boolean(this.semanticProgressEl && status.completedChunks > 0);
+    if (!shouldRender || !this.transcriptEl) return;
+    if (!this.semanticProgressEl) {
+      this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+      const output = this.transcriptEl.createDiv({
+        cls: "obsidian-brain-terminal-output obsidian-brain-semantic-progress is-system"
+      });
+      output.createSpan({ cls: "obsidian-brain-line-prefix", text: "↻" });
+      this.semanticProgressEl = output.createEl("pre", {
+        cls: "obsidian-brain-terminal-output-body obsidian-brain-progress-body"
+      });
+      output.scrollIntoView({ block: "end" });
+    }
+    this.semanticProgressEl.setText([
+      `semantic ${status.state}`,
+      `model     ${status.modelId || "none"}`,
+      `scope     ${status.folders.join(", ") || "none"}`,
+      `progress  ${status.completedChunks} chunks · ${status.failedChunks} failed · ${status.queuedNotes} notes queued`,
+      `stored    ${status.indexedNotes} notes · ${status.indexedChunks} chunks`,
+      `usage     ${this.formatNumber(status.promptTokens)} tokens · $${status.estimatedCostUsd.toFixed(4)}`,
+      status.lastError ? `error     ${status.lastError}` : ""
+    ].filter(Boolean).join("\n"));
   }
 
   private escapeTable(value: string): string {

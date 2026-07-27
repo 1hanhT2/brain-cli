@@ -16,6 +16,9 @@ import { VaultRetrievalIndex } from "./retrieval-index";
 import { OmnisearchProvider } from "./omnisearch-provider";
 import { assembleOpenRouterTools } from "./openrouter-tools";
 import { SkillRegistry } from "./skill-registry";
+import { IndexedDbSemanticStore } from "./semantic-store";
+import { SemanticIndexCoordinator } from "./semantic-index";
+import type { EmbeddingModel } from "./semantic-types";
 
 export default class ObsidianBrainPlugin extends Plugin {
   settings: BrainSettings = DEFAULT_SETTINGS;
@@ -27,7 +30,9 @@ export default class ObsidianBrainPlugin extends Plugin {
   omnisearchProvider!: OmnisearchProvider;
   skillRegistry!: SkillRegistry;
   modelCatalog: OpenRouterModel[] = [];
+  embeddingModelCatalog: EmbeddingModel[] = [];
   openRouter!: OpenRouterClient;
+  semanticIndex!: SemanticIndexCoordinator;
 
   async onload(): Promise<void> {
     let stage = "loading settings";
@@ -36,6 +41,7 @@ export default class ObsidianBrainPlugin extends Plugin {
       stage = "ensuring Brain data layout";
       await this.ensureDataLayout();
       stage = "initializing services";
+      this.openRouter = new OpenRouterClient(this.app, () => this.settings.openRouterSecretId);
       this.sensitiveGuard = new SensitiveContentGuard(this.app, () => this.settings.sensitiveTags);
       this.omnisearchProvider = new OmnisearchProvider(
         this.app,
@@ -49,17 +55,27 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.sensitiveGuard,
         this.omnisearchProvider
       );
+      const semanticStore = new IndexedDbSemanticStore(`obsidian-brain:${this.settings.semanticVaultId}`);
+      this.semanticIndex = new SemanticIndexCoordinator(
+        this.app,
+        () => this.settings,
+        () => this.effectiveExcludedPaths(),
+        this.sensitiveGuard,
+        semanticStore,
+        this.openRouter,
+        () => this.embeddingModelCatalog
+      );
       this.retrievalIndex = new VaultRetrievalIndex(
         this.app,
         () => this.effectiveExcludedPaths(),
         this.sensitiveGuard,
-        this.omnisearchProvider
+        this.omnisearchProvider,
+        this.semanticIndex
       );
       this.skillRegistry = new SkillRegistry(this.app, () => this.settings);
       await this.skillRegistry.initialize();
       this.agentTools = new AgentToolRegistry(this.vaultTools, this.retrievalIndex, this.skillRegistry);
       this.chatStore = new ChatStore(this.app, () => this.settings);
-      this.openRouter = new OpenRouterClient(this.app, () => this.settings.openRouterSecretId);
       stage = "registering chat view";
       this.registerView(BRAIN_VIEW_TYPE, (leaf) => new BrainChatView(leaf, this));
       stage = "registering commands";
@@ -79,6 +95,12 @@ export default class ObsidianBrainPlugin extends Plugin {
             console.warn("[Obsidian Brain] Automatic model refresh failed.", error)
           );
         }
+        void (async () => {
+          if (this.settings.openRouterSecretId && (this.settings.semanticSearchEnabled || this.settings.embeddingModel)) {
+            await this.refreshEmbeddingModels(false);
+          }
+          await this.semanticIndex.initialize();
+        })().catch((error) => this.reportError(error));
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -94,6 +116,7 @@ export default class ObsidianBrainPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.semanticIndex?.cancel();
     void this.app.workspace.detachLeavesOfType(BRAIN_VIEW_TYPE);
   }
 
@@ -115,6 +138,44 @@ export default class ObsidianBrainPlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(BRAIN_VIEW_TYPE)) {
       const view = leaf.view;
       if (view instanceof BrainChatView) view.refreshModels();
+    }
+  }
+
+  async refreshEmbeddingModels(showNotice = true): Promise<void> {
+    this.embeddingModelCatalog = await this.openRouter.listEmbeddingModels();
+    if (showNotice) new Notice(`Obsidian Brain loaded ${this.embeddingModelCatalog.length} embedding models.`);
+  }
+
+  async selectEmbeddingModel(modelId: string): Promise<void> {
+    const normalized = modelId.trim();
+    if (normalized === this.settings.embeddingModel) return;
+    this.settings.embeddingModel = normalized;
+    await this.saveSettings();
+    await this.semanticIndex.clear();
+    if (this.settings.semanticSearchEnabled && normalized) {
+      void this.semanticIndex.start("rebuild").catch((error) => this.reportError(error));
+    }
+  }
+
+  async setSemanticSearchEnabled(enabled: boolean): Promise<void> {
+    if (enabled && !this.settings.embeddingModel) {
+      throw new Error("Choose an embedding model before enabling semantic search.");
+    }
+    if (enabled && this.settings.semanticFolders.length === 0) {
+      throw new Error("Choose at least one folder before enabling semantic search.");
+    }
+    this.settings.semanticSearchEnabled = enabled;
+    await this.saveSettings();
+    if (enabled) void this.semanticIndex.start("enable").catch((error) => this.reportError(error));
+    else this.semanticIndex.disable();
+  }
+
+  async setSensitiveSemanticEnabled(enabled: boolean): Promise<void> {
+    this.settings.includeSensitiveSemantic = enabled;
+    await this.saveSettings();
+    if (!enabled) await this.semanticIndex.removeSensitive();
+    if (this.settings.semanticSearchEnabled) {
+      void this.semanticIndex.reconfigure().catch((error) => this.reportError(error));
     }
   }
 
@@ -183,6 +244,12 @@ export default class ObsidianBrainPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = { ...DEFAULT_SETTINGS, ...(await this.loadData() as Partial<BrainSettings> ?? {}) };
+    if (!this.settings.semanticVaultId) {
+      this.settings.semanticVaultId = typeof crypto?.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      await this.saveData(this.settings);
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -198,24 +265,30 @@ export default class ObsidianBrainPlugin extends Plugin {
     };
     this.registerEvent(this.app.vault.on("create", (file) => {
       if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
+      if (file instanceof TFile) this.semanticIndex.queueUpdate(file);
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
+      if (file instanceof TFile) this.semanticIndex.queueUpdate(file);
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
       this.retrievalIndex.remove(file.path);
+      void this.semanticIndex.remove(file.path).catch((error) => this.reportError(error));
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       this.retrievalIndex.remove(oldPath);
+      void this.semanticIndex.remove(oldPath).catch((error) => this.reportError(error));
       if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
+      if (file instanceof TFile) this.semanticIndex.queueUpdate(file);
       refreshSkillIfNeeded(oldPath);
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
       void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
+      this.semanticIndex.queueUpdate(file);
     }));
   }
 

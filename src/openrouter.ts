@@ -2,6 +2,7 @@ import { requestUrl, type App } from "obsidian";
 import type { OpenRouterModel } from "./types";
 import type { OpenRouterRequestTool } from "./openrouter-tools";
 import type { DailyModelRanking } from "./model-rankings";
+import type { EmbeddingBatchResult, EmbeddingModel } from "./semantic-types";
 
 export type { FunctionToolDefinition as ToolDefinition } from "./openrouter-tools";
 
@@ -11,6 +12,18 @@ interface ModelListResponse {
 
 interface DailyRankingResponse {
   data?: DailyModelRanking[];
+}
+
+interface EmbeddingModelListResponse {
+  data?: EmbeddingModel[];
+}
+
+interface EmbeddingResponse extends OpenRouterErrorBody {
+  data?: Array<{ embedding?: number[]; index?: number }>;
+  usage?: {
+    prompt_tokens?: number;
+    total_tokens?: number;
+  };
 }
 
 export interface ToolCall {
@@ -83,6 +96,7 @@ export interface ChatCompletionResult {
 }
 
 const CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
+const EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings";
 
 export class OpenRouterClient {
   private readonly rankingCache = new Map<string, {
@@ -105,6 +119,98 @@ export class OpenRouterClient {
     return body.data
       .filter((model) => Boolean(model.id))
       .sort((left, right) => (left.name ?? left.id).localeCompare(right.name ?? right.id));
+  }
+
+  async listEmbeddingModels(): Promise<EmbeddingModel[]> {
+    const apiKey = await this.getApiKey();
+    const embeddingModels: EmbeddingModel[] = [];
+    for (let offset = 0; offset < 10_000; offset += 1_000) {
+      const query = new URLSearchParams({ limit: "1000", offset: String(offset) });
+      const response = await requestUrl({
+        url: `${EMBEDDINGS_URL}/models?${query.toString()}`,
+        method: "GET",
+        headers: { Authorization: `Bearer ${apiKey}` }
+      });
+      const body = response.json as EmbeddingModelListResponse;
+      if (!Array.isArray(body.data)) throw new Error("OpenRouter returned an invalid embedding model catalog.");
+      embeddingModels.push(...body.data);
+      if (body.data.length < 1_000) break;
+    }
+
+    // The general model catalog currently carries the most complete pricing
+    // information, so merge it without making pricing a hard dependency.
+    let pricingById = new Map<string, Record<string, string>>();
+    try {
+      const generalModels = this.modelCatalogFromResponse(await requestUrl({
+        url: "https://openrouter.ai/api/v1/models",
+        method: "GET",
+        headers: { Authorization: `Bearer ${apiKey}` }
+      }).then((result) => result.json as ModelListResponse));
+      pricingById = new Map(generalModels
+        .filter((model) => model.pricing)
+        .map((model) => [model.id, model.pricing!]));
+    } catch (error) {
+      console.warn("[Obsidian Brain] Embedding pricing metadata could not be refreshed.", error);
+    }
+
+    return [...new Map(embeddingModels
+      .filter((model) => Boolean(model.id))
+      .map((model) => [model.id, model])).values()]
+      .map((model) => ({ ...model, pricing: model.pricing ?? pricingById.get(model.id) }))
+      .sort((left, right) => (left.name ?? left.id).localeCompare(right.name ?? right.id));
+  }
+
+  async embed(
+    model: string,
+    inputs: string[],
+    signal: AbortSignal
+  ): Promise<EmbeddingBatchResult> {
+    if (!model.trim()) throw new Error("Choose an OpenRouter embedding model first.");
+    if (inputs.length === 0) return { vectors: [], promptTokens: 0, totalTokens: 0 };
+    const apiKey = await this.getApiKey();
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const response = await fetch(EMBEDDINGS_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "X-OpenRouter-Title": "Obsidian Brain"
+          },
+          body: JSON.stringify({ model, input: inputs, encoding_format: "float" }),
+          signal
+        });
+        if (!response.ok) {
+          const message = await this.readHttpError(response);
+          if ((response.status === 429 || response.status >= 500) && attempt < 2) {
+            lastError = new Error(message);
+            await this.retryDelay(500 * (2 ** attempt), signal);
+            continue;
+          }
+          throw new Error(message);
+        }
+        const body = await response.json() as EmbeddingResponse;
+        if (body.error) throw new Error(`OpenRouter embedding error: ${body.error.message ?? "Unknown provider error."}`);
+        const rows = [...(body.data ?? [])].sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
+        if (rows.length !== inputs.length || rows.some((row) => !Array.isArray(row.embedding))) {
+          throw new Error("OpenRouter returned an incomplete embedding batch.");
+        }
+        return {
+          vectors: rows.map((row) => Float32Array.from(row.embedding!)),
+          promptTokens: body.usage?.prompt_tokens ?? 0,
+          totalTokens: body.usage?.total_tokens ?? body.usage?.prompt_tokens ?? 0
+        };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        lastError = error;
+        if (attempt < 2) {
+          await this.retryDelay(500 * (2 ** attempt), signal);
+          continue;
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("OpenRouter embedding request failed.");
   }
 
   async listDailyModelRankings(startDate: string, endDate: string): Promise<DailyModelRanking[]> {
@@ -300,6 +406,21 @@ export class OpenRouterClient {
     const apiKey = await this.app.secretStorage.getSecret(secretId);
     if (!apiKey) throw new Error("The selected OpenRouter secret is unavailable on this device.");
     return apiKey;
+  }
+
+  private modelCatalogFromResponse(body: ModelListResponse): OpenRouterModel[] {
+    if (!Array.isArray(body.data)) throw new Error("OpenRouter returned an invalid model catalog.");
+    return body.data.filter((model) => Boolean(model.id));
+  }
+
+  private retryDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(resolve, milliseconds);
+      signal.addEventListener("abort", () => {
+        window.clearTimeout(timeout);
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+      }, { once: true });
+    });
   }
 
   private async readHttpError(response: Response): Promise<string> {

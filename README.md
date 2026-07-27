@@ -15,6 +15,9 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Before/after diff previews for note mutations.
 - Local whole-vault lexical retrieval with clickable source citations.
 - Optional mobile-safe Omnisearch integration for ranked lexical retrieval, with the built-in index retained as a fallback.
+- Hybrid semantic retrieval using OpenRouter embeddings, exact local cosine search, and reciprocal-rank fusion with Omnisearch or the built-in lexical index.
+- Disposable per-device IndexedDB vector storage with deterministic Markdown chunks, curated frontmatter metadata, resumable batch checkpoints, and automatic changed-note updates.
+- Selected-folder semantic scope, dedicated paged embedding-model browser, configurable spend cap, live CLI indexing progress, and explicit sensitive-content consent.
 - Optional OpenRouter server-side web search alongside Brain's local vault tools.
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
@@ -60,10 +63,22 @@ suggestions or input history, `Enter` to run, `Shift+Enter` for a newline, and
 /model <number|id>
 /favorite [number|id]
 /refresh
+/embeddings [all|favorites] [page] [query]
+/embedding <number|id> [--confirm]
+/embedding-favorite [number|id]
 /skills [page]
 /skill <name>
 /memory <text>
+/search <query> [--mode hybrid|semantic|lexical] [--folder path] [--tag tag] [--property key=value] [--limit n]
+/index status
 /index rebuild
+/index rebuild semantic [--uncapped]
+/index pause
+/index resume [--uncapped]
+/index cancel
+/index clear semantic --confirm
+/semantic folders
+/semantic cap <usd|unlimited>
 /config
 /setting
 /settings [native]
@@ -89,9 +104,21 @@ The neighboring OpenRouter web-search checkbox adds
 internet sources while retaining access to Brain's local tools; web search is
 off by default and may incur OpenRouter search charges when used.
 
+Semantic search is also off by default. Enabling it requires an explicit
+OpenRouter embedding model and at least one folder selected through the
+Space-to-toggle terminal picker. The local vector index is a rebuildable
+IndexedDB cache and is never synced. Indexing resumes automatically after an
+interruption, updates changed chunks, and pauses before exceeding the default
+per-job `$0.25` estimate. `/search` shows ranked excerpts without another chat
+model call; `retrieve_context` exposes the same hybrid engine to tool-capable
+models. Disabling sensitive semantic access immediately purges sensitive
+vectors. Enabling it requires two confirmations because both embedding and
+automatic retrieval may disclose those excerpts to OpenRouter models.
+
 List commands use 30-row pages instead of truncating results. For example,
 `/models all 2`, `/models popular 30d 1`, `/models trending 7d 2`,
-`/chats 2`, and `/skills 2`. Numbers passed to `/model`, `/favorite`, and
+`/embeddings all 2`, `/chats 2`, and `/skills 2`. Numbers passed to
+`/model`, `/favorite`, `/embedding`, `/embedding-favorite`, and
 `/open` refer to the most recently displayed page. Popularity aggregates
 OpenRouter's daily token-usage rankings; trending compares the newest ranking
 window with the preceding window. The singular form also accepts an explicit

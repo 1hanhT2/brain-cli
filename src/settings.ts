@@ -7,8 +7,15 @@ export interface BrainSettings {
   interactiveModel: string;
   backgroundModel: string;
   favoriteModels: string[];
+  embeddingModel: string;
+  favoriteEmbeddingModels: string[];
   useOmnisearch: boolean;
   useWebSearch: boolean;
+  semanticSearchEnabled: boolean;
+  semanticFolders: string[];
+  includeSensitiveSemantic: boolean;
+  semanticSpendCapUsd: number;
+  semanticVaultId: string;
   excludedPaths: string[];
   sensitiveTags: string[];
 }
@@ -19,8 +26,15 @@ export const DEFAULT_SETTINGS: BrainSettings = {
   interactiveModel: "openrouter/free",
   backgroundModel: "openrouter/free",
   favoriteModels: ["openrouter/free"],
+  embeddingModel: "",
+  favoriteEmbeddingModels: [],
   useOmnisearch: false,
   useWebSearch: false,
+  semanticSearchEnabled: false,
+  semanticFolders: [],
+  includeSensitiveSemantic: false,
+  semanticSpendCapUsd: 0.25,
+  semanticVaultId: "",
   excludedPaths: [".obsidian", "Brain/Chats", "Brain/Skills"],
   sensitiveTags: ["private", "sensitive", "secret", "confidential"]
 };
@@ -115,6 +129,71 @@ export class BrainSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.useWebSearch = value;
           await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Semantic search")
+      .setDesc("Build a local per-device vector index with OpenRouter embeddings. Choose a model and folders first.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.semanticSearchEnabled)
+        .onChange(async (value) => {
+          try {
+            await this.plugin.setSemanticSearchEnabled(value);
+          } catch (error) {
+            toggle.setValue(false);
+            this.plugin.reportError(error);
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName("Embedding model")
+      .setDesc(`Use the dedicated paged browser in Brain chat. Current: ${this.plugin.settings.embeddingModel || "none"}. Changing it clears and rebuilds semantic vectors.`)
+      .addButton((button) => button
+        .setButtonText("Open Brain")
+        .onClick(async () => {
+          await this.plugin.activateChat();
+        }));
+
+    new Setting(containerEl)
+      .setName("Semantic folders")
+      .setDesc(`Selected: ${this.plugin.settings.semanticFolders.join(", ") || "none"}. Descendant folders are included.`)
+      .addButton((button) => button
+        .setButtonText("Open picker")
+        .onClick(async () => {
+          await this.plugin.activateChat();
+        }));
+
+    new Setting(containerEl)
+      .setName("Embedding spend cap")
+      .setDesc("Maximum estimated USD cost for one indexing job. Use 0 for unlimited.")
+      .addText((text) => text
+        .setValue(String(this.plugin.settings.semanticSpendCapUsd))
+        .onChange(async (value) => {
+          const parsed = Number.parseFloat(value);
+          if (!Number.isFinite(parsed) || parsed < 0) return;
+          this.plugin.settings.semanticSpendCapUsd = parsed;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Include sensitive notes in semantic search")
+      .setDesc("Global consent: sensitive chunks are sent to OpenRouter for embedding and may be retrieved automatically by the agent.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.includeSensitiveSemantic)
+        .onChange(async (value) => {
+          if (value) {
+            const embeddingConsent = window.confirm(
+              "Sensitive note text will be sent to OpenRouter to create embeddings. Continue?"
+            );
+            const retrievalConsent = embeddingConsent && window.confirm(
+              "The agent may retrieve sensitive excerpts without another approval while this remains enabled. Confirm?"
+            );
+            if (!retrievalConsent) {
+              toggle.setValue(false);
+              return;
+            }
+          }
+          await this.plugin.setSensitiveSemanticEnabled(value);
         }));
 
     new Setting(containerEl)

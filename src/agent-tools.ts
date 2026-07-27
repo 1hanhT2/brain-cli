@@ -58,6 +58,15 @@ const booleanArg = (input: Record<string, unknown>, name: string, fallback = fal
   return typeof value === "boolean" ? value : fallback;
 };
 
+const stringArrayArg = (input: Record<string, unknown>, name: string): string[] | undefined => {
+  const value = input[name];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`Tool argument "${name}" must be an array of strings.`);
+  }
+  return value.map((item) => String(item).trim()).filter(Boolean);
+};
+
 const citationForPath = (path: string): string => `[[${path.replace(/\.md$/, "")}]]`;
 const previewText = (value: string): string =>
   value.length <= 40_000 ? value : `${value.slice(0, 40_000)}\n[Preview truncated]`;
@@ -95,7 +104,7 @@ export class AgentToolRegistry {
           limitations: [
             "no shell or unrestricted filesystem access",
             "no access to excluded paths",
-            "sensitive note content requires explicit approval",
+            "direct sensitive note reads require approval; semantic retrieval follows the user's global semantic consent",
             "no write occurs without explicit approval"
           ]
         })
@@ -174,12 +183,24 @@ export class AgentToolRegistry {
           type: "function",
           function: {
             name: "retrieve_context",
-            description: "Retrieve locally ranked relevant chunks across the permitted non-sensitive vault. Prefer this for conceptual questions and cite the returned wikilink citations.",
+            description: "Retrieve ranked vault excerpts using hybrid lexical and semantic search. Prefer this for conceptual vault questions and cite the exact returned wikilinks.",
             parameters: {
               type: "object",
               properties: {
                 query: { type: "string", description: "Natural-language retrieval query." },
-                limit: { type: "integer", minimum: 1, maximum: 20 }
+                mode: {
+                  type: "string",
+                  enum: ["hybrid", "semantic", "lexical"],
+                  description: "Retrieval engine. Hybrid is the default."
+                },
+                limit: { type: "integer", minimum: 1, maximum: 20 },
+                folders: { type: "array", items: { type: "string" } },
+                tags: { type: "array", items: { type: "string" } },
+                properties: {
+                  type: "object",
+                  description: "Exact frontmatter property filters.",
+                  additionalProperties: { type: ["string", "number", "boolean"] }
+                }
               },
               required: ["query"],
               additionalProperties: false
@@ -187,10 +208,26 @@ export class AgentToolRegistry {
           }
         },
         risk: "read",
-        execute: async (input) => this.retrievalIndex.search(
-          stringArg(input, "query"),
-          numberArg(input, "limit", 8)
-        )
+        execute: async (input) => {
+          const mode = typeof input.mode === "string" ? input.mode : "hybrid";
+          if (!["hybrid", "semantic", "lexical"].includes(mode)) {
+            throw new Error('Tool argument "mode" must be hybrid, semantic, or lexical.');
+          }
+          const properties = input.properties;
+          if (properties !== undefined && (!properties || typeof properties !== "object" || Array.isArray(properties))) {
+            throw new Error('Tool argument "properties" must be an object.');
+          }
+          return this.retrievalIndex.search(
+            stringArg(input, "query"),
+            numberArg(input, "limit", 8),
+            {
+              mode: mode as "hybrid" | "semantic" | "lexical",
+              folders: stringArrayArg(input, "folders"),
+              tags: stringArrayArg(input, "tags"),
+              properties: properties as Record<string, string | number | boolean> | undefined
+            }
+          );
+        }
       },
       {
         definition: {

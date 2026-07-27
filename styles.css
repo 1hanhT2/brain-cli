@@ -279,6 +279,19 @@
   color: var(--brain-error);
 }
 
+.obsidian-brain-progress-body {
+  margin: 0;
+  padding: var(--brain-sm) var(--brain-md);
+  overflow-x: auto;
+  border-left: 2px solid var(--brain-accent);
+  background: var(--brain-surface);
+  color: var(--brain-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  line-height: var(--line-height-normal);
+  white-space: pre;
+}
+
 .obsidian-brain-config-menu {
   overflow: hidden;
   border: var(--border-width, 1px) solid var(--brain-border);
