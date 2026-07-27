@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-brain",
+  "name": "Obsidian Brain",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "An OpenRouter-powered vault agent with safe Obsidian and TaskNotes foundations.",
+  "author": "Thanh12",
+  "isDesktopOnly": false
+}

@@ -1,0 +1,338 @@
+/*
+ * Obsidian Brain intentionally maps its public variables to Obsidian's
+ * semantic theme variables. Themes and CSS snippets may override any
+ * --brain-* variable on .obsidian-brain-view.
+ */
+.obsidian-brain-view {
+  --brain-background: var(--background-primary);
+  --brain-surface: var(--background-secondary);
+  --brain-border: var(--background-modifier-border);
+  --brain-text: var(--text-normal);
+  --brain-muted: var(--text-muted);
+  --brain-accent: var(--interactive-accent);
+  --brain-assistant-accent: var(--text-accent);
+  --brain-error-background: var(--background-modifier-error);
+  --brain-radius: var(--radius-s, var(--input-radius));
+  --brain-content-width: 48rem;
+  --brain-spacing-xs: var(--size-4-1, 4px);
+  --brain-spacing-sm: var(--size-4-2, 8px);
+  --brain-spacing-md: var(--size-4-3, 12px);
+  --brain-spacing-lg: var(--size-4-4, 16px);
+
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  color: var(--brain-text);
+  background: var(--brain-background);
+  font-family: var(--font-interface);
+}
+
+.obsidian-brain-header,
+.obsidian-brain-composer {
+  flex: 0 0 auto;
+  padding: var(--brain-spacing-md);
+  background: var(--brain-background);
+  border-color: var(--brain-border);
+}
+
+.obsidian-brain-header {
+  border-bottom: var(--border-width, 1px) solid var(--brain-border);
+}
+
+.obsidian-brain-composer {
+  border-top: var(--border-width, 1px) solid var(--brain-border);
+}
+
+.obsidian-brain-title-row,
+.obsidian-brain-session-row,
+.obsidian-brain-model-browser,
+.obsidian-brain-model-row,
+.obsidian-brain-composer-row {
+  display: flex;
+  min-width: 0;
+  gap: var(--brain-spacing-sm);
+  align-items: center;
+}
+
+.obsidian-brain-title-row h3 {
+  margin: 0;
+  color: var(--brain-text);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold, 600);
+  line-height: var(--line-height-tight, 1.3);
+}
+
+.obsidian-brain-status {
+  margin-left: auto;
+  color: var(--brain-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.obsidian-brain-session-row,
+.obsidian-brain-model-browser,
+.obsidian-brain-model-row {
+  margin-top: var(--brain-spacing-sm);
+}
+
+.obsidian-brain-session-row select,
+.obsidian-brain-model-row select,
+.obsidian-brain-model-browser input {
+  min-width: 0;
+  width: 100%;
+}
+
+.obsidian-brain-model-browser input {
+  flex: 1 1 auto;
+}
+
+.obsidian-brain-model-browser select {
+  flex: 0 1 8rem;
+  min-width: 6.5rem;
+}
+
+.obsidian-brain-prompt-label {
+  flex: 0 0 auto;
+}
+
+.obsidian-brain-icon-button {
+  flex: 0 0 auto;
+}
+
+.obsidian-brain-icon-button.is-active {
+  color: var(--brain-accent);
+  background: var(--background-modifier-hover);
+}
+
+.obsidian-brain-icon-button.is-loading svg {
+  animation: obsidian-brain-spin 0.9s linear infinite;
+}
+
+.obsidian-brain-model-details {
+  margin-top: var(--brain-spacing-xs);
+  color: var(--brain-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: var(--line-height-normal);
+}
+
+.obsidian-brain-model-details.is-tool-incompatible {
+  color: var(--text-warning);
+}
+
+.obsidian-brain-model-row select,
+.obsidian-brain-composer textarea {
+  width: 100%;
+  min-width: 0;
+  color: var(--brain-text);
+  font-family: inherit;
+}
+
+.obsidian-brain-transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--brain-spacing-md);
+  background: var(--brain-background);
+  font-family: var(--font-monospace);
+  scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-bg);
+}
+
+.obsidian-brain-message,
+.obsidian-brain-empty,
+.obsidian-brain-tool {
+  width: min(100%, var(--brain-content-width));
+  margin-inline: auto;
+}
+
+.obsidian-brain-message {
+  box-sizing: border-box;
+  margin-bottom: var(--brain-spacing-md);
+  padding: var(--brain-spacing-sm) var(--brain-spacing-md);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  border: var(--border-width, 1px) solid var(--brain-border);
+  border-inline-start: calc(var(--border-width, 1px) * 3) solid var(--brain-accent);
+  border-radius: var(--brain-radius);
+  background: var(--brain-background);
+  line-height: var(--line-height-normal);
+}
+
+.obsidian-brain-message[data-role="assistant"] {
+  border-inline-start-color: var(--brain-assistant-accent);
+  background: var(--brain-surface);
+}
+
+.obsidian-brain-message-label {
+  margin-bottom: var(--brain-spacing-xs);
+  color: var(--brain-muted);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium, 500);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.obsidian-brain-empty {
+  box-sizing: border-box;
+  padding: var(--brain-spacing-sm) 0;
+  color: var(--brain-muted);
+  line-height: var(--line-height-normal);
+}
+
+.obsidian-brain-tool {
+  box-sizing: border-box;
+  margin-bottom: var(--brain-spacing-md);
+  overflow: hidden;
+  border: var(--border-width, 1px) solid var(--brain-border);
+  border-radius: var(--brain-radius);
+  background: var(--brain-surface);
+  font-family: var(--font-interface);
+}
+
+.obsidian-brain-tool-header {
+  display: flex;
+  min-width: 0;
+  gap: var(--brain-spacing-sm);
+  align-items: center;
+  padding: var(--brain-spacing-sm) var(--brain-spacing-md);
+}
+
+.obsidian-brain-tool-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--brain-text);
+  font-family: var(--font-monospace);
+  font-weight: var(--font-medium, 500);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obsidian-brain-tool-risk,
+.obsidian-brain-tool-status {
+  color: var(--brain-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.obsidian-brain-tool-risk {
+  padding: 0 var(--brain-spacing-xs);
+  border: var(--border-width, 1px) solid var(--brain-border);
+  border-radius: var(--radius-s, 4px);
+}
+
+.obsidian-brain-tool-status {
+  margin-left: auto;
+  text-align: end;
+}
+
+.obsidian-brain-tool-status[data-state="success"] {
+  color: var(--text-success);
+}
+
+.obsidian-brain-tool-status[data-state="error"] {
+  color: var(--text-error);
+}
+
+.obsidian-brain-tool-details {
+  padding: 0 var(--brain-spacing-md) var(--brain-spacing-sm);
+  color: var(--brain-muted);
+  font-size: var(--font-ui-small);
+}
+
+.obsidian-brain-tool-details summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.obsidian-brain-tool-details pre {
+  max-height: 12rem;
+  margin: var(--brain-spacing-sm) 0 0;
+  padding: var(--brain-spacing-sm);
+  overflow: auto;
+  color: var(--brain-text);
+  border-radius: var(--brain-radius);
+  background: var(--brain-background);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  white-space: pre-wrap;
+}
+
+.obsidian-brain-tool-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--brain-spacing-sm);
+  padding: 0 var(--brain-spacing-md) var(--brain-spacing-md);
+}
+
+.obsidian-brain-composer-row {
+  width: min(100%, var(--brain-content-width));
+  margin-inline: auto;
+  align-items: flex-end;
+}
+
+.obsidian-brain-composer textarea {
+  min-height: calc(var(--input-height) * 1.5);
+  max-height: min(40vh, 16rem);
+  resize: vertical;
+  font-family: var(--font-monospace);
+  line-height: var(--line-height-normal);
+}
+
+.obsidian-brain-composer button {
+  flex: 0 0 auto;
+  min-height: var(--input-height);
+}
+
+.obsidian-brain-stop {
+  color: var(--text-on-accent) !important;
+  background: var(--brain-error-background) !important;
+}
+
+.obsidian-brain-stream-cursor::after {
+  content: "▋";
+  color: var(--brain-accent);
+  animation: obsidian-brain-blink 0.9s steps(1) infinite;
+}
+
+@keyframes obsidian-brain-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes obsidian-brain-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .obsidian-brain-stream-cursor::after,
+  .obsidian-brain-icon-button.is-loading svg {
+    animation: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .obsidian-brain-header,
+  .obsidian-brain-composer,
+  .obsidian-brain-transcript {
+    padding: var(--brain-spacing-sm);
+  }
+
+  .obsidian-brain-composer-row {
+    gap: var(--brain-spacing-xs);
+  }
+
+  .obsidian-brain-model-browser {
+    align-items: stretch;
+  }
+
+  .obsidian-brain-model-browser input,
+  .obsidian-brain-model-browser select {
+    flex-basis: 50%;
+  }
+}
