@@ -2,6 +2,7 @@ import { normalizePath, parseYaml, TFile, type App } from "obsidian";
 import { brainPath } from "./data-layout";
 import type { BrainSettings } from "./settings";
 import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SKILL } from "./bundled-exp-skill";
+import { ensureFolders, type LayoutPathKind } from "./folder-layout";
 
 export interface SkillMetadata {
   name: string;
@@ -121,19 +122,39 @@ export class SkillRegistry {
       { path: `${root}/references/examples.md`, content: EXP_EXAMPLES }
     ];
     for (const entry of files) {
-      if (this.app.vault.getAbstractFileByPath(entry.path)) continue;
+      const existing = await this.getPathKind(entry.path);
+      if (existing === "file") continue;
+      if (existing === "folder") throw new Error(`Cannot create bundled skill file because a folder exists at ${entry.path}.`);
       await this.ensureFolder(entry.path.split("/").slice(0, -1).join("/"));
-      await this.app.vault.create(entry.path, entry.content);
+      try {
+        await this.app.vault.create(entry.path, entry.content);
+      } catch (error) {
+        if (await this.getPathKind(entry.path) === "file") continue;
+        throw error;
+      }
     }
   }
 
   private async ensureFolder(path: string): Promise<void> {
     const segments = normalizePath(path).split("/").filter(Boolean);
     let current = "";
+    const paths: string[] = [];
     for (const segment of segments) {
       current = current ? `${current}/${segment}` : segment;
-      if (!this.app.vault.getAbstractFileByPath(current)) await this.app.vault.createFolder(current);
+      paths.push(current);
     }
+    await ensureFolders({
+      getPathKind: (candidate) => this.getPathKind(candidate),
+      createFolder: async (candidate) => {
+        await this.app.vault.createFolder(candidate);
+      }
+    }, paths);
+  }
+
+  private async getPathKind(path: string): Promise<LayoutPathKind> {
+    const indexed = this.app.vault.getAbstractFileByPath(path);
+    if (indexed) return indexed instanceof TFile ? "file" : "folder";
+    return (await this.app.vault.adapter.stat(path))?.type ?? null;
   }
 }
 

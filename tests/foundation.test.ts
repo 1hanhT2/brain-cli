@@ -16,6 +16,7 @@ import type { SkillRegistry } from "../src/skill-registry";
 import type { App, TFile } from "obsidian";
 import type { SensitiveContentGuard } from "../src/sensitive-content";
 import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SKILL } from "../src/bundled-exp-skill";
+import { ensureFolders } from "../src/folder-layout";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -51,6 +52,60 @@ test("all writes require approval while reads do not", () => {
   assert.equal(requiresApproval("low-write"), true);
   assert.equal(requiresApproval("high-write"), true);
   assert.equal(requiresApproval("destructive"), true);
+});
+
+test("Brain layout creation is idempotent while the Vault index is stale", async () => {
+  const folders = new Set<string>(["Brain", "Brain/Chats"]);
+  const createCalls: string[] = [];
+  const adapter = {
+    getPathKind: async (path: string) => folders.has(path) ? "folder" as const : null,
+    createFolder: async (path: string) => {
+      createCalls.push(path);
+      folders.add(path);
+    }
+  };
+  const paths = [
+    "Brain",
+    "Brain/Chats",
+    "Brain/Memory",
+    "Brain/Calibration",
+    "Brain/Settings",
+    "Brain/Queue",
+    "Brain/Skills"
+  ];
+
+  await ensureFolders(adapter, paths);
+  await ensureFolders(adapter, paths);
+
+  assert.deepEqual(createCalls, [
+    "Brain/Memory",
+    "Brain/Calibration",
+    "Brain/Settings",
+    "Brain/Queue",
+    "Brain/Skills"
+  ]);
+});
+
+test("Brain layout tolerates a concurrent folder creation race", async () => {
+  const folders = new Set<string>();
+  const adapter = {
+    getPathKind: async (path: string) => folders.has(path) ? "folder" as const : null,
+    createFolder: async (path: string) => {
+      folders.add(path);
+      throw new Error("Folder already exists.");
+    }
+  };
+
+  await ensureFolders(adapter, [
+    "Brain",
+    "Brain/Chats",
+    "Brain/Memory",
+    "Brain/Calibration",
+    "Brain/Settings",
+    "Brain/Queue",
+    "Brain/Skills"
+  ]);
+  assert.equal(folders.size, 7);
 });
 
 test("registry exposes the complete foundational tool surface", () => {

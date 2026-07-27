@@ -84,7 +84,7 @@ export class AgentToolRegistry {
         execute: async () => ({
           ...this.vaultTools.getEnvironment(),
           retrieval: this.retrievalIndex.getStatus(),
-          skills: this.skillRegistry.list(),
+          installedSkills: this.skillRegistry.list(),
           capabilities: [
             "render Obsidian Markdown including tables, links, callouts, code, and math",
             "inspect, list, read, search, and retrieve permitted Markdown notes",
@@ -375,7 +375,7 @@ export class AgentToolRegistry {
           type: "function",
           function: {
             name: "list_skills",
-            description: "List discovered traditional SKILL.md skills and their activation descriptions.",
+            description: "List installed and discovered traditional SKILL.md skills. Listing a skill does not activate it for the conversation.",
             parameters: { type: "object", properties: {}, additionalProperties: false }
           }
         },

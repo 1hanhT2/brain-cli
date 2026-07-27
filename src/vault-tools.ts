@@ -1,6 +1,7 @@
-import { normalizePath, TFile, TFolder, type App } from "obsidian";
+import { normalizePath, TFile, type App } from "obsidian";
 import { isVaultPathSafe } from "./permissions";
 import { SensitiveContentGuard, type SensitivityReport } from "./sensitive-content";
+import { ensureFolders, type LayoutPathKind } from "./folder-layout";
 
 export interface NoteSearchResult {
   matches: Array<{ path: string; excerpt: string; citation: string }>;
@@ -184,13 +185,21 @@ export class VaultTools {
   private async ensureFolder(path: string): Promise<void> {
     const segments = normalizePath(path).split("/").filter(Boolean);
     let current = "";
+    const paths: string[] = [];
     for (const segment of segments) {
       current = current ? `${current}/${segment}` : segment;
-      const existing = this.app.vault.getAbstractFileByPath(current);
-      if (existing instanceof TFile) throw new Error(`Cannot create folder because a file exists at ${current}.`);
-      if (!existing) await this.app.vault.createFolder(current);
-      else if (!(existing instanceof TFolder)) throw new Error(`Invalid folder path: ${current}`);
+      paths.push(current);
     }
+    await ensureFolders({
+      getPathKind: async (candidate): Promise<LayoutPathKind> => {
+        const indexed = this.app.vault.getAbstractFileByPath(candidate);
+        if (indexed) return indexed instanceof TFile ? "file" : "folder";
+        return (await this.app.vault.adapter.stat(candidate))?.type ?? null;
+      },
+      createFolder: async (candidate) => {
+        await this.app.vault.createFolder(candidate);
+      }
+    }, paths);
   }
 
   private async moveFile(file: TFile, destination: string): Promise<{ from: string; to: string }> {

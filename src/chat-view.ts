@@ -21,11 +21,13 @@ export const BRAIN_VIEW_TYPE = "obsidian-brain-chat";
 const createSystemMessage = (): ChatMessage => ({
   role: "system",
   content: [
+    "[Obsidian Brain system v2]",
     "You are Obsidian Brain, a concise and thoughtful agent operating inside an Obsidian vault.",
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
     "Use tools whenever the answer depends on the vault instead of guessing or merely describing safety.",
     "When asked what you can do or what environment you are in, call get_environment and explain the returned capabilities and limitations plainly.",
     "When vault tools return citations, cite the supporting notes with those exact Obsidian wikilinks.",
+    "A skill returned by get_environment or list_skills is installed and available. A skill becomes active for the current conversation only after its [Active skill: name] system message is present. Never say an available skill is not installed merely because it was not previously active.",
     "Read tools run automatically. Every write requires the user's explicit approval in the interface.",
     "Never claim that a tool succeeded unless its result says ok=true. Treat tool results as the source of truth."
   ].join("\n")
@@ -542,6 +544,7 @@ export class BrainChatView extends ItemView {
   }
 
   private async prepareSkillContext(userText: string): Promise<void> {
+    this.refreshBaseSystemMessage();
     await this.plugin.skillRegistry.refresh();
     const catalogMarker = "[Available skills]";
     this.messages = this.messages.filter((message) =>
@@ -607,6 +610,7 @@ export class BrainChatView extends ItemView {
     try {
       this.currentChat = await this.plugin.chatStore.load(path);
       this.messages = this.currentChat.messages;
+      this.refreshBaseSystemMessage();
       this.plugin.settings.interactiveModel = this.currentChat.model;
       await this.plugin.saveSettings();
       await this.renderTranscript();
@@ -615,6 +619,7 @@ export class BrainChatView extends ItemView {
       this.chatSelect.value = this.currentChat.path;
       this.updateSessionControls();
       this.statusEl.setText("chat loaded");
+      await this.persistCurrentChat();
     } catch (error) {
       this.plugin.reportError(error);
       await this.refreshChatSummaries();
@@ -632,6 +637,17 @@ export class BrainChatView extends ItemView {
     this.updateSessionControls();
     this.statusEl.setText("new chat");
     this.inputEl.focus();
+  }
+
+  private refreshBaseSystemMessage(): void {
+    const current = createSystemMessage();
+    const index = this.messages.findIndex((message) =>
+      message.role === "system" &&
+      (message.content.startsWith("[Obsidian Brain system") ||
+        message.content.startsWith("You are Obsidian Brain"))
+    );
+    if (index < 0) this.messages.unshift(current);
+    else this.messages[index] = current;
   }
 
   private async renameCurrentChat(): Promise<void> {

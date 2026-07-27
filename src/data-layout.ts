@@ -1,4 +1,5 @@
-import { normalizePath, type Vault } from "obsidian";
+import { normalizePath, TFolder, type Vault } from "obsidian";
+import { ensureFolders, type LayoutPathKind } from "./folder-layout";
 import type { BrainSettings } from "./settings";
 
 export const brainPath = (settings: BrainSettings, child = "") =>
@@ -6,8 +7,15 @@ export const brainPath = (settings: BrainSettings, child = "") =>
 
 export async function ensureBrainLayout(vault: Vault, settings: BrainSettings): Promise<void> {
   const folders = ["", "Chats", "Memory", "Calibration", "Settings", "Queue", "Skills"];
-  for (const folder of folders) {
-    const path = brainPath(settings, folder);
-    if (!vault.getAbstractFileByPath(path)) await vault.createFolder(path);
-  }
+  const paths = folders.map((folder) => brainPath(settings, folder));
+  await ensureFolders({
+    getPathKind: async (path): Promise<LayoutPathKind> => {
+      const indexed = vault.getAbstractFileByPath(path);
+      if (indexed) return indexed instanceof TFolder ? "folder" : "file";
+      return (await vault.adapter.stat(path))?.type ?? null;
+    },
+    createFolder: async (path) => {
+      await vault.createFolder(path);
+    }
+  }, paths);
 }
