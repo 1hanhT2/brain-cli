@@ -109,6 +109,7 @@ export default class ObsidianBrainPlugin extends Plugin {
   }
 
   async refreshOpenRouterModels(showNotice = true): Promise<void> {
+    if (showNotice) this.openRouter.clearModelRankingCache();
     this.modelCatalog = await this.openRouter.listModels();
     if (showNotice) new Notice(`Obsidian Brain loaded ${this.modelCatalog.length} OpenRouter models.`);
     for (const leaf of this.app.workspace.getLeavesOfType(BRAIN_VIEW_TYPE)) {

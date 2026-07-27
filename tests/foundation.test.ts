@@ -23,6 +23,13 @@ import {
   type OmnisearchApiResult
 } from "../src/omnisearch-provider";
 import { assembleOpenRouterTools, type FunctionToolDefinition } from "../src/openrouter-tools";
+import { paginate, readLeadingPage } from "../src/pagination";
+import {
+  rankPopularModels,
+  rankingDateRange,
+  rankTrendingModels,
+  type DailyModelRanking
+} from "../src/model-rankings";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -365,6 +372,48 @@ test("OpenRouter web search is added only when the setting is enabled", () => {
     },
     functionTool
   ]);
+});
+
+test("pagination preserves every item across 30-row pages", () => {
+  const items = Array.from({ length: 65 }, (_, index) => index + 1);
+  const first = paginate(items, 1);
+  const second = paginate(items, 2);
+  const third = paginate(items, 3);
+  const missing = paginate(items, 4);
+  assert.equal(first.items.length, 30);
+  assert.deepEqual(second.items, items.slice(30, 60));
+  assert.deepEqual(third.items, items.slice(60));
+  assert.equal(third.totalPages, 3);
+  assert.equal(third.hasPrevious, true);
+  assert.equal(third.hasNext, false);
+  assert.equal(missing.outOfRange, true);
+  assert.deepEqual(readLeadingPage(["2", "llama"]), { page: 2, remaining: ["llama"] });
+  assert.deepEqual(readLeadingPage(["llama"]), { page: 1, remaining: ["llama"] });
+});
+
+test("model usage rankings aggregate popularity and positive growth", () => {
+  const rows: DailyModelRanking[] = [
+    { date: "2026-07-24", model_permaslug: "model/a", total_tokens: "100" },
+    { date: "2026-07-24", model_permaslug: "model/b", total_tokens: "200" },
+    { date: "2026-07-25", model_permaslug: "model/a", total_tokens: "300" },
+    { date: "2026-07-25", model_permaslug: "model/b", total_tokens: "100" },
+    { date: "2026-07-26", model_permaslug: "model/a", total_tokens: "700" },
+    { date: "2026-07-26", model_permaslug: "model/b", total_tokens: "50" },
+    { date: "2026-07-27", model_permaslug: "model/a", total_tokens: "900" },
+    { date: "2026-07-27", model_permaslug: "model/b", total_tokens: "50" },
+    { date: "2026-07-27", model_permaslug: "other", total_tokens: "999999" }
+  ];
+  const popular = rankPopularModels(rows);
+  assert.equal(popular[0]?.modelId, "model/a");
+  assert.equal(popular[0]?.totalTokens, 2000n);
+  const trending = rankTrendingModels(rows, 2);
+  assert.equal(trending.length, 1);
+  assert.equal(trending[0]?.modelId, "model/a");
+  assert.equal(trending[0]?.growthTokens, 1200n);
+  assert.deepEqual(rankingDateRange(7, new Date("2026-07-27T12:00:00Z")), {
+    startDate: "2026-07-20",
+    endDate: "2026-07-26"
+  });
 });
 
 test("bundled EXP skill has valid metadata, workflow, references, and calibration", () => {

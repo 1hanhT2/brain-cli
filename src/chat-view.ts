@@ -15,6 +15,13 @@ import { requiresApproval } from "./permissions";
 import type { ToolRisk, OpenRouterModel } from "./types";
 import { titleFromMessage, type ChatState, type ChatSummary } from "./chat-format";
 import type { ToolPreview } from "./agent-tools";
+import { paginate, readLeadingPage, type Page } from "./pagination";
+import {
+  rankPopularModels,
+  rankingDateRange,
+  rankTrendingModels,
+  type ModelUsageRanking
+} from "./model-rankings";
 
 export const BRAIN_VIEW_TYPE = "obsidian-brain-chat";
 
@@ -33,19 +40,21 @@ interface ConfigMenuItem {
   toggle: () => Promise<void>;
 }
 
+const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
+
 const BRAIN_COMMANDS: BrainCommand[] = [
-  { name: "help", usage: "/help", description: "Show the command reference" },
+  { name: "help", usage: "/help [page]", description: "Show the paged command reference" },
   { name: "status", usage: "/status", description: "Show the active vault, chat, model, retrieval, and skills" },
   { name: "new", usage: "/new", description: "Start a new chat" },
-  { name: "chats", usage: "/chats [query]", description: "List saved chats" },
+  { name: "chats", usage: "/chats [page] [query]", description: "List saved chats" },
   { name: "open", usage: "/open <number|title>", description: "Open a saved chat from /chats" },
   { name: "rename", usage: "/rename <title>", description: "Rename the current chat" },
   { name: "delete", usage: "/delete --confirm", description: "Move the current chat to vault trash" },
-  { name: "models", usage: "/models [all|free|paid|favorites] [query]", description: "List and filter OpenRouter models" },
+  { name: "models", usage: "/models [all|popular|trending|free|paid|favorites] [window] [page] [query]", description: "List paged OpenRouter models" },
   { name: "model", usage: "/model <number|id>", description: "Switch model using /models results or an exact ID" },
   { name: "favorite", usage: "/favorite [number|id]", description: "Toggle a model favorite" },
   { name: "refresh", usage: "/refresh", description: "Refresh the OpenRouter model catalog" },
-  { name: "skills", usage: "/skills", description: "List installed SKILL.md skills" },
+  { name: "skills", usage: "/skills [page]", description: "List installed SKILL.md skills" },
   { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
   { name: "memory", usage: "/memory <text>", description: "Save a low-risk Markdown memory fragment" },
   { name: "index", usage: "/index rebuild", description: "Rebuild the local vault retrieval index" },
@@ -462,11 +471,7 @@ export class BrainChatView extends ItemView {
       switch (command) {
         case "help":
         case "commands":
-          await this.addTerminalOutput([
-            "### commands",
-            "",
-            ...BRAIN_COMMANDS.map((item) => `- \`${item.usage}\` — ${item.description}`)
-          ].join("\n"));
+          await this.listHelp(parts);
           return;
         case "status": {
           const retrieval = this.plugin.retrievalIndex.getStatus();
@@ -491,7 +496,7 @@ export class BrainChatView extends ItemView {
           await this.addTerminalOutput("new chat ready");
           return;
         case "chats":
-          await this.listChats(argument);
+          await this.listChats(parts);
           return;
         case "open":
           await this.openChatCommand(argument);
@@ -506,7 +511,11 @@ export class BrainChatView extends ItemView {
           await this.listModelsCommand(parts);
           return;
         case "model":
-          await this.selectModelCommand(argument);
+          if (MODEL_FILTERS.has(parts[0]?.toLocaleLowerCase() ?? "")) {
+            await this.listModelsCommand(parts);
+          } else {
+            await this.selectModelCommand(argument);
+          }
           return;
         case "favorite":
           await this.favoriteModelCommand(argument);
@@ -516,7 +525,7 @@ export class BrainChatView extends ItemView {
           await this.addTerminalOutput(`model catalog refreshed · ${this.plugin.modelCatalog.length} models`);
           return;
         case "skills":
-          await this.handleSkillCommand("");
+          await this.handleSkillCommand("", parts);
           return;
         case "skill":
           await this.handleSkillCommand(argument);
@@ -579,14 +588,41 @@ export class BrainChatView extends ItemView {
     }
   }
 
-  private async listChats(query: string): Promise<void> {
+  private async listHelp(parts: string[]): Promise<void> {
+    const { page, remaining } = readLeadingPage(parts);
+    if (remaining.length > 0) {
+      await this.addTerminalOutput("usage: `/help [page]`", "error");
+      return;
+    }
+    const paged = paginate(BRAIN_COMMANDS, page);
+    if (paged.outOfRange) {
+      await this.addPageOutOfRange("command", paged);
+      return;
+    }
+    await this.addTerminalOutput([
+      "### commands",
+      "",
+      ...paged.items.map((item) => `- \`${item.usage}\` — ${item.description}`),
+      "",
+      this.paginationLine(paged, "commands", (target) => `/help ${target}`)
+    ].join("\n"));
+  }
+
+  private async listChats(parts: string[]): Promise<void> {
+    const { page, remaining } = readLeadingPage(parts);
+    const query = remaining.join(" ");
     await this.refreshChatSummaries(false);
     const normalized = query.toLocaleLowerCase();
-    this.lastChatResults = this.chatSummaries
-      .filter((chat) => !normalized || `${chat.title} ${chat.path}`.toLocaleLowerCase().includes(normalized))
-      .slice(0, 30);
-    if (this.lastChatResults.length === 0) {
+    const matches = this.chatSummaries
+      .filter((chat) => !normalized || `${chat.title} ${chat.path}`.toLocaleLowerCase().includes(normalized));
+    const paged = paginate(matches, page);
+    this.lastChatResults = paged.items;
+    if (matches.length === 0) {
       await this.addTerminalOutput("no saved chats matched");
+      return;
+    }
+    if (paged.outOfRange) {
+      await this.addPageOutOfRange("chat", paged);
       return;
     }
     await this.addTerminalOutput([
@@ -596,7 +632,13 @@ export class BrainChatView extends ItemView {
         `| ${index + 1} | ${this.escapeTable(chat.title)} | ${this.formatDate(chat.updatedAt)} |`
       ),
       "",
-      "Open one with `/open <number>`."
+      "Open one with `/open <number>`.",
+      "",
+      this.paginationLine(
+        paged,
+        "chats",
+        (target) => `/chats ${target}${query ? ` ${query}` : ""}`
+      )
     ].join("\n"));
   }
 
@@ -605,7 +647,7 @@ export class BrainChatView extends ItemView {
       await this.addTerminalOutput("usage: `/open <number|title>`", "error");
       return;
     }
-    if (this.lastChatResults.length === 0) await this.listChats("");
+    if (this.lastChatResults.length === 0) await this.listChats([]);
     const numeric = Number.parseInt(argument, 10);
     const chat = Number.isInteger(numeric) && String(numeric) === argument
       ? this.lastChatResults[numeric - 1]
@@ -656,33 +698,114 @@ export class BrainChatView extends ItemView {
   }
 
   private async listModelsCommand(parts: string[]): Promise<void> {
-    const knownFilters = new Set(["all", "free", "paid", "favorites"]);
-    const requested = parts[0]?.toLocaleLowerCase() ?? "";
-    const filter = knownFilters.has(requested) ? requested : "all";
-    const query = (knownFilters.has(requested) ? parts.slice(1) : parts).join(" ").toLocaleLowerCase();
+    let cursor = 0;
+    const requested = parts[cursor]?.toLocaleLowerCase() ?? "";
+    const filter = MODEL_FILTERS.has(requested) ? requested : "all";
+    if (MODEL_FILTERS.has(requested)) cursor += 1;
+    let rankingDays = filter === "popular" ? 30 : 7;
+    if ((filter === "popular" || filter === "trending") && /^\d{1,2}d$/i.test(parts[cursor] ?? "")) {
+      rankingDays = Number.parseInt(parts[cursor], 10);
+      if (![7, 30].includes(rankingDays)) {
+        await this.addTerminalOutput("ranking window must be `7d` or `30d`", "error");
+        return;
+      }
+      cursor += 1;
+    }
+    const pageInput = readLeadingPage(parts.slice(cursor));
+    const page = pageInput.page;
+    const queryText = pageInput.remaining.join(" ");
+    const query = queryText.toLocaleLowerCase();
     const favorites = new Set(this.plugin.settings.favoriteModels);
-    this.lastModelResults = this.plugin.modelCatalog.filter((model) => {
-      if (query && !`${model.id} ${model.name ?? ""}`.toLocaleLowerCase().includes(query)) return false;
-      if (filter === "favorites" && !favorites.has(model.id)) return false;
-      if (filter === "free" && !this.isFreeModel(model)) return false;
-      if (filter === "paid" && this.isFreeModel(model)) return false;
-      return true;
-    }).slice(0, 30);
-    if (this.lastModelResults.length === 0) {
+    if (this.plugin.modelCatalog.length === 0) {
+      this.statusEl.setText("loading models…");
+      await this.plugin.refreshOpenRouterModels(false);
+      this.statusEl.setText("ready");
+    }
+
+    let ranked = new Map<string, ModelUsageRanking>();
+    let models: OpenRouterModel[];
+    if (filter === "popular" || filter === "trending") {
+      this.statusEl.setText(`loading ${filter}…`);
+      const requestedDays = filter === "trending" ? rankingDays * 2 : rankingDays;
+      const range = rankingDateRange(requestedDays);
+      const rows = await this.plugin.openRouter.listDailyModelRankings(range.startDate, range.endDate);
+      const rankings = filter === "popular"
+        ? rankPopularModels(rows)
+        : rankTrendingModels(rows, rankingDays);
+      const catalogBySlug = new Map<string, OpenRouterModel>();
+      for (const model of this.plugin.modelCatalog) {
+        catalogBySlug.set(model.id, model);
+        if (model.canonical_slug) catalogBySlug.set(model.canonical_slug, model);
+      }
+      const seen = new Set<string>();
+      models = [];
+      for (const ranking of rankings) {
+        const model = catalogBySlug.get(ranking.modelId);
+        if (!model || seen.has(model.id)) continue;
+        if (query && !`${model.id} ${model.name ?? ""}`.toLocaleLowerCase().includes(query)) continue;
+        seen.add(model.id);
+        ranked.set(model.id, ranking);
+        models.push(model);
+      }
+      this.statusEl.setText("ready");
+    } else {
+      models = this.plugin.modelCatalog.filter((model) => {
+        if (query && !`${model.id} ${model.name ?? ""}`.toLocaleLowerCase().includes(query)) return false;
+        if (filter === "favorites" && !favorites.has(model.id)) return false;
+        if (filter === "free" && !this.isFreeModel(model)) return false;
+        if (filter === "paid" && this.isFreeModel(model)) return false;
+        return true;
+      });
+    }
+
+    const paged = paginate(models, page);
+    this.lastModelResults = paged.items;
+    if (models.length === 0) {
       await this.addTerminalOutput("no models matched · try `/refresh`");
       return;
     }
+    if (paged.outOfRange) {
+      await this.addPageOutOfRange("model", paged);
+      return;
+    }
+
+    const rankingHeader = filter === "popular"
+      ? `Usage (${rankingDays}d)`
+      : `Growth (${rankingDays}d)`;
+    const table = filter === "popular" || filter === "trending"
+      ? [
+          `| # | Rank | Model | ${rankingHeader} | Price | Context |`,
+          "| -: | -: | --- | ---: | --- | ---: |",
+          ...this.lastModelResults.map((model, index) => {
+            const selected = model.id === this.plugin.settings.interactiveModel ? " **← active**" : "";
+            const favorite = favorites.has(model.id) ? " ★" : "";
+            const context = model.context_length ?? model.top_provider?.context_length ?? 0;
+            const ranking = ranked.get(model.id);
+            const amount = filter === "popular" ? ranking?.totalTokens ?? 0n : ranking?.growthTokens ?? 0n;
+            return `| ${index + 1} | ${paged.offset + index + 1} | \`${model.id}\`${favorite}${selected} | ${filter === "trending" ? "+" : ""}${this.formatTokenCount(amount)} | ${this.isFreeModel(model) ? "free" : "paid"} | ${context ? this.formatNumber(context) : "?"} |`;
+          })
+        ]
+      : [
+          "| # | Model | Price | Context |",
+          "| -: | --- | --- | ---: |",
+          ...this.lastModelResults.map((model, index) => {
+            const selected = model.id === this.plugin.settings.interactiveModel ? " **← active**" : "";
+            const favorite = favorites.has(model.id) ? " ★" : "";
+            const context = model.context_length ?? model.top_provider?.context_length ?? 0;
+            return `| ${index + 1} | \`${model.id}\`${favorite}${selected} | ${this.isFreeModel(model) ? "free" : "paid"} | ${context ? this.formatNumber(context) : "?"} |`;
+          })
+        ];
+    const scope = `${filter}${filter === "popular" || filter === "trending" ? ` ${rankingDays}d` : ""}`;
     await this.addTerminalOutput([
-      "| # | Model | Price | Context |",
-      "| -: | --- | --- | ---: |",
-      ...this.lastModelResults.map((model, index) => {
-        const selected = model.id === this.plugin.settings.interactiveModel ? " **← active**" : "";
-        const favorite = favorites.has(model.id) ? " ★" : "";
-        const context = model.context_length ?? model.top_provider?.context_length ?? 0;
-        return `| ${index + 1} | \`${model.id}\`${favorite}${selected} | ${this.isFreeModel(model) ? "free" : "paid"} | ${context ? this.formatNumber(context) : "?"} |`;
-      }),
+      ...table,
       "",
-      "Switch with `/model <number>` · toggle favorite with `/favorite <number>`."
+      "Switch with `/model <number>` · toggle favorite with `/favorite <number>`.",
+      "",
+      this.paginationLine(
+        paged,
+        "models",
+        (target) => `/models ${scope} ${target}${queryText ? ` ${queryText}` : ""}`
+      )
     ].join("\n"));
   }
 
@@ -899,6 +1022,42 @@ export class BrainChatView extends ItemView {
 
   private escapeTable(value: string): string {
     return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  }
+
+  private paginationLine<T>(
+    paged: Page<T>,
+    label: string,
+    commandForPage: (page: number) => string
+  ): string {
+    const navigation: string[] = [];
+    if (paged.hasPrevious) navigation.push(`previous: \`${commandForPage(paged.page - 1)}\``);
+    if (paged.hasNext) navigation.push(`next: \`${commandForPage(paged.page + 1)}\``);
+    return `Page ${paged.page}/${paged.totalPages} · ${paged.totalItems} ${label}${navigation.length ? ` · ${navigation.join(" · ")}` : ""}`;
+  }
+
+  private async addPageOutOfRange<T>(label: string, paged: Page<T>): Promise<void> {
+    await this.addTerminalOutput(
+      `page ${paged.page} is out of range · ${paged.totalItems} ${label}${paged.totalItems === 1 ? "" : "s"} · last page is ${paged.totalPages}`,
+      "error"
+    );
+  }
+
+  private formatTokenCount(value: bigint): string {
+    const units = [
+      { threshold: 1_000_000_000_000_000n, suffix: "Q" },
+      { threshold: 1_000_000_000_000n, suffix: "T" },
+      { threshold: 1_000_000_000n, suffix: "B" },
+      { threshold: 1_000_000n, suffix: "M" },
+      { threshold: 1_000n, suffix: "K" }
+    ];
+    for (const unit of units) {
+      if (value < unit.threshold) continue;
+      const tenths = value * 10n / unit.threshold;
+      return tenths % 10n === 0n
+        ? `${tenths / 10n}${unit.suffix}`
+        : `${tenths / 10n}.${tenths % 10n}${unit.suffix}`;
+    }
+    return value.toString();
   }
 
   private formatDate(value: string): string {
@@ -1126,12 +1285,28 @@ export class BrainChatView extends ItemView {
     await this.refreshChatSummaries();
   }
 
-  private async handleSkillCommand(name: string): Promise<void> {
+  private async handleSkillCommand(name: string, listParts: string[] = []): Promise<void> {
     await this.plugin.skillRegistry.refresh();
     if (!name) {
+      const { page, remaining } = readLeadingPage(listParts);
+      if (remaining.length > 0) {
+        await this.addTerminalOutput("usage: `/skills [page]`", "error");
+        return;
+      }
       const skills = this.plugin.skillRegistry.list();
+      const paged = paginate(skills, page);
+      if (paged.outOfRange) {
+        await this.addPageOutOfRange("skill", paged);
+        return;
+      }
       const response = skills.length > 0
-        ? `## Installed skills\n\n${skills.map((skill) => `- **${skill.name}** — ${skill.description}`).join("\n")}`
+        ? [
+            "## Installed skills",
+            "",
+            ...paged.items.map((skill) => `- **${skill.name}** — ${skill.description}`),
+            "",
+            this.paginationLine(paged, "skills", (target) => `/skills ${target}`)
+          ].join("\n")
         : "No `SKILL.md` skills are installed.";
       await this.addTerminalOutput(response);
       return;

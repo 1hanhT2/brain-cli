@@ -49,18 +49,18 @@ suggestions or input history, `Enter` to run, `Shift+Enter` for a newline, and
 `Ctrl+C` to stop generation.
 
 ```text
-/help
+/help [page]
 /status
 /new
-/chats [query]
+/chats [page] [query]
 /open <number|title>
 /rename <title>
 /delete --confirm
-/models [all|free|paid|favorites] [query]
+/models [all|popular|trending|free|paid|favorites] [7d|30d] [page] [query]
 /model <number|id>
 /favorite [number|id]
 /refresh
-/skills
+/skills [page]
 /skill <name>
 /memory <text>
 /index rebuild
@@ -88,6 +88,15 @@ The neighboring OpenRouter web-search checkbox adds
 `openrouter:web_search` to chat requests. The model can then search current
 internet sources while retaining access to Brain's local tools; web search is
 off by default and may incur OpenRouter search charges when used.
+
+List commands use 30-row pages instead of truncating results. For example,
+`/models all 2`, `/models popular 30d 1`, `/models trending 7d 2`,
+`/chats 2`, and `/skills 2`. Numbers passed to `/model`, `/favorite`, and
+`/open` refer to the most recently displayed page. Popularity aggregates
+OpenRouter's daily token-usage rankings; trending compares the newest ranking
+window with the preceding window. The singular form also accepts an explicit
+model filter, so `/model all 1` and `/model popular 1` open those lists while
+`/model 1` still selects row 1 from the current page.
 
 ## Theme integration
 

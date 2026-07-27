@@ -1,11 +1,16 @@
 import { requestUrl, type App } from "obsidian";
 import type { OpenRouterModel } from "./types";
 import type { OpenRouterRequestTool } from "./openrouter-tools";
+import type { DailyModelRanking } from "./model-rankings";
 
 export type { FunctionToolDefinition as ToolDefinition } from "./openrouter-tools";
 
 interface ModelListResponse {
   data?: OpenRouterModel[];
+}
+
+interface DailyRankingResponse {
+  data?: DailyModelRanking[];
 }
 
 export interface ToolCall {
@@ -80,6 +85,11 @@ export interface ChatCompletionResult {
 const CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 export class OpenRouterClient {
+  private readonly rankingCache = new Map<string, {
+    expiresAt: number;
+    rows: DailyModelRanking[];
+  }>();
+
   constructor(private readonly app: App, private readonly getSecretId: () => string) {}
 
   async listModels(): Promise<OpenRouterModel[]> {
@@ -95,6 +105,38 @@ export class OpenRouterClient {
     return body.data
       .filter((model) => Boolean(model.id))
       .sort((left, right) => (left.name ?? left.id).localeCompare(right.name ?? right.id));
+  }
+
+  async listDailyModelRankings(startDate: string, endDate: string): Promise<DailyModelRanking[]> {
+    const cacheKey = `${startDate}:${endDate}`;
+    const cached = this.rankingCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return [...cached.rows];
+    const apiKey = await this.getApiKey();
+    const query = new URLSearchParams({
+      start_date: startDate,
+      end_date: endDate
+    });
+    const response = await requestUrl({
+      url: `https://openrouter.ai/api/v1/datasets/rankings-daily?${query.toString()}`,
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+    const body = response.json as DailyRankingResponse;
+    if (!Array.isArray(body.data)) throw new Error("OpenRouter returned invalid model ranking data.");
+    const rows = body.data.filter((row) =>
+      typeof row.date === "string"
+      && typeof row.model_permaslug === "string"
+      && typeof row.total_tokens === "string"
+    );
+    this.rankingCache.set(cacheKey, {
+      expiresAt: Date.now() + 15 * 60 * 1000,
+      rows
+    });
+    return [...rows];
+  }
+
+  clearModelRankingCache(): void {
+    this.rankingCache.clear();
   }
 
   async streamChatCompletion(

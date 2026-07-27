@@ -20,6 +20,7 @@ export interface MemoryFragment {
 
 export interface OpenRouterModel {
   id: string;
+  canonical_slug?: string;
   name?: string;
   context_length?: number;
   pricing?: Record<string, string>;
