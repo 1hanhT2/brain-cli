@@ -1,5 +1,7 @@
 import {
   ItemView,
+  Component,
+  MarkdownRenderer,
   Modal,
   Notice,
   Setting,
@@ -12,6 +14,7 @@ import type { ChatMessage, ToolCall } from "./openrouter";
 import { requiresApproval } from "./permissions";
 import type { ToolRisk, OpenRouterModel } from "./types";
 import { titleFromMessage, type ChatState, type ChatSummary } from "./chat-format";
+import type { ToolPreview } from "./agent-tools";
 
 export const BRAIN_VIEW_TYPE = "obsidian-brain-chat";
 
@@ -22,6 +25,7 @@ const createSystemMessage = (): ChatMessage => ({
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
     "Use tools whenever the answer depends on the vault instead of guessing or merely describing safety.",
     "When asked what you can do or what environment you are in, call get_environment and explain the returned capabilities and limitations plainly.",
+    "When vault tools return citations, cite the supporting notes with those exact Obsidian wikilinks.",
     "Read tools run automatically. Every write requires the user's explicit approval in the interface.",
     "Never claim that a tool succeeded unless its result says ok=true. Treat tool results as the source of truth."
   ].join("\n")
@@ -134,6 +138,8 @@ export class BrainChatView extends ItemView {
   private messages: ChatMessage[] = [createSystemMessage()];
   private currentChat: ChatState | null = null;
   private chatSummaries: ChatSummary[] = [];
+  private readonly markdownComponents = new Map<HTMLElement, Component>();
+  private readonly turnCitations = new Set<string>();
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: ObsidianBrainPlugin) {
     super(leaf);
@@ -161,6 +167,7 @@ export class BrainChatView extends ItemView {
 
   async onClose(): Promise<void> {
     this.abortController?.abort();
+    this.disposeMarkdownComponents();
   }
 
   private renderHeader(): void {
@@ -236,17 +243,25 @@ export class BrainChatView extends ItemView {
     await this.ensureCurrentChat(text);
     await this.persistCurrentChat();
 
+    if (text === "/skill" || text.startsWith("/skill ")) {
+      await this.handleSkillCommand(text.slice("/skill".length).trim());
+      return;
+    }
+
     if (text.startsWith("/memory ")) {
       const content = text.slice("/memory ".length).trim();
       if (!content) return;
       const file = await this.plugin.saveLowRiskMemory(content, "chat command");
       const response = `Saved a low-risk memory fragment: [[${file.path.replace(/\.md$/, "")}]].`;
-      this.addMessage("assistant", response);
+      const body = this.addMessage("assistant", response);
+      await this.renderAssistantMarkdown(body, response);
       this.messages.push({ role: "assistant", content: response });
       await this.persistCurrentChat();
       return;
     }
 
+    await this.prepareSkillContext(text);
+    this.turnCitations.clear();
     this.abortController = new AbortController();
     this.setGenerating(true);
     try {
@@ -315,7 +330,11 @@ export class BrainChatView extends ItemView {
       );
       assistantBody.removeClass("obsidian-brain-stream-cursor");
 
-      const completed = result.content || this.activePartial;
+      let completed = result.content || this.activePartial;
+      if (result.toolCalls.length === 0 && completed && this.turnCitations.size > 0) {
+        const missing = [...this.turnCitations].filter((citation) => !completed.includes(citation));
+        if (missing.length > 0) completed = `${completed}\n\n**Sources:** ${missing.join(" · ")}`;
+      }
       this.messages.push({
         role: "assistant",
         content: completed || null,
@@ -323,7 +342,10 @@ export class BrainChatView extends ItemView {
       });
       await this.persistCurrentChat();
 
-      if (completed) assistantBody.setText(completed);
+      if (completed) {
+        assistantBody.setText(completed);
+        await this.renderAssistantMarkdown(assistantBody, completed);
+      }
       else assistantBody.parentElement?.remove();
       this.activeAssistantBody = null;
       this.activePartial = "";
@@ -356,32 +378,51 @@ export class BrainChatView extends ItemView {
       card.setStatus("unknown tool", "error");
       return { ok: false, error: `Unknown tool: ${call.function.name}` };
     }
+    let inspection;
     try {
-      this.plugin.agentTools.parseArguments(call);
+      inspection = await this.plugin.agentTools.inspect(call);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       card.setStatus(message, "error");
       return { ok: false, error: message };
     }
+    if (inspection.preview) card.setPreview(inspection.preview);
+    if (inspection.sensitive) {
+      card.setSensitive(inspection.sensitivityReasons);
+    }
 
-    if (requiresApproval(risk)) {
-      card.setStatus("approval required", "pending");
+    const needsApproval = requiresApproval(risk) || inspection.sensitive;
+    if (needsApproval) {
+      card.setStatus(inspection.sensitive ? "sensitive approval required" : "approval required", "pending");
       const approved = await card.requestApproval(signal);
       if (signal.aborted) throw new DOMException("Operation stopped.", "AbortError");
       if (!approved) {
         card.setStatus("denied", "error");
-        return { ok: false, error: "The user denied this write action." };
+        return {
+          ok: false,
+          error: inspection.sensitive
+            ? "The user denied access to sensitive note content."
+            : "The user denied this write action."
+        };
       }
     }
 
     card.setStatus("running", "pending");
-    const result = await this.plugin.agentTools.execute(call);
+    const result = await this.plugin.agentTools.execute(call, { allowSensitive: inspection.sensitive });
     card.setStatus(result.ok ? "completed" : result.error ?? "failed", result.ok ? "success" : "error");
+    if (result.ok) {
+      const citations = this.collectCitations(result.result);
+      citations.forEach((citation) => this.turnCitations.add(citation));
+      card.setSources(citations);
+    }
     return result;
   }
 
   private addToolCard(call: ToolCall, risk: ToolRisk | null): {
     setStatus: (text: string, state: "pending" | "success" | "error") => void;
+    setPreview: (preview: ToolPreview) => void;
+    setSensitive: (reasons: string[]) => void;
+    setSources: (citations: string[]) => void;
     requestApproval: (signal: AbortSignal) => Promise<boolean>;
   } {
     this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
@@ -401,6 +442,8 @@ export class BrainChatView extends ItemView {
     } catch {
       argumentsEl.setText(call.function.arguments);
     }
+    const previewEl = card.createDiv({ cls: "obsidian-brain-tool-preview" });
+    const sourcesEl = card.createDiv({ cls: "obsidian-brain-tool-sources" });
     const actions = card.createDiv({ cls: "obsidian-brain-tool-actions" });
     card.scrollIntoView({ block: "end" });
 
@@ -408,6 +451,33 @@ export class BrainChatView extends ItemView {
       setStatus: (text, state) => {
         status.setText(text);
         status.dataset.state = state;
+      },
+      setPreview: (preview) => {
+        previewEl.empty();
+        previewEl.createDiv({ cls: "obsidian-brain-tool-preview-title", text: preview.title });
+        if (preview.details) previewEl.createEl("pre", { text: preview.details });
+        if (preview.before !== undefined || preview.after !== undefined) {
+          const diff = previewEl.createDiv({ cls: "obsidian-brain-diff" });
+          const before = diff.createDiv({ cls: "obsidian-brain-diff-pane is-before" });
+          before.createDiv({ cls: "obsidian-brain-diff-label", text: "Before" });
+          before.createEl("pre", { text: preview.before ?? "" });
+          const after = diff.createDiv({ cls: "obsidian-brain-diff-pane is-after" });
+          after.createDiv({ cls: "obsidian-brain-diff-label", text: "After" });
+          after.createEl("pre", { text: preview.after ?? "" });
+        }
+      },
+      setSensitive: (reasons) => {
+        card.addClass("is-sensitive");
+        const warning = previewEl.createDiv({ cls: "obsidian-brain-sensitive-warning" });
+        warning.createEl("strong", { text: "Sensitive note content" });
+        warning.createDiv({ text: reasons.join(" · ") });
+      },
+      setSources: (citations) => {
+        if (citations.length === 0) return;
+        sourcesEl.empty();
+        sourcesEl.createSpan({ text: "Sources: " });
+        const links = sourcesEl.createSpan();
+        void this.renderInlineMarkdown(links, [...new Set(citations)].join(" · "));
       },
       requestApproval: (signal) => new Promise<boolean>((resolve) => {
         const approve = actions.createEl("button", { text: "Approve", cls: "mod-cta" });
@@ -438,6 +508,70 @@ export class BrainChatView extends ItemView {
       this.messages
     );
     await this.refreshChatSummaries();
+  }
+
+  private async handleSkillCommand(name: string): Promise<void> {
+    await this.plugin.skillRegistry.refresh();
+    if (!name) {
+      const skills = this.plugin.skillRegistry.list();
+      const response = skills.length > 0
+        ? `## Installed skills\n\n${skills.map((skill) => `- **${skill.name}** — ${skill.description}`).join("\n")}`
+        : "No `SKILL.md` skills are installed.";
+      const body = this.addMessage("assistant", response);
+      await this.renderAssistantMarkdown(body, response);
+      this.messages.push({ role: "assistant", content: response });
+      await this.persistCurrentChat();
+      return;
+    }
+    try {
+      const activated = await this.activateSkill(name, false);
+      const response = activated
+        ? `Activated the **${name}** skill for this conversation.`
+        : `The **${name}** skill is already active.`;
+      const body = this.addMessage("assistant", response);
+      await this.renderAssistantMarkdown(body, response);
+      this.messages.push({ role: "assistant", content: response });
+      await this.persistCurrentChat();
+    } catch (error) {
+      const response = error instanceof Error ? error.message : String(error);
+      const body = this.addMessage("assistant", `Skill error: ${response}`);
+      await this.renderAssistantMarkdown(body, `**Skill error:** ${response}`);
+      this.messages.push({ role: "assistant", content: `Skill error: ${response}` });
+      await this.persistCurrentChat();
+    }
+  }
+
+  private async prepareSkillContext(userText: string): Promise<void> {
+    await this.plugin.skillRegistry.refresh();
+    const catalogMarker = "[Available skills]";
+    this.messages = this.messages.filter((message) =>
+      !(message.role === "system" && message.content.startsWith(catalogMarker))
+    );
+    this.messages.splice(1, 0, {
+      role: "system",
+      content: `${catalogMarker}\n${this.plugin.skillRegistry.catalogPrompt()}\nUse load_skill only when a skill applies. Follow an active skill's instructions and load its references only when directed.`
+    });
+    const matched = this.plugin.skillRegistry.match(userText);
+    if (matched) await this.activateSkill(matched.name, true);
+    await this.persistCurrentChat();
+  }
+
+  private async activateSkill(name: string, automatic: boolean): Promise<boolean> {
+    const marker = `[Active skill: ${name.toLocaleLowerCase()}]`;
+    if (this.messages.some((message) =>
+      message.role === "system" && message.content.startsWith(marker)
+    )) return false;
+    const skill = await this.plugin.skillRegistry.load(name);
+    const firstConversationMessage = this.messages.findIndex((message) => message.role !== "system");
+    this.messages.splice(firstConversationMessage < 0 ? this.messages.length : firstConversationMessage, 0, {
+      role: "system",
+      content: `${marker}\n${skill.instructions}`
+    });
+    const event = this.transcriptEl.createDiv({ cls: "obsidian-brain-skill-event" });
+    event.createSpan({ text: automatic ? "Auto-activated skill: " : "Activated skill: " });
+    event.createEl("strong", { text: skill.metadata.name });
+    event.scrollIntoView({ block: "end" });
+    return true;
   }
 
   private async persistCurrentChat(): Promise<void> {
@@ -475,7 +609,7 @@ export class BrainChatView extends ItemView {
       this.messages = this.currentChat.messages;
       this.plugin.settings.interactiveModel = this.currentChat.model;
       await this.plugin.saveSettings();
-      this.renderTranscript();
+      await this.renderTranscript();
       this.refreshModelOptions();
       this.renderModelDetails();
       this.chatSelect.value = this.currentChat.path;
@@ -491,6 +625,7 @@ export class BrainChatView extends ItemView {
     if (this.abortController) return;
     this.currentChat = null;
     this.messages = [createSystemMessage()];
+    this.disposeMarkdownComponents();
     this.transcriptEl.empty();
     this.renderEmptyState();
     this.chatSelect.value = "";
@@ -533,12 +668,14 @@ export class BrainChatView extends ItemView {
     }
   }
 
-  private renderTranscript(): void {
+  private async renderTranscript(): Promise<void> {
+    this.disposeMarkdownComponents();
     this.transcriptEl.empty();
     let visible = false;
     for (const message of this.messages) {
       if ((message.role === "user" || message.role === "assistant") && message.content) {
-        this.addMessage(message.role, message.content);
+        const body = this.addMessage(message.role, message.content);
+        if (message.role === "assistant") await this.renderAssistantMarkdown(body, message.content);
         visible = true;
       }
       if (message.role === "assistant") {
@@ -706,9 +843,38 @@ export class BrainChatView extends ItemView {
     const message = this.transcriptEl.createDiv({ cls: "obsidian-brain-message" });
     message.dataset.role = role;
     message.createDiv({ cls: "obsidian-brain-message-label", text: role });
-    const body = message.createDiv({ text });
+    const body = message.createDiv({ cls: "obsidian-brain-message-body", text });
     message.scrollIntoView({ block: "end" });
     return body;
+  }
+
+  private async renderAssistantMarkdown(body: HTMLElement, markdown: string): Promise<void> {
+    body.addClasses(["markdown-rendered", "obsidian-brain-markdown"]);
+    await this.renderInlineMarkdown(body, markdown);
+  }
+
+  private async renderInlineMarkdown(body: HTMLElement, markdown: string): Promise<void> {
+    const previous = this.markdownComponents.get(body);
+    if (previous) {
+      this.removeChild(previous);
+      this.markdownComponents.delete(body);
+    }
+    body.empty();
+    const component = new Component();
+    this.addChild(component);
+    this.markdownComponents.set(body, component);
+    await MarkdownRenderer.render(
+      this.app,
+      markdown,
+      body,
+      this.currentChat?.path ?? "",
+      component
+    );
+  }
+
+  private disposeMarkdownComponents(): void {
+    for (const component of this.markdownComponents.values()) this.removeChild(component);
+    this.markdownComponents.clear();
   }
 
   private setGenerating(generating: boolean): void {
@@ -732,6 +898,23 @@ export class BrainChatView extends ItemView {
     return serialized.length <= limit
       ? serialized
       : `${serialized.slice(0, limit)}\n[Tool result truncated at ${limit.toLocaleString()} characters]`;
+  }
+
+  private collectCitations(value: unknown): string[] {
+    const citations: string[] = [];
+    const visit = (candidate: unknown) => {
+      if (Array.isArray(candidate)) {
+        candidate.forEach(visit);
+        return;
+      }
+      if (!candidate || typeof candidate !== "object") return;
+      for (const [key, child] of Object.entries(candidate as Record<string, unknown>)) {
+        if (key === "citation" && typeof child === "string") citations.push(child);
+        else visit(child);
+      }
+    };
+    visit(value);
+    return citations;
   }
 
   private isAbortError(error: unknown): boolean {

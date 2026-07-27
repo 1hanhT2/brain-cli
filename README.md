@@ -9,7 +9,13 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Stop-generation control backed by request cancellation.
 - Native OpenRouter tool calling with iterative tool-result feedback.
 - Environment inspection plus Markdown listing, reading, and searching.
-- Approval-gated note creation, replacement, and frontmatter updates.
+- Native Obsidian Markdown rendering for tables, callouts, wikilinks, code, and math.
+- Approval-gated note creation, append, exact patch, replacement, rename, move, trash, and frontmatter updates.
+- Before/after diff previews for note mutations.
+- Local whole-vault lexical retrieval with clickable source citations.
+- Sensitive-tag and credential-pattern detection before note content leaves the vault.
+- Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
+- Bundled EXP skill with a calibrated 25-1000 accomplishment-first rubric.
 - Markdown-backed chats with new/open/continue/rename/trash session controls.
 - Automatic context budgeting with model-generated summaries and safe trimming.
 - Searchable OpenRouter catalog with favorites and free/paid filters.
@@ -23,6 +29,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 
 ```powershell
 npm install
+npm test
 npm run typecheck
 npm run build
 ```

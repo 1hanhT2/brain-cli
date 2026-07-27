@@ -11,12 +11,18 @@ import { AgentToolRegistry } from "./agent-tools";
 import { ChatStore } from "./chat-store";
 import { compactConversation } from "./context-manager";
 import type { ContextCompactionResult } from "./context-manager";
+import { SensitiveContentGuard } from "./sensitive-content";
+import { VaultRetrievalIndex } from "./retrieval-index";
+import { SkillRegistry } from "./skill-registry";
 
 export default class ObsidianBrainPlugin extends Plugin {
   settings: BrainSettings = DEFAULT_SETTINGS;
   vaultTools!: VaultTools;
   agentTools!: AgentToolRegistry;
   chatStore!: ChatStore;
+  sensitiveGuard!: SensitiveContentGuard;
+  retrievalIndex!: VaultRetrievalIndex;
+  skillRegistry!: SkillRegistry;
   modelCatalog: OpenRouterModel[] = [];
   openRouter!: OpenRouterClient;
 
@@ -24,9 +30,19 @@ export default class ObsidianBrainPlugin extends Plugin {
     let stage = "loading settings";
     try {
       await this.loadSettings();
+      stage = "ensuring Brain data layout";
+      await this.ensureDataLayout();
       stage = "initializing services";
-      this.vaultTools = new VaultTools(this.app, () => this.settings.excludedPaths);
-      this.agentTools = new AgentToolRegistry(this.vaultTools);
+      this.sensitiveGuard = new SensitiveContentGuard(this.app, () => this.settings.sensitiveTags);
+      this.vaultTools = new VaultTools(this.app, () => this.effectiveExcludedPaths(), this.sensitiveGuard);
+      this.retrievalIndex = new VaultRetrievalIndex(
+        this.app,
+        () => this.effectiveExcludedPaths(),
+        this.sensitiveGuard
+      );
+      this.skillRegistry = new SkillRegistry(this.app, () => this.settings);
+      await this.skillRegistry.initialize();
+      this.agentTools = new AgentToolRegistry(this.vaultTools, this.retrievalIndex, this.skillRegistry);
       this.chatStore = new ChatStore(this.app, () => this.settings);
       this.openRouter = new OpenRouterClient(this.app, () => this.settings.openRouterSecretId);
       stage = "registering chat view";
@@ -39,8 +55,10 @@ export default class ObsidianBrainPlugin extends Plugin {
       stage = "registering settings";
       this.addSettingTab(new BrainSettingTab(this.app, this));
       stage = "scheduling vault layout";
+      this.registerVaultIndexEvents();
       this.app.workspace.onLayoutReady(() => {
         void this.ensureDataLayout().catch((error) => this.reportError(error));
+        void this.retrievalIndex.initialize().catch((error) => this.reportError(error));
         if (this.settings.openRouterSecretId) {
           void this.refreshOpenRouterModels(false).catch((error) =>
             console.warn("[Obsidian Brain] Automatic model refresh failed.", error)
@@ -53,6 +71,11 @@ export default class ObsidianBrainPlugin extends Plugin {
       new Notice(`Obsidian Brain startup failed while ${stage}: ${message}`, 0);
       throw error;
     }
+  }
+
+  async rebuildRetrievalIndex(): Promise<void> {
+    await this.retrievalIndex.initialize();
+    new Notice(`Obsidian Brain indexed ${this.retrievalIndex.getStatus().indexedNotes} notes.`);
   }
 
   onunload(): void {
@@ -86,7 +109,9 @@ export default class ObsidianBrainPlugin extends Plugin {
   async compactChatContext(messages: ChatMessage[], signal: AbortSignal): Promise<ContextCompactionResult> {
     const model = this.getModel();
     const contextLength = model?.context_length ?? model?.top_provider?.context_length ?? 32_768;
-    return compactConversation(messages, contextLength, async (transcript) =>
+    const toolDefinitionTokens = Math.ceil(JSON.stringify(this.agentTools.definitions()).length / 4);
+    const effectiveContextLength = Math.max(4_096, contextLength - toolDefinitionTokens);
+    return compactConversation(messages, effectiveContextLength, async (transcript) =>
       this.openRouter.completeText(
         this.settings.backgroundModel || this.settings.interactiveModel,
         "Summarize the earlier portion of an Obsidian assistant conversation. Preserve decisions, user preferences, unresolved tasks, note paths, tool outcomes, and constraints. Be concise and factual.",
@@ -142,5 +167,43 @@ export default class ObsidianBrainPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  private registerVaultIndexEvents(): void {
+    const refreshSkillIfNeeded = (path: string) => {
+      const skillRoot = brainPath(this.settings, "Skills");
+      if (path === skillRoot || path.startsWith(`${skillRoot}/`)) {
+        void this.skillRegistry.refresh().catch((error) => this.reportError(error));
+      }
+    };
+    this.registerEvent(this.app.vault.on("create", (file) => {
+      if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
+      refreshSkillIfNeeded(file.path);
+    }));
+    this.registerEvent(this.app.vault.on("modify", (file) => {
+      if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
+      refreshSkillIfNeeded(file.path);
+    }));
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      this.retrievalIndex.remove(file.path);
+      refreshSkillIfNeeded(file.path);
+    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      this.retrievalIndex.remove(oldPath);
+      if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
+      refreshSkillIfNeeded(oldPath);
+      refreshSkillIfNeeded(file.path);
+    }));
+    this.registerEvent(this.app.metadataCache.on("changed", (file) => {
+      void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
+    }));
+  }
+
+  private effectiveExcludedPaths(): string[] {
+    return [...new Set([
+      ...this.settings.excludedPaths,
+      brainPath(this.settings, "Chats"),
+      brainPath(this.settings, "Skills")
+    ])];
   }
 }

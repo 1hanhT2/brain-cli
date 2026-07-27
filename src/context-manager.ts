@@ -34,7 +34,7 @@ export async function compactConversation(
     return { messages, compacted: false, summarizedMessages: 0 };
   }
 
-  const baseSystem = messages.find((message) =>
+  const systemMessages = messages.filter((message) =>
     message.role === "system" && !message.content.startsWith(SUMMARY_PREFIX)
   );
   const existingSummary = messages.find((message) =>
@@ -77,7 +77,7 @@ export async function compactConversation(
   }
 
   const compacted: ChatMessage[] = [
-    ...(baseSystem ? [baseSystem] : []),
+    ...systemMessages,
     {
       role: "system",
       content: `${SUMMARY_PREFIX}\n${summary}`
@@ -92,9 +92,13 @@ export async function compactConversation(
 }
 
 const trimOversizedMessages = (messages: ChatMessage[], tokenBudget: number): ChatMessage[] => {
-  const baseSystem = messages[0]?.role === "system" ? messages[0] : null;
-  const rest = baseSystem ? messages.slice(1) : messages;
-  const systemCharacters = baseSystem ? messageText(baseSystem).length : 0;
+  const leadingSystem: ChatMessage[] = [];
+  for (const message of messages) {
+    if (message.role !== "system") break;
+    leadingSystem.push(message);
+  }
+  const rest = messages.slice(leadingSystem.length);
+  const systemCharacters = leadingSystem.reduce((total, message) => total + messageText(message).length, 0);
   let remaining = Math.max(0, tokenBudget * 4 - systemCharacters);
   const reversed = [...rest].reverse().map((message) => {
     const text = messageText(message);
@@ -120,5 +124,5 @@ const trimOversizedMessages = (messages: ChatMessage[], tokenBudget: number): Ch
     }
     return message;
   });
-  return [...(baseSystem ? [baseSystem] : []), ...reversed.reverse()];
+  return [...leadingSystem, ...reversed.reverse()];
 };

@@ -1,10 +1,17 @@
 import { normalizePath, TFile, TFolder, type App } from "obsidian";
 import { isVaultPathSafe } from "./permissions";
+import { SensitiveContentGuard, type SensitivityReport } from "./sensitive-content";
+
+export interface NoteSearchResult {
+  matches: Array<{ path: string; excerpt: string; citation: string }>;
+  skippedSensitive: number;
+}
 
 export class VaultTools {
   constructor(
     private readonly app: App,
-    private readonly getExcludedPaths: () => string[]
+    private readonly getExcludedPaths: () => string[],
+    private readonly sensitiveGuard: SensitiveContentGuard
   ) {}
 
   getEnvironment(): {
@@ -34,28 +41,41 @@ export class VaultTools {
       .slice(0, cappedLimit);
   }
 
-  async readMarkdown(path: string): Promise<string> {
+  async readMarkdown(path: string, allowSensitive = false): Promise<string> {
     const file = this.requireFile(path);
     const content = await this.app.vault.cachedRead(file);
+    const sensitivity = this.sensitiveGuard.inspectFile(file, content);
+    if (sensitivity.sensitive && !allowSensitive) {
+      throw new Error(`Sensitive note approval required: ${sensitivity.reasons.join("; ")}`);
+    }
     if (content.length > 100_000) {
       return `${content.slice(0, 100_000)}\n\n[Obsidian Brain truncated this note at 100,000 characters.]`;
     }
     return content;
   }
 
-  async searchMarkdown(query: string, limit = 20): Promise<Array<{ path: string; excerpt: string }>> {
+  async searchMarkdown(query: string, limit = 20): Promise<NoteSearchResult> {
     const needle = query.trim().toLocaleLowerCase();
-    if (!needle) return [];
-    const results: Array<{ path: string; excerpt: string }> = [];
+    if (!needle) return { matches: [], skippedSensitive: 0 };
+    const results: NoteSearchResult["matches"] = [];
+    let skippedSensitive = 0;
     for (const file of this.app.vault.getMarkdownFiles()) {
       if (this.isExcluded(file.path)) continue;
       const content = await this.app.vault.cachedRead(file);
       const index = content.toLocaleLowerCase().indexOf(needle);
       if (index < 0) continue;
-      results.push({ path: file.path, excerpt: content.slice(Math.max(0, index - 100), index + needle.length + 180).replace(/\s+/g, " ") });
+      if (this.sensitiveGuard.inspectFile(file, content).sensitive) {
+        skippedSensitive += 1;
+        continue;
+      }
+      results.push({
+        path: file.path,
+        excerpt: content.slice(Math.max(0, index - 100), index + needle.length + 180).replace(/\s+/g, " "),
+        citation: `[[${file.path.replace(/\.md$/, "")}]]`
+      });
       if (results.length >= limit) break;
     }
-    return results;
+    return { matches: results, skippedSensitive };
   }
 
   async createMarkdown(path: string, content: string): Promise<TFile> {
@@ -80,6 +100,68 @@ export class VaultTools {
   async replaceMarkdown(path: string, content: string): Promise<void> {
     const file = this.requireFile(path);
     await this.app.vault.modify(file, content);
+  }
+
+  async appendMarkdown(path: string, content: string): Promise<void> {
+    const file = this.requireFile(path);
+    await this.app.vault.modify(file, `${await this.app.vault.cachedRead(file)}${content}`);
+  }
+
+  async applyPatch(path: string, oldText: string, newText: string, replaceAll = false): Promise<{ replacements: number }> {
+    const file = this.requireFile(path);
+    const content = await this.app.vault.cachedRead(file);
+    if (!oldText) throw new Error("Patch old_text cannot be empty.");
+    const occurrences = content.split(oldText).length - 1;
+    if (occurrences === 0) throw new Error("The exact old_text was not found in the note.");
+    if (occurrences > 1 && !replaceAll) {
+      throw new Error(`The exact old_text occurs ${occurrences} times; set replace_all=true or provide more context.`);
+    }
+    const updated = replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText);
+    await this.app.vault.modify(file, updated);
+    return { replacements: replaceAll ? occurrences : 1 };
+  }
+
+  async previewPatch(path: string, oldText: string, newText: string, replaceAll = false): Promise<{
+    before: string;
+    after: string;
+    occurrences: number;
+  }> {
+    const file = this.requireFile(path);
+    const content = await this.app.vault.cachedRead(file);
+    if (!oldText) throw new Error("Patch old_text cannot be empty.");
+    const occurrences = content.split(oldText).length - 1;
+    if (occurrences === 0) throw new Error("The exact old_text was not found in the note.");
+    if (occurrences > 1 && !replaceAll) {
+      throw new Error(`The exact old_text occurs ${occurrences} times; provide more context.`);
+    }
+    return { before: oldText, after: newText, occurrences };
+  }
+
+  async renameMarkdown(path: string, newName: string): Promise<{ from: string; to: string }> {
+    if (newName.includes("/") || newName.includes("\\")) throw new Error("new_name must be a filename, not a path.");
+    const file = this.requireFile(path);
+    const filename = newName.toLocaleLowerCase().endsWith(".md") ? newName : `${newName}.md`;
+    const parent = file.parent?.path ?? "";
+    return this.moveFile(file, normalizePath([parent, filename].filter(Boolean).join("/")));
+  }
+
+  async moveMarkdown(path: string, destination: string): Promise<{ from: string; to: string }> {
+    const file = this.requireFile(path);
+    const normalized = normalizePath(destination);
+    if (!normalized.toLocaleLowerCase().endsWith(".md")) throw new Error("destination must end in .md.");
+    return this.moveFile(file, normalized);
+  }
+
+  async trashMarkdown(path: string): Promise<{ path: string; trashed: true }> {
+    const file = this.requireFile(path);
+    const originalPath = file.path;
+    await this.app.vault.trash(file, false);
+    return { path: originalPath, trashed: true };
+  }
+
+  async inspectSensitivity(path: string): Promise<SensitivityReport> {
+    const file = this.requireFile(path);
+    return this.sensitiveGuard.inspectFile(file, await this.app.vault.cachedRead(file));
   }
 
   private requireFile(path: string): TFile {
@@ -109,5 +191,16 @@ export class VaultTools {
       if (!existing) await this.app.vault.createFolder(current);
       else if (!(existing instanceof TFolder)) throw new Error(`Invalid folder path: ${current}`);
     }
+  }
+
+  private async moveFile(file: TFile, destination: string): Promise<{ from: string; to: string }> {
+    if (!isVaultPathSafe(destination)) throw new Error("Destination is outside the permitted vault area.");
+    if (this.isExcluded(destination)) throw new Error(`The destination is excluded from agent access: ${destination}`);
+    if (this.app.vault.getAbstractFileByPath(destination)) throw new Error(`A file already exists at ${destination}.`);
+    const parent = destination.split("/").slice(0, -1).join("/");
+    if (parent) await this.ensureFolder(parent);
+    const from = file.path;
+    await this.app.fileManager.renameFile(file, destination);
+    return { from, to: destination };
   }
 }

@@ -8,6 +8,7 @@ export interface BrainSettings {
   backgroundModel: string;
   favoriteModels: string[];
   excludedPaths: string[];
+  sensitiveTags: string[];
 }
 
 export const DEFAULT_SETTINGS: BrainSettings = {
@@ -16,7 +17,8 @@ export const DEFAULT_SETTINGS: BrainSettings = {
   interactiveModel: "openrouter/free",
   backgroundModel: "openrouter/free",
   favoriteModels: ["openrouter/free"],
-  excludedPaths: [".obsidian", "Brain/Chats"]
+  excludedPaths: [".obsidian", "Brain/Chats", "Brain/Skills"],
+  sensitiveTags: ["private", "sensitive", "secret", "confidential"]
 };
 
 export class BrainSettingTab extends PluginSettingTab {
@@ -96,6 +98,35 @@ export class BrainSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.excludedPaths = value.split(",").map((item) => normalizePath(item.trim())).filter(Boolean);
           await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Sensitive tags")
+      .setDesc("Comma-separated tags that require approval before a note can be sent to a model.")
+      .addText((text) => text
+        .setValue(this.plugin.settings.sensitiveTags.join(", "))
+        .onChange(async (value) => {
+          this.plugin.settings.sensitiveTags = value
+            .split(",")
+            .map((item) => item.trim().replace(/^#/, "").toLocaleLowerCase())
+            .filter(Boolean);
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Retrieval index")
+      .setDesc("Rebuild after changing exclusions or sensitive tags. The index also updates automatically as notes change.")
+      .addButton((button) => button
+        .setButtonText("Rebuild index")
+        .onClick(async () => {
+          button.setDisabled(true).setButtonText("Rebuilding…");
+          try {
+            await this.plugin.rebuildRetrievalIndex();
+          } catch (error) {
+            this.plugin.reportError(error);
+          } finally {
+            button.setDisabled(false).setButtonText("Rebuild index");
+          }
         }));
   }
 }

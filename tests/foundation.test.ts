@@ -11,12 +11,31 @@ import {
   type ChatState
 } from "../src/chat-format";
 import { compactConversation, estimateMessageTokens } from "../src/context-manager";
+import { VaultRetrievalIndex } from "../src/retrieval-index";
+import type { SkillRegistry } from "../src/skill-registry";
+import type { App, TFile } from "obsidian";
+import type { SensitiveContentGuard } from "../src/sensitive-content";
+import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SKILL } from "../src/bundled-exp-skill";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
   type: "function" as const,
   function: { name, arguments: JSON.stringify(input) }
 });
+
+const makeRegistry = (vaultTools: VaultTools): AgentToolRegistry =>
+  new AgentToolRegistry(
+    vaultTools,
+    {
+      getStatus: () => ({ ready: true, indexedNotes: 0, chunks: 0, sensitiveNotes: 0 }),
+      search: async () => ({ results: [], indexedNotes: 0, skippedSensitiveNotes: 0 })
+    } as VaultRetrievalIndex,
+    {
+      list: () => [],
+      load: async () => { throw new Error("not configured"); },
+      readReference: async () => { throw new Error("not configured"); }
+    } as SkillRegistry
+  );
 
 test("vault path policy rejects hidden config, traversal, absolute paths, and URLs", () => {
   assert.equal(isVaultPathSafe("Notes/example.md"), true);
@@ -35,7 +54,7 @@ test("all writes require approval while reads do not", () => {
 });
 
 test("registry exposes the complete foundational tool surface", () => {
-  const registry = new AgentToolRegistry({} as VaultTools);
+  const registry = makeRegistry({} as VaultTools);
   assert.deepEqual(
     registry.definitions().map((tool) => tool.function.name),
     [
@@ -43,9 +62,18 @@ test("registry exposes the complete foundational tool surface", () => {
       "list_notes",
       "read_note",
       "search_notes",
+      "retrieve_context",
       "create_note",
+      "append_note",
+      "apply_note_patch",
       "replace_note",
-      "update_frontmatter"
+      "update_frontmatter",
+      "rename_note",
+      "move_note",
+      "trash_note",
+      "list_skills",
+      "load_skill",
+      "read_skill_reference"
     ]
   );
   assert.equal(registry.riskFor("read_note"), "read");
@@ -63,7 +91,7 @@ test("registry executes environment reads and note creation", async () => {
     }),
     createMarkdown: async (path: string) => ({ path })
   } as VaultTools;
-  const registry = new AgentToolRegistry(vaultTools);
+  const registry = makeRegistry(vaultTools);
 
   const environment = await registry.execute(call("get_environment", {}));
   assert.equal(environment.ok, true);
@@ -75,12 +103,12 @@ test("registry executes environment reads and note creation", async () => {
   }));
   assert.deepEqual(creation, {
     ok: true,
-    result: { path: "Notes/new.md", created: true }
+    result: { path: "Notes/new.md", citation: "[[Notes/new]]", created: true }
   });
 });
 
 test("registry returns actionable errors for malformed and unknown calls", async () => {
-  const registry = new AgentToolRegistry({} as VaultTools);
+  const registry = makeRegistry({} as VaultTools);
   const malformed = {
     id: "bad",
     type: "function" as const,
@@ -88,6 +116,23 @@ test("registry returns actionable errors for malformed and unknown calls", async
   };
   assert.match((await registry.execute(malformed)).error ?? "", /Invalid arguments/);
   assert.match((await registry.execute(call("missing", {}))).error ?? "", /Unknown tool/);
+});
+
+test("tool inspection returns patch diffs and sensitive-read warnings", async () => {
+  const registry = makeRegistry({
+    previewPatch: async () => ({ before: "old", after: "new", occurrences: 1 }),
+    inspectSensitivity: async () => ({ sensitive: true, reasons: ["#private"] })
+  } as VaultTools);
+  const patch = await registry.inspect(call("apply_note_patch", {
+    path: "Note.md",
+    old_text: "old",
+    new_text: "new"
+  }));
+  assert.equal(patch.preview?.before, "old");
+  assert.equal(patch.preview?.after, "new");
+  const read = await registry.inspect(call("read_note", { path: "Private.md" }));
+  assert.equal(read.sensitive, true);
+  assert.deepEqual(read.sensitivityReasons, ["#private"]);
 });
 
 test("chat Markdown round-trips Unicode state while remaining readable", () => {
@@ -121,6 +166,7 @@ test("chat titles produce safe filenames and useful defaults", () => {
 test("context manager summarizes old turns and retains recent turns", async () => {
   const messages = [
     { role: "system" as const, content: "system" },
+    { role: "system" as const, content: "[Active skill: exp]\nUse the rubric." },
     ...Array.from({ length: 8 }, (_, index) => ([
       { role: "user" as const, content: `question ${index} ${"x".repeat(3_000)}` },
       { role: "assistant" as const, content: `answer ${index}` }
@@ -134,6 +180,46 @@ test("context manager summarizes old turns and retains recent turns", async () =
     message.role === "system" && message.content.includes("Earlier decisions summarized.")
   ));
   assert.ok(compacted.messages.some((message) =>
+    message.role === "system" && message.content.includes("[Active skill: exp]")
+  ));
+  assert.ok(compacted.messages.some((message) =>
     message.role === "user" && message.content.startsWith("question 7")
   ));
+});
+
+test("local retrieval ranks relevant chunks and excludes sensitive notes", async () => {
+  const publicFile = { path: "Study/Physics.md", extension: "md" } as TFile;
+  const otherFile = { path: "Journal.md", extension: "md" } as TFile;
+  const sensitiveFile = { path: "Private.md", extension: "md" } as TFile;
+  const contents = new Map<TFile, string>([
+    [publicFile, "# Mechanics\nNewtonian force and acceleration determine motion."],
+    [otherFile, "# Day\nBought groceries and cleaned the room."],
+    [sensitiveFile, "# Secret\nNewtonian force notes with a password."]
+  ]);
+  const app = {
+    vault: {
+      getMarkdownFiles: () => [...contents.keys()],
+      cachedRead: async (file: TFile) => contents.get(file) ?? ""
+    }
+  } as App;
+  const guard = {
+    inspectFile: (file: TFile) => ({ sensitive: file === sensitiveFile, reasons: [] })
+  } as SensitiveContentGuard;
+  const index = new VaultRetrievalIndex(app, () => [], guard);
+  await index.initialize();
+  const result = await index.search("force acceleration", 5);
+  assert.equal(result.results[0]?.path, "Study/Physics.md");
+  assert.equal(result.results[0]?.citation, "[[Study/Physics#Mechanics]]");
+  assert.equal(result.skippedSensitiveNotes, 1);
+});
+
+test("bundled EXP skill has valid metadata, workflow, references, and calibration", () => {
+  assert.match(EXP_SKILL, /^---\nname: exp\ndescription: .+\n---/);
+  assert.match(EXP_SKILL, /25 to 1000/);
+  assert.match(EXP_SKILL, /references\/rubric\.md/);
+  assert.match(EXP_SKILL, /references\/examples\.md/);
+  assert.match(EXP_RUBRIC, /Round to the nearest 25/);
+  assert.match(EXP_EXAMPLES, /Read 15 pages of the Bible: 200 EXP/);
+  assert.match(EXP_AGENT_METADATA, /default_prompt: "Use \$exp/);
+  assert.doesNotMatch(`${EXP_SKILL}${EXP_RUBRIC}${EXP_EXAMPLES}`, /TODO/);
 });
