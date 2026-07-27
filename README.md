@@ -15,6 +15,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Before/after diff previews for note mutations.
 - Local whole-vault lexical retrieval with clickable source citations.
 - Optional mobile-safe Omnisearch integration for ranked lexical retrieval, with the built-in index retained as a fallback.
+- Optional OpenRouter server-side web search alongside Brain's local vault tools.
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
 - Bundled EXP skill with a calibrated 25-1000 accomplishment-first rubric.
@@ -83,6 +84,10 @@ When Omnisearch is enabled and available, Brain uses its public in-process API
 for lexical `search_notes` and `retrieve_context` calls. Brain rechecks every
 result against its own exclusions and sensitive-content policy. If Omnisearch
 is disabled, unavailable, or errors, the built-in local index remains active.
+The neighboring OpenRouter web-search checkbox adds
+`openrouter:web_search` to chat requests. The model can then search current
+internet sources while retaining access to Brain's local tools; web search is
+off by default and may incur OpenRouter search charges when used.
 
 ## Theme integration
 

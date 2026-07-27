@@ -22,6 +22,7 @@ import {
   type OmnisearchApi,
   type OmnisearchApiResult
 } from "../src/omnisearch-provider";
+import { assembleOpenRouterTools, type FunctionToolDefinition } from "../src/openrouter-tools";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -345,6 +346,25 @@ test("Omnisearch is opt-in and filters sensitive and excluded results", async ()
   } finally {
     delete globalWithOmnisearch.omnisearch;
   }
+});
+
+test("OpenRouter web search is added only when the setting is enabled", () => {
+  const functionTool: FunctionToolDefinition = {
+    type: "function",
+    function: {
+      name: "search_notes",
+      description: "Search permitted notes.",
+      parameters: { type: "object" }
+    }
+  };
+  assert.deepEqual(assembleOpenRouterTools([functionTool], false), [functionTool]);
+  assert.deepEqual(assembleOpenRouterTools([functionTool], true), [
+    {
+      type: "openrouter:web_search",
+      parameters: { engine: "auto", max_results: 5 }
+    },
+    functionTool
+  ]);
 });
 
 test("bundled EXP skill has valid metadata, workflow, references, and calibration", () => {

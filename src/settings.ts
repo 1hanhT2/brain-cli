@@ -8,6 +8,7 @@ export interface BrainSettings {
   backgroundModel: string;
   favoriteModels: string[];
   useOmnisearch: boolean;
+  useWebSearch: boolean;
   excludedPaths: string[];
   sensitiveTags: string[];
 }
@@ -19,6 +20,7 @@ export const DEFAULT_SETTINGS: BrainSettings = {
   backgroundModel: "openrouter/free",
   favoriteModels: ["openrouter/free"],
   useOmnisearch: false,
+  useWebSearch: false,
   excludedPaths: [".obsidian", "Brain/Chats", "Brain/Skills"],
   sensitiveTags: ["private", "sensitive", "secret", "confidential"]
 };
@@ -102,6 +104,16 @@ export class BrainSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.useOmnisearch)
         .onChange(async (value) => {
           this.plugin.settings.useOmnisearch = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Allow OpenRouter web search")
+      .setDesc("Expose OpenRouter's server-side web search tool to the selected model. Search use may add provider charges.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.useWebSearch)
+        .onChange(async (value) => {
+          this.plugin.settings.useWebSearch = value;
           await this.plugin.saveSettings();
         }));
 

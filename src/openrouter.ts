@@ -1,5 +1,8 @@
 import { requestUrl, type App } from "obsidian";
 import type { OpenRouterModel } from "./types";
+import type { OpenRouterRequestTool } from "./openrouter-tools";
+
+export type { FunctionToolDefinition as ToolDefinition } from "./openrouter-tools";
 
 interface ModelListResponse {
   data?: OpenRouterModel[];
@@ -30,15 +33,6 @@ export type ChatMessage =
       tool_call_id: string;
       name?: string;
     };
-
-export interface ToolDefinition {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-}
 
 interface StreamChunk {
   choices?: Array<{
@@ -106,7 +100,7 @@ export class OpenRouterClient {
   async streamChatCompletion(
     model: string,
     messages: ChatMessage[],
-    tools: ToolDefinition[],
+    tools: OpenRouterRequestTool[],
     onDelta: (delta: string) => void,
     signal: AbortSignal
   ): Promise<ChatCompletionResult> {

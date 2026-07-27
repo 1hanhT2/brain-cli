@@ -65,6 +65,7 @@ const createSystemMessage = (): ChatMessage => ({
     "You are Obsidian Brain, a concise and thoughtful agent operating inside an Obsidian vault.",
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
     "Use tools whenever the answer depends on the vault instead of guessing or merely describing safety.",
+    "When the OpenRouter web search server tool is available, use it for current or external information instead of relying on potentially stale training knowledge.",
     "When asked what you can do or what environment you are in, call get_environment and explain the returned capabilities and limitations plainly.",
     "When vault tools return citations, cite the supporting notes with those exact Obsidian wikilinks.",
     "A skill returned by get_environment or list_skills is installed and available. A skill becomes active for the current conversation only after its [Active skill: name] system message is present. Never say an available skill is not installed merely because it was not previously active.",
@@ -477,6 +478,7 @@ export class BrainChatView extends ItemView {
             `model      ${this.plugin.settings.interactiveModel}`,
             `retrieval  ${retrieval.ready ? "ready" : "building"} · ${retrieval.indexedNotes} notes · ${retrieval.chunks} chunks`,
             `lexical    ${retrieval.lexicalProvider}${retrieval.omnisearch.enabled && !retrieval.omnisearch.available ? " · Omnisearch unavailable, fallback active" : ""}`,
+            `web        ${this.plugin.settings.useWebSearch ? "enabled · OpenRouter server tool" : "disabled"}`,
             `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
             `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
             `pending    ${this.pendingApproval ? "approval" : "none"}`,
@@ -765,6 +767,25 @@ export class BrainChatView extends ItemView {
             await this.plugin.saveSettings();
           } catch (error) {
             this.plugin.settings.useOmnisearch = previous;
+            throw error;
+          }
+        }
+      },
+      {
+        id: "web",
+        label: "Allow OpenRouter web search",
+        description: "Let the model search the live internet through OpenRouter when a request needs current information.",
+        checked: () => this.plugin.settings.useWebSearch,
+        detail: () => this.plugin.settings.useWebSearch
+          ? "enabled · server tool available · usage may cost"
+          : "disabled",
+        toggle: async () => {
+          const previous = this.plugin.settings.useWebSearch;
+          this.plugin.settings.useWebSearch = !previous;
+          try {
+            await this.plugin.saveSettings();
+          } catch (error) {
+            this.plugin.settings.useWebSearch = previous;
             throw error;
           }
         }
