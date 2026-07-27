@@ -279,6 +279,87 @@
   color: var(--brain-error);
 }
 
+.obsidian-brain-config-menu {
+  overflow: hidden;
+  border: var(--border-width, 1px) solid var(--brain-border);
+  border-radius: var(--brain-radius);
+  background: var(--brain-surface);
+  color: var(--brain-text);
+  font-family: var(--font-monospace);
+}
+
+.obsidian-brain-config-title,
+.obsidian-brain-config-section,
+.obsidian-brain-config-footer,
+.obsidian-brain-config-closed {
+  padding: var(--brain-sm) var(--brain-md);
+}
+
+.obsidian-brain-config-title {
+  color: var(--brain-accent);
+  font-weight: var(--font-semibold, 600);
+}
+
+.obsidian-brain-config-section {
+  border-top: var(--border-width, 1px) solid var(--brain-border);
+  border-bottom: var(--border-width, 1px) solid var(--brain-border);
+  color: var(--brain-faint);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.obsidian-brain-config-item {
+  display: grid;
+  grid-template-columns: 1rem 2.3rem minmax(0, 1fr) auto;
+  gap: var(--brain-xs);
+  align-items: center;
+  padding: var(--brain-sm) var(--brain-md);
+  cursor: pointer;
+}
+
+.obsidian-brain-config-item.is-selected {
+  background: var(--background-modifier-hover);
+}
+
+.obsidian-brain-config-cursor,
+.obsidian-brain-config-checkbox {
+  color: var(--brain-accent);
+  user-select: none;
+}
+
+.obsidian-brain-config-copy {
+  min-width: 0;
+}
+
+.obsidian-brain-config-label {
+  color: var(--brain-text);
+}
+
+.obsidian-brain-config-description,
+.obsidian-brain-config-detail,
+.obsidian-brain-config-footer,
+.obsidian-brain-config-closed {
+  color: var(--brain-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.obsidian-brain-config-description {
+  margin-top: var(--brain-xs);
+  white-space: normal;
+}
+
+.obsidian-brain-config-detail {
+  padding-left: var(--brain-sm);
+  text-align: right;
+}
+
+.obsidian-brain-config-footer {
+  border-top: var(--border-width, 1px) solid var(--brain-border);
+  color: var(--brain-faint);
+  text-align: right;
+}
+
 .obsidian-brain-tool {
   margin-bottom: var(--brain-lg);
   overflow: hidden;
@@ -609,5 +690,15 @@
   .obsidian-brain-command-suggestion {
     grid-template-columns: 1fr;
     gap: var(--brain-xs);
+  }
+
+  .obsidian-brain-config-item {
+    grid-template-columns: 1rem 2.3rem minmax(0, 1fr);
+  }
+
+  .obsidian-brain-config-detail {
+    grid-column: 3;
+    padding-left: 0;
+    text-align: left;
   }
 }

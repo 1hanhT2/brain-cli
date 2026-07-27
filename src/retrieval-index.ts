@@ -1,5 +1,6 @@
 import type { App, TFile } from "obsidian";
 import type { SensitiveContentGuard } from "./sensitive-content";
+import type { OmnisearchProvider } from "./omnisearch-provider";
 
 export interface RetrievalResult {
   path: string;
@@ -29,7 +30,8 @@ export class VaultRetrievalIndex {
   constructor(
     private readonly app: App,
     private readonly getExcludedPaths: () => string[],
-    private readonly sensitiveGuard: SensitiveContentGuard
+    private readonly sensitiveGuard: SensitiveContentGuard,
+    private readonly omnisearchProvider?: OmnisearchProvider
   ) {}
 
   async initialize(): Promise<void> {
@@ -60,6 +62,14 @@ export class VaultRetrievalIndex {
     indexedNotes: number;
     skippedSensitiveNotes: number;
   }> {
+    const omnisearch = await this.omnisearchProvider?.search(query, limit);
+    if (omnisearch) {
+      return {
+        results: omnisearch.results,
+        indexedNotes: this.chunksByPath.size,
+        skippedSensitiveNotes: omnisearch.skippedSensitiveNotes
+      };
+    }
     if (!this.ready) await this.initialize();
     const queryTokens = [...new Set(tokenize(query))];
     if (queryTokens.length === 0) {
@@ -103,12 +113,23 @@ export class VaultRetrievalIndex {
     };
   }
 
-  getStatus(): { ready: boolean; indexedNotes: number; chunks: number; sensitiveNotes: number } {
+  getStatus(): {
+    ready: boolean;
+    indexedNotes: number;
+    chunks: number;
+    sensitiveNotes: number;
+    lexicalProvider: "omnisearch" | "builtin";
+    omnisearch: { enabled: boolean; available: boolean; active: boolean };
+  } {
+    const omnisearch = this.omnisearchProvider?.getStatus()
+      ?? { enabled: false, available: false, active: false };
     return {
       ready: this.ready,
       indexedNotes: this.chunksByPath.size,
       chunks: [...this.chunksByPath.values()].reduce((total, chunks) => total + chunks.length, 0),
-      sensitiveNotes: this.sensitivePaths.size
+      sensitiveNotes: this.sensitivePaths.size,
+      lexicalProvider: omnisearch.active ? "omnisearch" : "builtin",
+      omnisearch
     };
   }
 

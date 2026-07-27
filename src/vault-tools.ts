@@ -2,6 +2,7 @@ import { normalizePath, TFile, type App } from "obsidian";
 import { isVaultPathSafe } from "./permissions";
 import { SensitiveContentGuard, type SensitivityReport } from "./sensitive-content";
 import { ensureFolders, type LayoutPathKind } from "./folder-layout";
+import type { OmnisearchProvider } from "./omnisearch-provider";
 
 export interface NoteSearchResult {
   matches: Array<{ path: string; excerpt: string; citation: string }>;
@@ -12,7 +13,8 @@ export class VaultTools {
   constructor(
     private readonly app: App,
     private readonly getExcludedPaths: () => string[],
-    private readonly sensitiveGuard: SensitiveContentGuard
+    private readonly sensitiveGuard: SensitiveContentGuard,
+    private readonly omnisearchProvider?: OmnisearchProvider
   ) {}
 
   getEnvironment(): {
@@ -56,6 +58,17 @@ export class VaultTools {
   }
 
   async searchMarkdown(query: string, limit = 20): Promise<NoteSearchResult> {
+    const omnisearch = await this.omnisearchProvider?.search(query, limit);
+    if (omnisearch) {
+      return {
+        matches: omnisearch.results.map((result) => ({
+          path: result.path,
+          excerpt: result.excerpt,
+          citation: result.citation
+        })),
+        skippedSensitive: omnisearch.skippedSensitiveNotes
+      };
+    }
     const needle = query.trim().toLocaleLowerCase();
     if (!needle) return { matches: [], skippedSensitive: 0 };
     const results: NoteSearchResult["matches"] = [];

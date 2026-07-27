@@ -14,6 +14,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Approval-gated note creation, append, exact patch, replacement, rename, move, trash, and frontmatter updates.
 - Before/after diff previews for note mutations.
 - Local whole-vault lexical retrieval with clickable source citations.
+- Optional mobile-safe Omnisearch integration for ranked lexical retrieval, with the built-in index retained as a fallback.
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
 - Bundled EXP skill with a calibrated 25-1000 accomplishment-first rubric.
@@ -62,7 +63,9 @@ suggestions or input history, `Enter` to run, `Shift+Enter` for a newline, and
 /skill <name>
 /memory <text>
 /index rebuild
-/settings
+/config
+/setting
+/settings [native]
 /clear
 /approve
 /deny
@@ -72,6 +75,14 @@ suggestions or input history, `Enter` to run, `Shift+Enter` for a newline, and
 Plain text still starts or continues a model conversation. Read tools execute
 automatically. Write and sensitive-read previews pause the agent and accept
 `/approve` or `/deny` directly from the terminal prompt.
+
+`/config`, `/setting`, and `/settings` open the terminal settings menu. Use
+the arrow keys to select an item, `Space` to toggle its checkbox, and `Enter`
+to leave. `/settings native` opens Obsidian's regular plugin settings tab.
+When Omnisearch is enabled and available, Brain uses its public in-process API
+for lexical `search_notes` and `retrieve_context` calls. Brain rechecks every
+result against its own exclusions and sensitive-content policy. If Omnisearch
+is disabled, unavailable, or errors, the built-in local index remains active.
 
 ## Theme integration
 

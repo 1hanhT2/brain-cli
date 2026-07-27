@@ -7,6 +7,7 @@ export interface BrainSettings {
   interactiveModel: string;
   backgroundModel: string;
   favoriteModels: string[];
+  useOmnisearch: boolean;
   excludedPaths: string[];
   sensitiveTags: string[];
 }
@@ -17,6 +18,7 @@ export const DEFAULT_SETTINGS: BrainSettings = {
   interactiveModel: "openrouter/free",
   backgroundModel: "openrouter/free",
   favoriteModels: ["openrouter/free"],
+  useOmnisearch: false,
   excludedPaths: [".obsidian", "Brain/Chats", "Brain/Skills"],
   sensitiveTags: ["private", "sensitive", "secret", "confidential"]
 };
@@ -87,6 +89,19 @@ export class BrainSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.backgroundModel)
         .onChange(async (value) => {
           this.plugin.settings.backgroundModel = value.trim() || "openrouter/free";
+          await this.plugin.saveSettings();
+        }));
+
+    const omnisearch = this.plugin.omnisearchProvider.getStatus();
+    new Setting(containerEl)
+      .setName("Use Omnisearch")
+      .setDesc(omnisearch.available
+        ? "Use the installed Omnisearch index for lexical retrieval. Brain still filters excluded and sensitive notes."
+        : "Omnisearch is not currently detected. Brain will use its built-in lexical index as a fallback.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.useOmnisearch)
+        .onChange(async (value) => {
+          this.plugin.settings.useOmnisearch = value;
           await this.plugin.saveSettings();
         }));
 

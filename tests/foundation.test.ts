@@ -17,6 +17,11 @@ import type { App, TFile } from "obsidian";
 import type { SensitiveContentGuard } from "../src/sensitive-content";
 import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SKILL } from "../src/bundled-exp-skill";
 import { ensureFolders } from "../src/folder-layout";
+import {
+  OmnisearchProvider,
+  type OmnisearchApi,
+  type OmnisearchApiResult
+} from "../src/omnisearch-provider";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -266,6 +271,80 @@ test("local retrieval ranks relevant chunks and excludes sensitive notes", async
   assert.equal(result.results[0]?.path, "Study/Physics.md");
   assert.equal(result.results[0]?.citation, "[[Study/Physics#Mechanics]]");
   assert.equal(result.skippedSensitiveNotes, 1);
+});
+
+test("Omnisearch is opt-in and filters sensitive and excluded results", async () => {
+  const publicFile = { path: "Study/Public.md", extension: "md" } as TFile;
+  const privateFile = { path: "Private.md", extension: "md" } as TFile;
+  const excludedFile = { path: "Brain/Chats/Chat.md", extension: "md" } as TFile;
+  const files = new Map<string, TFile>([
+    [publicFile.path, publicFile],
+    [privateFile.path, privateFile],
+    [excludedFile.path, excludedFile]
+  ]);
+  const contents = new Map<TFile, string>([
+    [publicFile, "# Public\nActive recall is useful."],
+    [privateFile, "# Private\nPassword material."],
+    [excludedFile, "# Chat\nActive recall conversation."]
+  ]);
+  const app = {
+    vault: {
+      getAbstractFileByPath: (path: string) => files.get(path) ?? null,
+      cachedRead: async (file: TFile) => contents.get(file) ?? ""
+    }
+  } as App;
+  const guard = {
+    inspectFile: (file: TFile) => ({ sensitive: file === privateFile, reasons: [] })
+  } as SensitiveContentGuard;
+  let enabled = false;
+  let calls = 0;
+  const result = (path: string, score: number): OmnisearchApiResult => ({
+    score,
+    vault: "test-vault",
+    path,
+    basename: path.replace(/\.md$/, ""),
+    foundWords: ["active"],
+    matches: [{ match: "Active", offset: 9 }],
+    excerpt: `Excerpt from ${path}`
+  });
+  const api: OmnisearchApi = {
+    search: async () => {
+      calls += 1;
+      return [
+        result(publicFile.path, 10),
+        result(privateFile.path, 9),
+        result(excludedFile.path, 8)
+      ];
+    },
+    refreshIndex: async () => {},
+    registerOnIndexed: () => {},
+    unregisterOnIndexed: () => {}
+  };
+  const globalWithOmnisearch = globalThis as typeof globalThis & { omnisearch?: OmnisearchApi };
+  globalWithOmnisearch.omnisearch = api;
+  try {
+    const provider = new OmnisearchProvider(
+      app,
+      () => enabled,
+      () => ["Brain/Chats"],
+      guard
+    );
+    assert.equal((await provider.search("active recall")) ?? null, null);
+    assert.equal(calls, 0);
+
+    enabled = true;
+    const index = new VaultRetrievalIndex(app, () => ["Brain/Chats"], guard, provider);
+    const search = await index.search("active recall");
+    assert.equal(calls, 1);
+    assert.equal(search.results.length, 1);
+    assert.equal(search.results[0]?.path, publicFile.path);
+    assert.equal(search.results[0]?.citation, "[[Study/Public]]");
+    assert.equal(search.skippedSensitiveNotes, 1);
+    assert.equal(index.getStatus().lexicalProvider, "omnisearch");
+    assert.deepEqual(provider.getStatus(), { enabled: true, available: true, active: true });
+  } finally {
+    delete globalWithOmnisearch.omnisearch;
+  }
 });
 
 test("bundled EXP skill has valid metadata, workflow, references, and calibration", () => {

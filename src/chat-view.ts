@@ -24,6 +24,15 @@ interface BrainCommand {
   description: string;
 }
 
+interface ConfigMenuItem {
+  id: string;
+  label: string;
+  description: string;
+  checked: () => boolean;
+  detail: () => string;
+  toggle: () => Promise<void>;
+}
+
 const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "help", usage: "/help", description: "Show the command reference" },
   { name: "status", usage: "/status", description: "Show the active vault, chat, model, retrieval, and skills" },
@@ -40,7 +49,9 @@ const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
   { name: "memory", usage: "/memory <text>", description: "Save a low-risk Markdown memory fragment" },
   { name: "index", usage: "/index rebuild", description: "Rebuild the local vault retrieval index" },
-  { name: "settings", usage: "/settings", description: "Open Obsidian Brain settings" },
+  { name: "config", usage: "/config", description: "Open the terminal settings menu" },
+  { name: "setting", usage: "/setting", description: "Alias for /config" },
+  { name: "settings", usage: "/settings", description: "Open the terminal settings menu (/settings native for Obsidian settings)" },
   { name: "clear", usage: "/clear", description: "Clear terminal output while retaining conversation context" },
   { name: "approve", usage: "/approve", description: "Approve the pending tool action" },
   { name: "deny", usage: "/deny", description: "Deny the pending tool action" },
@@ -182,6 +193,9 @@ export class BrainChatView extends ItemView {
   private visibleSuggestions: BrainCommand[] = [];
   private lastModelResults: OpenRouterModel[] = [];
   private lastChatResults: ChatSummary[] = [];
+  private configMenuEl: HTMLElement | null = null;
+  private configMenuSelection = 0;
+  private configMenuBusy = false;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: ObsidianBrainPlugin) {
     super(leaf);
@@ -209,6 +223,7 @@ export class BrainChatView extends ItemView {
 
   async onClose(): Promise<void> {
     this.abortController?.abort();
+    this.closeConfigMenu(false);
     this.disposeMarkdownComponents();
   }
 
@@ -288,6 +303,10 @@ export class BrainChatView extends ItemView {
       text: "enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop"
     });
     const submit = async () => {
+      if (this.configMenuEl) {
+        this.closeConfigMenu();
+        return;
+      }
       const text = this.inputEl.value.trim();
       if (this.pendingApproval) {
         if (text === "/approve" || text === "/deny") {
@@ -316,6 +335,30 @@ export class BrainChatView extends ItemView {
       this.updateCommandSuggestions();
     });
     this.inputEl.addEventListener("keydown", (event) => {
+      if (this.configMenuEl) {
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          this.moveConfigSelection(event.key === "ArrowUp" ? -1 : 1);
+          return;
+        }
+        if (event.code === "Space" || event.key === " ") {
+          event.preventDefault();
+          void this.toggleSelectedConfigItem();
+          return;
+        }
+        if (event.key === "Enter" && !event.isComposing) {
+          event.preventDefault();
+          this.closeConfigMenu();
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          this.closeConfigMenu();
+          return;
+        }
+        event.preventDefault();
+        return;
+      }
       if (event.ctrlKey && event.key.toLocaleLowerCase() === "c" && this.abortController) {
         event.preventDefault();
         this.abortController.abort();
@@ -433,6 +476,7 @@ export class BrainChatView extends ItemView {
             `chat       ${this.currentChat?.title ?? "new / unsaved"}`,
             `model      ${this.plugin.settings.interactiveModel}`,
             `retrieval  ${retrieval.ready ? "ready" : "building"} · ${retrieval.indexedNotes} notes · ${retrieval.chunks} chunks`,
+            `lexical    ${retrieval.lexicalProvider}${retrieval.omnisearch.enabled && !retrieval.omnisearch.available ? " · Omnisearch unavailable, fallback active" : ""}`,
             `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
             `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
             `pending    ${this.pendingApproval ? "approval" : "none"}`,
@@ -488,7 +532,13 @@ export class BrainChatView extends ItemView {
           this.statusEl.setText("ready");
           await this.addTerminalOutput(`retrieval index rebuilt · ${this.plugin.retrievalIndex.getStatus().indexedNotes} notes`);
           return;
+        case "config":
+        case "setting":
         case "settings": {
+          if (argument.toLocaleLowerCase() !== "native") {
+            this.openConfigMenu();
+            return;
+          }
           const controller = (this.app as App & {
             setting?: { open: () => void; openTabById: (id: string) => void };
           }).setting;
@@ -693,6 +743,137 @@ export class BrainChatView extends ItemView {
     const body = output.createDiv({ cls: "obsidian-brain-terminal-output-body markdown-rendered obsidian-brain-markdown" });
     await this.renderInlineMarkdown(body, markdown);
     output.scrollIntoView({ block: "end" });
+  }
+
+  private getConfigMenuItems(): ConfigMenuItem[] {
+    return [
+      {
+        id: "omnisearch",
+        label: "Use Omnisearch for lexical search",
+        description: "Reuse Omnisearch ranking while Brain filters excluded and sensitive notes.",
+        checked: () => this.plugin.settings.useOmnisearch,
+        detail: () => {
+          const status = this.plugin.omnisearchProvider.getStatus();
+          if (status.active) return "active · installed";
+          if (status.enabled) return "enabled · plugin not detected · built-in fallback";
+          return status.available ? "disabled · installed" : "disabled · plugin not detected";
+        },
+        toggle: async () => {
+          const previous = this.plugin.settings.useOmnisearch;
+          this.plugin.settings.useOmnisearch = !previous;
+          try {
+            await this.plugin.saveSettings();
+          } catch (error) {
+            this.plugin.settings.useOmnisearch = previous;
+            throw error;
+          }
+        }
+      }
+    ];
+  }
+
+  private openConfigMenu(): void {
+    if (this.configMenuEl) return;
+    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+    const output = this.transcriptEl.createDiv({
+      cls: "obsidian-brain-terminal-output obsidian-brain-config-output is-system"
+    });
+    output.createSpan({ cls: "obsidian-brain-line-prefix", text: "›" });
+    this.configMenuEl = output.createDiv({
+      cls: "obsidian-brain-terminal-output-body obsidian-brain-config-menu"
+    });
+    this.configMenuSelection = 0;
+    this.inputEl.value = "";
+    this.inputEl.readOnly = true;
+    this.inputEl.placeholder = "config menu active";
+    this.commandHintEl.setText("↑/↓ select  ·  space toggle  ·  enter leave");
+    this.statusEl.setText("config");
+    this.hideCommandSuggestions();
+    this.renderConfigMenu();
+    output.scrollIntoView({ block: "end" });
+    this.inputEl.focus();
+  }
+
+  private renderConfigMenu(): void {
+    if (!this.configMenuEl) return;
+    const items = this.getConfigMenuItems();
+    this.configMenuSelection = Math.max(0, Math.min(this.configMenuSelection, items.length - 1));
+    this.configMenuEl.empty();
+    this.configMenuEl.createDiv({ cls: "obsidian-brain-config-title", text: "config" });
+    this.configMenuEl.createDiv({ cls: "obsidian-brain-config-section", text: "retrieval" });
+    items.forEach((item, index) => {
+      const row = this.configMenuEl!.createDiv({
+        cls: `obsidian-brain-config-item${index === this.configMenuSelection ? " is-selected" : ""}`,
+        attr: {
+          role: "checkbox",
+          "aria-checked": String(item.checked()),
+          "aria-label": item.label
+        }
+      });
+      row.createSpan({ cls: "obsidian-brain-config-cursor", text: index === this.configMenuSelection ? ">" : " " });
+      row.createSpan({ cls: "obsidian-brain-config-checkbox", text: item.checked() ? "[x]" : "[ ]" });
+      const copy = row.createDiv({ cls: "obsidian-brain-config-copy" });
+      copy.createDiv({ cls: "obsidian-brain-config-label", text: item.label });
+      copy.createDiv({ cls: "obsidian-brain-config-description", text: item.description });
+      row.createSpan({ cls: "obsidian-brain-config-detail", text: item.detail() });
+      row.addEventListener("mouseenter", () => {
+        if (this.configMenuSelection === index) return;
+        this.configMenuSelection = index;
+        this.renderConfigMenu();
+      });
+      row.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        this.configMenuSelection = index;
+        void this.toggleSelectedConfigItem();
+      });
+    });
+    this.configMenuEl.createDiv({
+      cls: "obsidian-brain-config-footer",
+      text: this.configMenuBusy ? "saving…" : "space toggle · enter leave"
+    });
+  }
+
+  private moveConfigSelection(direction: number): void {
+    const itemCount = this.getConfigMenuItems().length;
+    if (itemCount === 0) return;
+    this.configMenuSelection = (this.configMenuSelection + direction + itemCount) % itemCount;
+    this.renderConfigMenu();
+  }
+
+  private async toggleSelectedConfigItem(): Promise<void> {
+    if (!this.configMenuEl || this.configMenuBusy) return;
+    const item = this.getConfigMenuItems()[this.configMenuSelection];
+    if (!item) return;
+    this.configMenuBusy = true;
+    this.renderConfigMenu();
+    try {
+      await item.toggle();
+      this.statusEl.setText(item.checked() ? `${item.id} enabled` : `${item.id} disabled`);
+    } catch (error) {
+      this.plugin.reportError(error);
+      this.statusEl.setText("config error");
+    } finally {
+      this.configMenuBusy = false;
+      this.renderConfigMenu();
+    }
+  }
+
+  private closeConfigMenu(showClosedState = true): void {
+    if (!this.configMenuEl) return;
+    const menu = this.configMenuEl;
+    this.configMenuEl = null;
+    this.configMenuBusy = false;
+    if (showClosedState) {
+      menu.empty();
+      menu.createDiv({ cls: "obsidian-brain-config-closed", text: "config saved · menu closed" });
+    } else {
+      menu.parentElement?.remove();
+    }
+    this.inputEl.readOnly = false;
+    this.inputEl.placeholder = "ask the vault or type /help";
+    this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
+    this.statusEl.setText("ready");
+    this.inputEl.focus();
   }
 
   private escapeTable(value: string): string {

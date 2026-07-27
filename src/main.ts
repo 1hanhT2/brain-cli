@@ -13,6 +13,7 @@ import { compactConversation } from "./context-manager";
 import type { ContextCompactionResult } from "./context-manager";
 import { SensitiveContentGuard } from "./sensitive-content";
 import { VaultRetrievalIndex } from "./retrieval-index";
+import { OmnisearchProvider } from "./omnisearch-provider";
 import { SkillRegistry } from "./skill-registry";
 
 export default class ObsidianBrainPlugin extends Plugin {
@@ -22,6 +23,7 @@ export default class ObsidianBrainPlugin extends Plugin {
   chatStore!: ChatStore;
   sensitiveGuard!: SensitiveContentGuard;
   retrievalIndex!: VaultRetrievalIndex;
+  omnisearchProvider!: OmnisearchProvider;
   skillRegistry!: SkillRegistry;
   modelCatalog: OpenRouterModel[] = [];
   openRouter!: OpenRouterClient;
@@ -34,11 +36,23 @@ export default class ObsidianBrainPlugin extends Plugin {
       await this.ensureDataLayout();
       stage = "initializing services";
       this.sensitiveGuard = new SensitiveContentGuard(this.app, () => this.settings.sensitiveTags);
-      this.vaultTools = new VaultTools(this.app, () => this.effectiveExcludedPaths(), this.sensitiveGuard);
+      this.omnisearchProvider = new OmnisearchProvider(
+        this.app,
+        () => this.settings.useOmnisearch,
+        () => this.effectiveExcludedPaths(),
+        this.sensitiveGuard
+      );
+      this.vaultTools = new VaultTools(
+        this.app,
+        () => this.effectiveExcludedPaths(),
+        this.sensitiveGuard,
+        this.omnisearchProvider
+      );
       this.retrievalIndex = new VaultRetrievalIndex(
         this.app,
         () => this.effectiveExcludedPaths(),
-        this.sensitiveGuard
+        this.sensitiveGuard,
+        this.omnisearchProvider
       );
       this.skillRegistry = new SkillRegistry(this.app, () => this.settings);
       await this.skillRegistry.initialize();
