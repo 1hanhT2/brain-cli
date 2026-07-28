@@ -19,7 +19,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Disposable per-device IndexedDB vector storage with deterministic Markdown chunks, curated frontmatter metadata, resumable batch checkpoints, and automatic changed-note updates.
 - Selected-folder semantic scope, dedicated paged embedding-model browser, configurable spend cap, live CLI indexing progress, and explicit sensitive-content consent.
 - Persistent incremental lexical indexing that restores unchanged notes without rereading their Markdown.
-- Fast startup paths that skip Brain's built-in lexical scan when Omnisearch is active and reuse 24-hour model catalogs.
+- Fast startup paths that skip Brain's built-in lexical scan when Omnisearch is active and reuse compact 24-hour model catalogs from asynchronous IndexedDB storage.
 - Lightweight frontmatter chat summaries, semantic-vector hot caching, progressive transcript history, and local `/perf` diagnostics.
 - Optional OpenRouter server-side web search alongside Brain's local vault tools.
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.

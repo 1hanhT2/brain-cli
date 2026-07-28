@@ -21,6 +21,8 @@ import { SemanticIndexCoordinator } from "./semantic-index";
 import type { EmbeddingModel } from "./semantic-types";
 import { PerformanceTracer } from "./performance";
 import { IndexedDbLexicalIndexStore } from "./retrieval-store";
+import { IndexedDbCatalogStore, type CatalogStore } from "./catalog-store";
+import { compactEmbeddingModel, compactOpenRouterModel } from "./catalog-models";
 
 interface CatalogCache {
   models?: { fetchedAt: number; rows: OpenRouterModel[] };
@@ -46,6 +48,8 @@ export default class ObsidianBrainPlugin extends Plugin {
   semanticIndex!: SemanticIndexCoordinator;
   readonly performance = new PerformanceTracer();
   private catalogCache: CatalogCache = {};
+  private legacyCatalogCache: CatalogCache | null = null;
+  private catalogStore!: CatalogStore;
 
   async onload(): Promise<void> {
     const finishOnload = this.performance.start("plugin.onload");
@@ -68,6 +72,7 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.omnisearchProvider
       );
       const semanticStore = new IndexedDbSemanticStore(`obsidian-brain:${this.settings.semanticVaultId}`);
+      this.catalogStore = new IndexedDbCatalogStore(`obsidian-brain-catalogs:${this.settings.semanticVaultId}`);
       this.semanticIndex = new SemanticIndexCoordinator(
         this.app,
         () => this.settings,
@@ -110,12 +115,13 @@ export default class ObsidianBrainPlugin extends Plugin {
         void this.performance.measure("skills.initialize", () => this.skillRegistry.initialize())
           .catch((error) => this.reportError(error));
         void this.retrievalIndex.initialize().catch((error) => this.reportError(error));
-        if (this.settings.openRouterSecretId) {
-          void this.refreshOpenRouterModels(false).catch((error) =>
-            console.warn("[Obsidian Brain] Automatic model refresh failed.", error)
-          );
-        }
         void (async () => {
+          await this.initializeCatalogCache();
+          if (this.settings.openRouterSecretId) {
+            await this.refreshOpenRouterModels(false).catch((error) =>
+              console.warn("[Obsidian Brain] Automatic model refresh failed.", error)
+            );
+          }
           if (this.settings.openRouterSecretId && (this.settings.semanticSearchEnabled || this.settings.embeddingModel)) {
             await this.refreshEmbeddingModels(false);
           }
@@ -165,7 +171,7 @@ export default class ObsidianBrainPlugin extends Plugin {
     if (showNotice) this.openRouter.clearModelRankingCache();
     this.modelCatalog = await this.performance.measure("catalog.models.fetch", () => this.openRouter.listModels());
     this.catalogCache.models = { fetchedAt: Date.now(), rows: this.modelCatalog };
-    await this.saveSettings();
+    await this.catalogStore.set("models", this.catalogCache.models);
     if (showNotice) new Notice(`Obsidian Brain loaded ${this.modelCatalog.length} OpenRouter models.`);
     for (const leaf of this.app.workspace.getLeavesOfType(BRAIN_VIEW_TYPE)) {
       const view = leaf.view;
@@ -183,7 +189,7 @@ export default class ObsidianBrainPlugin extends Plugin {
       () => this.openRouter.listEmbeddingModels()
     );
     this.catalogCache.embeddings = { fetchedAt: Date.now(), rows: this.embeddingModelCatalog };
-    await this.saveSettings();
+    await this.catalogStore.set("embeddings", this.catalogCache.embeddings);
     if (showNotice) new Notice(`Obsidian Brain loaded ${this.embeddingModelCatalog.length} embedding models.`);
   }
 
@@ -286,20 +292,23 @@ export default class ObsidianBrainPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const stored = (await this.loadData() ?? {}) as StoredPluginData;
     const { _catalogCache, ...storedSettings } = stored;
+    this.legacyCatalogCache = _catalogCache ?? null;
     this.catalogCache = _catalogCache ?? {};
     this.settings = { ...DEFAULT_SETTINGS, ...storedSettings };
     this.modelCatalog = this.catalogCache.models?.rows ?? [];
     this.embeddingModelCatalog = this.catalogCache.embeddings?.rows ?? [];
+    let shouldSave = Boolean(_catalogCache);
     if (!this.settings.semanticVaultId) {
       this.settings.semanticVaultId = typeof crypto?.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      await this.saveSettings();
+      shouldSave = true;
     }
+    if (shouldSave) await this.saveSettings();
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData({ ...this.settings, _catalogCache: this.catalogCache });
+    await this.saveData(this.settings);
   }
 
   private registerVaultIndexEvents(): void {
@@ -340,6 +349,42 @@ export default class ObsidianBrainPlugin extends Plugin {
 
   private isCatalogFresh(cache: { fetchedAt: number } | undefined): boolean {
     return Boolean(cache && Date.now() - cache.fetchedAt < CATALOG_CACHE_TTL_MS);
+  }
+
+  private async initializeCatalogCache(): Promise<void> {
+    await this.performance.measure("catalog.cache.load", async () => {
+      await this.catalogStore.initialize();
+      if (this.legacyCatalogCache) {
+        const models = this.legacyCatalogCache.models
+          ? {
+              fetchedAt: this.legacyCatalogCache.models.fetchedAt,
+              rows: this.legacyCatalogCache.models.rows.map(compactOpenRouterModel)
+            }
+          : undefined;
+        const embeddings = this.legacyCatalogCache.embeddings
+          ? {
+              fetchedAt: this.legacyCatalogCache.embeddings.fetchedAt,
+              rows: this.legacyCatalogCache.embeddings.rows.map(compactEmbeddingModel)
+            }
+          : undefined;
+        if (models) await this.catalogStore.set("models", models);
+        if (embeddings) await this.catalogStore.set("embeddings", embeddings);
+        this.catalogCache = { models, embeddings };
+        this.legacyCatalogCache = null;
+      } else {
+        const [models, embeddings] = await Promise.all([
+          this.catalogStore.get<CatalogCache["models"]>("models"),
+          this.catalogStore.get<CatalogCache["embeddings"]>("embeddings")
+        ]);
+        this.catalogCache = { models, embeddings };
+      }
+      this.modelCatalog = this.catalogCache.models?.rows ?? this.modelCatalog;
+      this.embeddingModelCatalog = this.catalogCache.embeddings?.rows ?? this.embeddingModelCatalog;
+      for (const leaf of this.app.workspace.getLeavesOfType(BRAIN_VIEW_TYPE)) {
+        const view = leaf.view;
+        if (view instanceof BrainChatView) view.refreshModels();
+      }
+    });
   }
 
   private effectiveExcludedPaths(): string[] {

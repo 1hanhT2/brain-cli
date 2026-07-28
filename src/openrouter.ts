@@ -7,6 +7,7 @@ import {
 } from "./openrouter-tools";
 import type { DailyModelRanking } from "./model-rankings";
 import type { EmbeddingBatchResult, EmbeddingModel } from "./semantic-types";
+import { compactEmbeddingModel, compactOpenRouterModel } from "./catalog-models";
 
 export type { FunctionToolDefinition as ToolDefinition } from "./openrouter-tools";
 
@@ -126,6 +127,7 @@ export class OpenRouterClient {
     if (!Array.isArray(body.data)) throw new Error("OpenRouter returned an invalid model catalog.");
     return body.data
       .filter((model) => Boolean(model.id))
+      .map(compactOpenRouterModel)
       .sort((left, right) => (left.name ?? left.id).localeCompare(right.name ?? right.id));
   }
 
@@ -165,6 +167,7 @@ export class OpenRouterClient {
       .filter((model) => Boolean(model.id))
       .map((model) => [model.id, model])).values()]
       .map((model) => ({ ...model, pricing: model.pricing ?? pricingById.get(model.id) }))
+      .map(compactEmbeddingModel)
       .sort((left, right) => (left.name ?? left.id).localeCompare(right.name ?? right.id));
   }
 
@@ -441,7 +444,7 @@ export class OpenRouterClient {
 
   private modelCatalogFromResponse(body: ModelListResponse): OpenRouterModel[] {
     if (!Array.isArray(body.data)) throw new Error("OpenRouter returned an invalid model catalog.");
-    return body.data.filter((model) => Boolean(model.id));
+    return body.data.filter((model) => Boolean(model.id)).map(compactOpenRouterModel);
   }
 
   private retryDelay(milliseconds: number, signal: AbortSignal): Promise<void> {

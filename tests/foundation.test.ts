@@ -37,11 +37,14 @@ import {
 } from "../src/model-rankings";
 import { chunkMatchesFilters, prepareMarkdownChunks } from "../src/markdown-chunks";
 import { cosineSimilarity, MemorySemanticStore } from "../src/semantic-store";
-import type { SemanticChunkRecord } from "../src/semantic-types";
+import type { EmbeddingModel, SemanticChunkRecord } from "../src/semantic-types";
 import { SemanticIndexCoordinator } from "../src/semantic-index";
 import type { BrainSettings } from "../src/settings";
 import { MemoryLexicalIndexStore } from "../src/retrieval-store";
 import { PerformanceTracer } from "../src/performance";
+import { compactEmbeddingModel, compactOpenRouterModel } from "../src/catalog-models";
+import { MemoryCatalogStore } from "../src/catalog-store";
+import type { OpenRouterModel } from "../src/types";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -341,6 +344,40 @@ test("performance tracer aggregates local timings and can reset them", () => {
   assert.match(tracer.report(), /vault\.search/);
   tracer.reset();
   assert.equal(tracer.summaries().length, 0);
+});
+
+test("catalog cache stores compact model records outside plugin settings", async () => {
+  const compact = compactOpenRouterModel({
+    id: "provider/model",
+    name: "Model",
+    context_length: 32_000,
+    pricing: { prompt: "0.1", completion: "0.2" },
+    supported_parameters: ["tools"],
+    description: "unused large description"
+  } as OpenRouterModel & { description: string });
+  assert.deepEqual(Object.keys(compact).sort(), [
+    "architecture",
+    "canonical_slug",
+    "context_length",
+    "id",
+    "name",
+    "pricing",
+    "supported_parameters",
+    "top_provider"
+  ]);
+  assert.equal("description" in compact, false);
+
+  const embedding = compactEmbeddingModel({
+    id: "provider/embedding",
+    name: "Embedding",
+    description: "Searchable",
+    context_length: 8_192
+  });
+  const store = new MemoryCatalogStore();
+  await store.set("models", { fetchedAt: 1, rows: [compact] });
+  await store.set("embeddings", { fetchedAt: 2, rows: [embedding] });
+  assert.equal((await store.get<{ rows: OpenRouterModel[] }>("models"))?.rows[0]?.id, "provider/model");
+  assert.equal((await store.get<{ rows: EmbeddingModel[] }>("embeddings"))?.rows[0]?.description, "Searchable");
 });
 
 test("semantic chunking is deterministic and embeds curated metadata without YAML noise", () => {
