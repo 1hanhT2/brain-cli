@@ -2123,8 +2123,7 @@ export class BrainChatView extends ItemView {
     }
     const query = value.slice(1).toLocaleLowerCase();
     this.visibleSuggestions = BRAIN_COMMANDS
-      .filter((command) => command.name.startsWith(query))
-      .slice(0, 8);
+      .filter((command) => command.name.startsWith(query));
     this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
     this.renderCommandSuggestions();
   }
@@ -2147,6 +2146,9 @@ export class BrainChatView extends ItemView {
         this.suggestionIndex = index;
         this.completeSuggestion();
       });
+      if (index === this.suggestionIndex) {
+        item.scrollIntoView({ block: "nearest" });
+      }
     });
   }
 

@@ -52,9 +52,9 @@ there is no separate browser preview to keep in sync.
 
 ## Terminal commands
 
-Type `/` to open completion. Use `Tab` to complete, arrow keys to navigate
-suggestions or input history, `Enter` to run, `Shift+Enter` for a newline, and
-`Ctrl+C` to stop generation.
+Type `/` to open the complete command list. Use `Tab` to complete, `↑` and
+`↓` to move through the list (it scrolls as needed) or input history, `Enter`
+to run, `Shift+Enter` for a newline, and `Ctrl+C` to stop generation.
 
 ```text
 /help [page]
