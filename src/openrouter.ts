@@ -1,6 +1,10 @@
 import { requestUrl, type App } from "obsidian";
 import type { OpenRouterModel } from "./types";
-import type { OpenRouterRequestTool } from "./openrouter-tools";
+import {
+  legacyWebPluginFor,
+  splitOpenRouterTools,
+  type OpenRouterRequestTool
+} from "./openrouter-tools";
 import type { DailyModelRanking } from "./model-rankings";
 import type { EmbeddingBatchResult, EmbeddingModel } from "./semantic-types";
 
@@ -78,6 +82,10 @@ interface OpenRouterErrorBody {
   error?: {
     code?: number | string;
     message?: string;
+    metadata?: {
+      provider_name?: string;
+      raw?: string;
+    };
   };
 }
 
@@ -255,25 +263,48 @@ export class OpenRouterClient {
     if (!model.trim()) throw new Error("Choose an OpenRouter model first.");
     if (messages.length === 0) throw new Error("A chat completion requires at least one message.");
     const apiKey = await this.getApiKey();
-    const response = await fetch(CHAT_COMPLETIONS_URL, {
+    const request = (body: Record<string, unknown>) => fetch(CHAT_COMPLETIONS_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
         "X-OpenRouter-Title": "Obsidian Brain"
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        tools,
-        tool_choice: "auto",
-        parallel_tool_calls: false,
-        stream: true
-      }),
+      body: JSON.stringify(body),
       signal
     });
 
-    if (!response.ok) throw new Error(await this.readHttpError(response));
+    const baseBody = {
+      model,
+      messages,
+      tools,
+      tool_choice: "auto",
+      parallel_tool_calls: false,
+      stream: true
+    };
+    let response = await request(baseBody);
+    if (!response.ok) {
+      const primaryStatus = response.status;
+      const primaryError = await this.readHttpError(response);
+      const { functionTools, webSearchTool } = splitOpenRouterTools(tools);
+      if (primaryStatus >= 500 && webSearchTool) {
+        console.warn(
+          "[Obsidian Brain] OpenRouter's web-search server tool failed; retrying with the legacy web plugin.",
+          primaryError
+        );
+        response = await request({
+          ...baseBody,
+          tools: functionTools,
+          plugins: [legacyWebPluginFor(webSearchTool)]
+        });
+        if (!response.ok) {
+          const fallbackError = await this.readHttpError(response);
+          throw new Error(`${fallbackError} Legacy web-search retry followed: ${primaryError}`);
+        }
+      } else {
+        throw new Error(primaryError);
+      }
+    }
     if (!response.body) throw new Error("This Obsidian runtime did not expose the OpenRouter response stream.");
 
     const reader = response.body.getReader();
@@ -425,12 +456,19 @@ export class OpenRouterClient {
 
   private async readHttpError(response: Response): Promise<string> {
     let message = response.statusText || "Request failed";
+    let details = "";
     try {
       const body = await response.json() as OpenRouterErrorBody;
       if (body.error?.message) message = body.error.message;
+      const provider = body.error?.metadata?.provider_name;
+      const raw = body.error?.metadata?.raw;
+      details = [
+        provider ? `provider=${provider}` : "",
+        raw ? `upstream=${raw.slice(0, 500)}` : ""
+      ].filter(Boolean).join(", ");
     } catch {
       // Some gateways return a non-JSON error page. The status remains actionable.
     }
-    return `OpenRouter request failed (${response.status}): ${message}`;
+    return `OpenRouter request failed (${response.status}): ${message}${details ? ` [${details}]` : ""}`;
   }
 }

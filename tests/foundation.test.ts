@@ -22,7 +22,12 @@ import {
   type OmnisearchApi,
   type OmnisearchApiResult
 } from "../src/omnisearch-provider";
-import { assembleOpenRouterTools, type FunctionToolDefinition } from "../src/openrouter-tools";
+import {
+  assembleOpenRouterTools,
+  legacyWebPluginFor,
+  splitOpenRouterTools,
+  type FunctionToolDefinition
+} from "../src/openrouter-tools";
 import { paginate, readLeadingPage } from "../src/pagination";
 import {
   rankPopularModels,
@@ -610,6 +615,16 @@ test("OpenRouter web search is added only when the setting is enabled", () => {
     },
     functionTool
   ]);
+  const split = splitOpenRouterTools(assembleOpenRouterTools([functionTool], true));
+  assert.deepEqual(split.functionTools, [functionTool]);
+  assert.deepEqual(split.webSearchTool, {
+    type: "openrouter:web_search",
+    parameters: { engine: "auto", max_results: 5 }
+  });
+  assert.deepEqual(legacyWebPluginFor(split.webSearchTool!), {
+    id: "web",
+    max_results: 5
+  });
 });
 
 test("pagination preserves every item across 30-row pages", () => {

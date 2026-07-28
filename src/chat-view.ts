@@ -1211,7 +1211,7 @@ export class BrainChatView extends ItemView {
         description: "Let the model search the live internet through OpenRouter when a request needs current information.",
         checked: () => this.plugin.settings.useWebSearch,
         detail: () => this.plugin.settings.useWebSearch
-          ? "enabled · server tool available · usage may cost"
+          ? "enabled · server tool · compatibility retry on 5xx · usage may cost"
           : "disabled",
         toggle: async () => {
           const previous = this.plugin.settings.useWebSearch;

@@ -102,7 +102,9 @@ is disabled, unavailable, or errors, the built-in local index remains active.
 The neighboring OpenRouter web-search checkbox adds
 `openrouter:web_search` to chat requests. The model can then search current
 internet sources while retaining access to Brain's local tools; web search is
-off by default and may incur OpenRouter search charges when used.
+off by default and may incur OpenRouter search charges when used. Because
+OpenRouter's server-tool path is still beta, a 5xx response automatically
+retries once using OpenRouter's deprecated but model-agnostic `web` plugin.
 
 Semantic search is also off by default. Enabling it requires an explicit
 OpenRouter embedding model and at least one folder selected through the

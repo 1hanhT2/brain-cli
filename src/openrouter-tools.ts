@@ -17,6 +17,30 @@ export interface OpenRouterWebSearchTool {
 
 export type OpenRouterRequestTool = FunctionToolDefinition | OpenRouterWebSearchTool;
 
+export interface LegacyOpenRouterWebPlugin {
+  id: "web";
+  max_results: number;
+}
+
+export const splitOpenRouterTools = (
+  tools: OpenRouterRequestTool[]
+): {
+  functionTools: FunctionToolDefinition[];
+  webSearchTool: OpenRouterWebSearchTool | null;
+} => ({
+  functionTools: tools.filter((tool): tool is FunctionToolDefinition => tool.type === "function"),
+  webSearchTool: tools.find(
+    (tool): tool is OpenRouterWebSearchTool => tool.type === "openrouter:web_search"
+  ) ?? null
+});
+
+export const legacyWebPluginFor = (
+  tool: OpenRouterWebSearchTool
+): LegacyOpenRouterWebPlugin => ({
+  id: "web",
+  max_results: tool.parameters.max_results
+});
+
 export const assembleOpenRouterTools = (
   functionTools: FunctionToolDefinition[],
   webSearchEnabled: boolean

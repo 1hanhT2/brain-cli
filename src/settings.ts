@@ -123,7 +123,7 @@ export class BrainSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Allow OpenRouter web search")
-      .setDesc("Expose OpenRouter's server-side web search tool to the selected model. Search use may add provider charges.")
+      .setDesc("Expose OpenRouter's server-side web search tool. A 5xx retries once through its legacy model-agnostic web plugin. Search use may add provider charges.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.useWebSearch)
         .onChange(async (value) => {
