@@ -3,6 +3,7 @@ import type ObsidianBrainPlugin from "./main";
 
 export interface BrainSettings {
   brainFolder: string;
+  fallbackTaskFolder: string;
   openRouterSecretId: string;
   interactiveModel: string;
   backgroundModel: string;
@@ -22,6 +23,7 @@ export interface BrainSettings {
 
 export const DEFAULT_SETTINGS: BrainSettings = {
   brainFolder: "Brain",
+  fallbackTaskFolder: "TaskNotes/Tasks",
   openRouterSecretId: "",
   interactiveModel: "openrouter/free",
   backgroundModel: "openrouter/free",
@@ -67,6 +69,16 @@ export class BrainSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.openRouterSecretId)
         .onChange(async (secretId) => {
           this.plugin.settings.openRouterSecretId = secretId;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Fallback task folder")
+      .setDesc("Folder used for generic Markdown tasks when the TaskNotes runtime API is unavailable.")
+      .addText((text) => text
+        .setValue(this.plugin.settings.fallbackTaskFolder)
+        .onChange(async (value) => {
+          this.plugin.settings.fallbackTaskFolder = normalizePath(value.trim() || "TaskNotes/Tasks");
           await this.plugin.saveSettings();
         }));
 

@@ -3,6 +3,8 @@ import type { ToolRisk } from "./types";
 import type { VaultTools } from "./vault-tools";
 import type { VaultRetrievalIndex } from "./retrieval-index";
 import type { SkillRegistry } from "./skill-registry";
+import type { TaskService } from "./task-service";
+import type { TaskCreateInput, TaskPatch, TaskQuery } from "./task-provider";
 
 export interface ToolExecutionResult {
   ok: boolean;
@@ -67,6 +69,54 @@ const stringArrayArg = (input: Record<string, unknown>, name: string): string[] 
   return value.map((item) => String(item).trim()).filter(Boolean);
 };
 
+const nullableStringArg = (input: Record<string, unknown>, name: string): string | null | undefined => {
+  const value = input[name];
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "string") throw new Error(`Tool argument "${name}" must be a string or null.`);
+  return value.trim();
+};
+
+const nullableNumberArg = (input: Record<string, unknown>, name: string): number | null | undefined => {
+  const value = input[name];
+  if (value === undefined || value === null) return value;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`Tool argument "${name}" must be a non-negative number or null.`);
+  }
+  return value;
+};
+
+const dependencyArrayArg = (
+  input: Record<string, unknown>,
+  name: string
+): Array<{ uid: string; reltype?: string }> | undefined => {
+  const value = input[name];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`Tool argument "${name}" must be an array.`);
+  return value.map((entry, index) => {
+    const dependency = objectInput(entry);
+    const uid = stringArg(dependency, "uid");
+    const reltype = dependency.reltype;
+    if (reltype !== undefined && typeof reltype !== "string") {
+      throw new Error(`Tool argument "${name}[${index}].reltype" must be a string.`);
+    }
+    return { uid, ...(typeof reltype === "string" && reltype.trim() ? { reltype: reltype.trim() } : {}) };
+  });
+};
+
+const taskFields = (input: Record<string, unknown>): TaskPatch => ({
+  ...(input.title !== undefined ? { title: stringArg(input, "title") } : {}),
+  ...(input.status !== undefined ? { status: stringArg(input, "status") } : {}),
+  ...(input.priority !== undefined ? { priority: stringArg(input, "priority") } : {}),
+  ...(input.due !== undefined ? { due: nullableStringArg(input, "due") } : {}),
+  ...(input.scheduled !== undefined ? { scheduled: nullableStringArg(input, "scheduled") } : {}),
+  ...(input.tags !== undefined ? { tags: stringArrayArg(input, "tags") } : {}),
+  ...(input.contexts !== undefined ? { contexts: stringArrayArg(input, "contexts") } : {}),
+  ...(input.projects !== undefined ? { projects: stringArrayArg(input, "projects") } : {}),
+  ...(input.time_estimate !== undefined ? { timeEstimate: nullableNumberArg(input, "time_estimate") } : {}),
+  ...(input.recurrence !== undefined ? { recurrence: nullableStringArg(input, "recurrence") } : {}),
+  ...(input.blocked_by !== undefined ? { dependencies: dependencyArrayArg(input, "blocked_by") } : {})
+});
+
 const citationForPath = (path: string): string => `[[${path.replace(/\.md$/, "")}]]`;
 const previewText = (value: string): string =>
   value.length <= 40_000 ? value : `${value.slice(0, 40_000)}\n[Preview truncated]`;
@@ -77,7 +127,8 @@ export class AgentToolRegistry {
   constructor(
     private readonly vaultTools: VaultTools,
     private readonly retrievalIndex: VaultRetrievalIndex,
-    private readonly skillRegistry: SkillRegistry
+    private readonly skillRegistry: SkillRegistry,
+    private readonly taskService: TaskService
   ) {
     const registered: RegisteredTool[] = [
       {
@@ -93,12 +144,14 @@ export class AgentToolRegistry {
         execute: async () => ({
           ...this.vaultTools.getEnvironment(),
           retrieval: this.retrievalIndex.getStatus(),
+          tasks: this.taskService.getStatus(),
           installedSkills: this.skillRegistry.list(),
           capabilities: [
             "render Obsidian Markdown including tables, links, callouts, code, and math",
             "inspect, list, read, search, and retrieve permitted Markdown notes",
             "create, append, patch, replace, rename, move, trash, and update frontmatter after approval",
             "discover and load traditional SKILL.md skills",
+            "query, inspect, create, update, and complete TaskNotes tasks",
             "cite vault sources with clickable Obsidian wikilinks"
           ],
           limitations: [
@@ -228,6 +281,289 @@ export class AgentToolRegistry {
             }
           );
         }
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "query_tasks",
+            description: "Query normalized tasks through TaskNotes runtime API v1, with a generic Markdown fallback. Results include clickable citations.",
+            parameters: {
+              type: "object",
+              properties: {
+                text: { type: "string", description: "Optional title or path text." },
+                status: { type: "string" },
+                priority: { type: "string" },
+                tags: { type: "array", items: { type: "string" } },
+                folder: { type: "string" },
+                due_before: { type: "string", description: "Inclusive YYYY-MM-DD upper bound." },
+                due_after: { type: "string", description: "Inclusive YYYY-MM-DD lower bound." },
+                include_completed: { type: "boolean", description: "Defaults to false." },
+                limit: { type: "integer", minimum: 1, maximum: 200 }
+              },
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "read",
+        execute: async (input) => {
+          const query: TaskQuery = {
+            text: typeof input.text === "string" ? input.text : undefined,
+            status: typeof input.status === "string" ? input.status : undefined,
+            priority: typeof input.priority === "string" ? input.priority : undefined,
+            tags: stringArrayArg(input, "tags"),
+            folder: typeof input.folder === "string" ? input.folder : undefined,
+            dueBefore: typeof input.due_before === "string" ? input.due_before : undefined,
+            dueAfter: typeof input.due_after === "string" ? input.due_after : undefined,
+            includeCompleted: booleanArg(input, "include_completed"),
+            limit: Math.min(numberArg(input, "limit", 50), 200)
+          };
+          const tasks = await this.taskService.list(query);
+          return {
+            provider: this.taskService.getStatus().active.provider,
+            count: tasks.length,
+            tasks
+          };
+        }
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "get_task",
+            description: "Inspect one task by its vault-relative Markdown path.",
+            parameters: {
+              type: "object",
+              properties: { path: { type: "string" } },
+              required: ["path"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "read",
+        execute: async (input, options) => {
+          const path = stringArg(input, "path");
+          const task = await this.taskService.get(path, options.allowSensitive);
+          if (!task) throw new Error(`Task not found: ${path}`);
+          return task;
+        }
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "create_task",
+            description: "Create a task through TaskNotes, or as a generic Markdown task if TaskNotes is unavailable. Requires approval.",
+            parameters: {
+              type: "object",
+              properties: {
+                title: { type: "string" },
+                status: { type: "string" },
+                priority: { type: "string" },
+                due: { type: ["string", "null"] },
+                scheduled: { type: ["string", "null"] },
+                tags: { type: "array", items: { type: "string" } },
+                contexts: { type: "array", items: { type: "string" } },
+                projects: { type: "array", items: { type: "string" } },
+                time_estimate: { type: ["number", "null"], minimum: 0 },
+                recurrence: { type: ["string", "null"] },
+                blocked_by: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      uid: { type: "string", description: "Vault path of the blocking task." },
+                      reltype: { type: "string", description: "Defaults to FINISHTOSTART." }
+                    },
+                    required: ["uid"],
+                    additionalProperties: false
+                  }
+                }
+              },
+              required: ["title"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "high-write",
+        execute: async (input) => {
+          const created = await this.taskService.create({
+            ...taskFields(input),
+            title: stringArg(input, "title")
+          } as TaskCreateInput);
+          return { task: created, verified: true };
+        }
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "update_task",
+            description: "Update selected task fields through the active task provider. Requires approval with a before/after preview.",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                updates: {
+                  type: "object",
+                  properties: {
+                    title: { type: "string" },
+                    status: { type: "string" },
+                    priority: { type: "string" },
+                    due: { type: ["string", "null"] },
+                    scheduled: { type: ["string", "null"] },
+                    tags: { type: "array", items: { type: "string" } },
+                    contexts: { type: "array", items: { type: "string" } },
+                    projects: { type: "array", items: { type: "string" } },
+                    time_estimate: { type: ["number", "null"], minimum: 0 },
+                    recurrence: { type: ["string", "null"] },
+                    blocked_by: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          uid: { type: "string" },
+                          reltype: { type: "string" }
+                        },
+                        required: ["uid"],
+                        additionalProperties: false
+                      }
+                    }
+                  },
+                  additionalProperties: false
+                }
+              },
+              required: ["path", "updates"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "high-write",
+        execute: async (input) => {
+          const path = stringArg(input, "path");
+          const updates = taskFields(objectInput(input.updates));
+          if (Object.keys(updates).length === 0) throw new Error("No task fields were provided.");
+          return { task: await this.taskService.update(path, updates), verified: true };
+        }
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "complete_task",
+            description: "Mark a task complete using TaskNotes's configured completion behavior. Requires approval.",
+            parameters: {
+              type: "object",
+              properties: { path: { type: "string" } },
+              required: ["path"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "high-write",
+        execute: async (input) => ({
+          task: await this.taskService.complete(stringArg(input, "path")),
+          verified: true
+        })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "add_task_dependency",
+            description: "Add a blocking dependency to a task. Requires approval.",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Task being blocked." },
+                dependency_path: { type: "string", description: "Task that must be completed first." },
+                relationship: { type: "string", description: "Defaults to FINISHTOSTART." }
+              },
+              required: ["path", "dependency_path"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "high-write",
+        execute: async (input) => ({
+          task: await this.taskService.addDependency(stringArg(input, "path"), {
+            uid: stringArg(input, "dependency_path"),
+            ...(typeof input.relationship === "string" ? { reltype: input.relationship } : {})
+          }),
+          verified: true
+        })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "remove_task_dependency",
+            description: "Remove a blocking dependency from a task. Requires approval.",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                dependency_path: { type: "string" }
+              },
+              required: ["path", "dependency_path"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "high-write",
+        execute: async (input) => ({
+          task: await this.taskService.removeDependency(
+            stringArg(input, "path"),
+            stringArg(input, "dependency_path")
+          ),
+          verified: true
+        })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "start_task_timer",
+            description: "Start TaskNotes time tracking for a task as a secondary effort metric. Requires approval.",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                description: { type: "string" }
+              },
+              required: ["path"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "low-write",
+        execute: async (input) => ({
+          task: await this.taskService.startTimer(
+            stringArg(input, "path"),
+            typeof input.description === "string" ? input.description : undefined
+          ),
+          verified: true
+        })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "stop_task_timer",
+            description: "Stop the active TaskNotes time entry for a task. Requires approval.",
+            parameters: {
+              type: "object",
+              properties: { path: { type: "string" } },
+              required: ["path"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "low-write",
+        execute: async (input) => ({
+          task: await this.taskService.stopTimer(stringArg(input, "path")),
+          verified: true
+        })
       },
       {
         definition: {
@@ -483,6 +819,66 @@ export class AgentToolRegistry {
       const report = await this.vaultTools.inspectSensitivity(stringArg(input, "path"));
       sensitive = report.sensitive;
       sensitivityReasons = report.reasons;
+    } else if (call.function.name === "get_task") {
+      const report = await this.taskService.inspectSensitivity(stringArg(input, "path"));
+      sensitive = report.sensitive;
+      sensitivityReasons = report.reasons;
+    } else if (call.function.name === "create_task") {
+      preview = {
+        title: `Create task: ${stringArg(input, "title")}`,
+        before: "",
+        after: JSON.stringify({ ...taskFields(input), title: stringArg(input, "title") }, null, 2),
+        details: `Provider: ${this.taskService.getStatus().active.provider}`
+      };
+    } else if (call.function.name === "update_task") {
+      const path = stringArg(input, "path");
+      const before = await this.taskService.get(path, true);
+      if (!before) throw new Error(`Task not found: ${path}`);
+      const updates = taskFields(objectInput(input.updates));
+      preview = {
+        title: `Update task: ${before.title}`,
+        before: JSON.stringify(before, null, 2),
+        after: JSON.stringify({ ...before, ...updates }, null, 2),
+        details: before.citation
+      };
+    } else if (call.function.name === "complete_task") {
+      const path = stringArg(input, "path");
+      const before = await this.taskService.get(path, true);
+      if (!before) throw new Error(`Task not found: ${path}`);
+      preview = {
+        title: `Complete task: ${before.title}`,
+        before: JSON.stringify(before, null, 2),
+        after: "TaskNotes will apply its configured completion status and recurrence behavior.",
+        details: before.citation
+      };
+    } else if (call.function.name === "add_task_dependency" || call.function.name === "remove_task_dependency") {
+      const path = stringArg(input, "path");
+      const before = await this.taskService.get(path, true);
+      if (!before) throw new Error(`Task not found: ${path}`);
+      const dependencyPath = stringArg(input, "dependency_path");
+      const dependencies = call.function.name === "add_task_dependency"
+        ? [...before.dependencies, {
+            uid: dependencyPath,
+            reltype: typeof input.relationship === "string" ? input.relationship : "FINISHTOSTART"
+          }]
+        : before.dependencies.filter((dependency) => dependency.uid !== dependencyPath);
+      preview = {
+        title: `${call.function.name === "add_task_dependency" ? "Add" : "Remove"} task dependency`,
+        before: JSON.stringify(before.dependencies, null, 2),
+        after: JSON.stringify(dependencies, null, 2),
+        details: before.citation
+      };
+    } else if (call.function.name === "start_task_timer" || call.function.name === "stop_task_timer") {
+      const path = stringArg(input, "path");
+      const before = await this.taskService.get(path, true);
+      if (!before) throw new Error(`Task not found: ${path}`);
+      const starting = call.function.name === "start_task_timer";
+      preview = {
+        title: `${starting ? "Start" : "Stop"} task timer: ${before.title}`,
+        before: before.timeTrackingActive ? "timer active" : "timer stopped",
+        after: starting ? "timer active" : "timer stopped",
+        details: before.citation
+      };
     } else if (call.function.name === "create_note") {
       preview = { title: `Create ${stringArg(input, "path")}`, before: "", after: previewText(stringArg(input, "content", false)) };
     } else if (call.function.name === "append_note") {

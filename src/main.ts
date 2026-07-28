@@ -23,6 +23,9 @@ import { PerformanceTracer } from "./performance";
 import { IndexedDbLexicalIndexStore } from "./retrieval-store";
 import { IndexedDbCatalogStore, type CatalogStore } from "./catalog-store";
 import { compactEmbeddingModel, compactOpenRouterModel } from "./catalog-models";
+import { TaskNotesProvider } from "./tasknotes-provider";
+import { MarkdownTaskProvider } from "./markdown-task-provider";
+import { TaskService } from "./task-service";
 
 interface CatalogCache {
   models?: { fetchedAt: number; rows: OpenRouterModel[] };
@@ -46,6 +49,7 @@ export default class ObsidianBrainPlugin extends Plugin {
   embeddingModelCatalog: EmbeddingModel[] = [];
   openRouter!: OpenRouterClient;
   semanticIndex!: SemanticIndexCoordinator;
+  taskService!: TaskService;
   readonly performance = new PerformanceTracer();
   private catalogCache: CatalogCache = {};
   private legacyCatalogCache: CatalogCache | null = null;
@@ -71,6 +75,12 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.sensitiveGuard,
         this.omnisearchProvider
       );
+      this.taskService = new TaskService(
+        new TaskNotesProvider(this.app),
+        new MarkdownTaskProvider(this.app, this.vaultTools, () => this.settings.fallbackTaskFolder),
+        () => this.effectiveExcludedPaths(),
+        () => this.settings.sensitiveTags
+      );
       const semanticStore = new IndexedDbSemanticStore(`obsidian-brain:${this.settings.semanticVaultId}`);
       this.catalogStore = new IndexedDbCatalogStore(`obsidian-brain-catalogs:${this.settings.semanticVaultId}`);
       this.semanticIndex = new SemanticIndexCoordinator(
@@ -92,7 +102,12 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.performance
       );
       this.skillRegistry = new SkillRegistry(this.app, () => this.settings);
-      this.agentTools = new AgentToolRegistry(this.vaultTools, this.retrievalIndex, this.skillRegistry);
+      this.agentTools = new AgentToolRegistry(
+        this.vaultTools,
+        this.retrievalIndex,
+        this.skillRegistry,
+        this.taskService
+      );
       this.chatStore = new ChatStore(this.app, () => this.settings, this.performance);
       stage = "registering chat view";
       this.registerView(BRAIN_VIEW_TYPE, (leaf) => new BrainChatView(leaf, this));

@@ -89,6 +89,7 @@ const createSystemMessage = (): ChatMessage => ({
     "[Obsidian Brain system v2]",
     "You are Obsidian Brain, a concise and thoughtful agent operating inside an Obsidian vault.",
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
+    "You can query, inspect, create, update, and complete TaskNotes tasks through the active task provider.",
     "Use tools whenever the answer depends on the vault instead of guessing or merely describing safety.",
     "When the OpenRouter web search server tool is available, use it for current or external information instead of relying on potentially stale training knowledge.",
     "When asked what you can do or what environment you are in, call get_environment and explain the returned capabilities and limitations plainly.",
@@ -541,6 +542,7 @@ export class BrainChatView extends ItemView {
           const retrieval = this.plugin.retrievalIndex.getStatus();
           const semantic = retrieval.semantic;
           const skills = this.plugin.skillRegistry.list();
+          const tasks = this.plugin.taskService.getStatus();
           await this.addTerminalOutput([
             "```text",
             `vault      ${this.app.vault.getName()}`,
@@ -553,6 +555,7 @@ export class BrainChatView extends ItemView {
             `scope      ${semantic?.folders.join(", ") || "none"}`,
             `index cost $${(semantic?.estimatedCostUsd ?? 0).toFixed(4)} / $${this.plugin.settings.semanticSpendCapUsd.toFixed(2)} cap`,
             `web        ${this.plugin.settings.useWebSearch ? "enabled · OpenRouter server tool" : "disabled"}`,
+            `tasks      ${tasks.active.provider}${tasks.tasknotes.available ? ` · TaskNotes API v${tasks.tasknotes.apiVersion}` : " · Markdown fallback"}`,
             `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
             `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
             `pending    ${this.pendingApproval ? "approval" : "none"}`,

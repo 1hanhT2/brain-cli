@@ -21,6 +21,8 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Persistent incremental lexical indexing that restores unchanged notes without rereading their Markdown.
 - Fast startup paths that skip Brain's built-in lexical scan when Omnisearch is active and reuse compact 24-hour model catalogs from asynchronous IndexedDB storage.
 - Lightweight frontmatter chat summaries, semantic-vector hot caching, progressive transcript history, and local `/perf` diagnostics.
+- TaskNotes runtime API v1 integration for normalized task queries, inspection, creation, updates, and completion.
+- Approval-gated task mutation previews, post-operation verification, sensitive-task filtering, and a generic Markdown fallback when TaskNotes is unavailable.
 - Optional OpenRouter server-side web search alongside Brain's local vault tools.
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
@@ -95,6 +97,13 @@ suggestions or input history, `Enter` to run, `Shift+Enter` for a newline, and
 Plain text still starts or continues a model conversation. Read tools execute
 automatically. Write and sensitive-read previews pause the agent and accept
 `/approve` or `/deny` directly from the terminal prompt.
+
+Tool-capable models can query, inspect, create, update, and complete tasks;
+manage blocking dependencies; and start or stop TaskNotes time tracking.
+Brain prefers TaskNotes's mobile-safe
+in-process runtime API and uses its configured status and recurrence behavior.
+If TaskNotes API v1 is unavailable, the same stable tool contract operates on
+ordinary frontmatter tasks in the configured fallback task folder.
 
 `/config`, `/setting`, and `/settings` open the terminal settings menu. Use
 the arrow keys to select an item, `Space` to toggle its checkbox, and `Enter`

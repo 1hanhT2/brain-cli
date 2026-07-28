@@ -45,6 +45,8 @@ import { PerformanceTracer } from "../src/performance";
 import { compactEmbeddingModel, compactOpenRouterModel } from "../src/catalog-models";
 import { MemoryCatalogStore } from "../src/catalog-store";
 import type { OpenRouterModel } from "../src/types";
+import type { TaskService } from "../src/task-service";
+import { TaskNotesProvider } from "../src/tasknotes-provider";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -63,7 +65,19 @@ const makeRegistry = (vaultTools: VaultTools): AgentToolRegistry =>
       list: () => [],
       load: async () => { throw new Error("not configured"); },
       readReference: async () => { throw new Error("not configured"); }
-    } as SkillRegistry
+    } as SkillRegistry,
+    {
+      getStatus: () => ({
+        active: { provider: "markdown", available: true, reason: "test" },
+        tasknotes: { provider: "tasknotes", available: false, reason: "test" },
+        fallback: { provider: "markdown", available: true, reason: "test" }
+      }),
+      list: async () => [],
+      get: async () => null,
+      create: async () => { throw new Error("not configured"); },
+      update: async () => { throw new Error("not configured"); },
+      complete: async () => { throw new Error("not configured"); }
+    } as unknown as TaskService
   );
 
 test("vault path policy rejects hidden config, traversal, absolute paths, and URLs", () => {
@@ -146,6 +160,15 @@ test("registry exposes the complete foundational tool surface", () => {
       "read_note",
       "search_notes",
       "retrieve_context",
+      "query_tasks",
+      "get_task",
+      "create_task",
+      "update_task",
+      "complete_task",
+      "add_task_dependency",
+      "remove_task_dependency",
+      "start_task_timer",
+      "stop_task_timer",
       "create_note",
       "append_note",
       "apply_note_patch",
@@ -199,6 +222,96 @@ test("registry returns actionable errors for malformed and unknown calls", async
   };
   assert.match((await registry.execute(malformed)).error ?? "", /Invalid arguments/);
   assert.match((await registry.execute(call("missing", {}))).error ?? "", /Unknown tool/);
+});
+
+test("TaskNotes provider uses runtime API v1 and verifies task mutations", async () => {
+  const tasks = new Map<string, Record<string, unknown>>([
+    ["TaskNotes/Tasks/read.md", {
+      path: "TaskNotes/Tasks/read.md",
+      title: "Read 15 pages",
+      status: "open",
+      priority: "normal",
+      tags: ["study"]
+    }],
+    ["TaskNotes/Tasks/done.md", {
+      path: "TaskNotes/Tasks/done.md",
+      title: "Finished",
+      status: "done",
+      priority: "normal",
+      tags: ["study"]
+    }]
+  ]);
+  let readyCalls = 0;
+  const api = {
+    apiVersion: 1,
+    hasCapability: (name: string) => ["tasks.read", "tasks.write", "time.write"].includes(name),
+    lifecycle: { ready: async () => { readyCalls += 1; } },
+    tasks: {
+      list: async () => [...tasks.values()],
+      get: async (path: string) => tasks.get(path) ?? null,
+      create: async (input: Record<string, unknown>) => {
+        const task = { ...input, path: "TaskNotes/Tasks/created.md" };
+        tasks.set(String(task.path), task);
+        return task;
+      },
+      update: async (path: string, patch: Record<string, unknown>) => {
+        const task = { ...tasks.get(path), ...patch };
+        tasks.set(path, task);
+        return task;
+      },
+      complete: async (path: string) => {
+        const task = { ...tasks.get(path), status: "done" };
+        tasks.set(path, task);
+        return task;
+      },
+      addDependency: async (path: string, dependency: Record<string, unknown>) => {
+        const task = { ...tasks.get(path), blockedBy: [dependency] };
+        tasks.set(path, task);
+        return task;
+      },
+      removeDependency: async (path: string) => {
+        const task = { ...tasks.get(path), blockedBy: [] };
+        tasks.set(path, task);
+        return task;
+      }
+    },
+    time: {
+      start: async (path: string) => {
+        const task = { ...tasks.get(path), timeEntries: [{ startTime: "2026-07-28T00:00:00Z" }] };
+        tasks.set(path, task);
+        return task;
+      },
+      stop: async (path: string) => {
+        const task = {
+          ...tasks.get(path),
+          timeEntries: [{ startTime: "2026-07-28T00:00:00Z", endTime: "2026-07-28T01:00:00Z" }]
+        };
+        tasks.set(path, task);
+        return task;
+      }
+    }
+  };
+  const app = {
+    plugins: {
+      getPlugin: (id: string) => id === "tasknotes" ? { api } : null,
+      plugins: { tasknotes: { api } }
+    }
+  } as unknown as App;
+  const provider = new TaskNotesProvider(app);
+
+  assert.equal(provider.status().available, true);
+  assert.deepEqual((await provider.list({ tags: ["study"] })).map((task) => task.title), ["Read 15 pages"]);
+  const created = await provider.create({ title: "Created task", priority: "high" });
+  assert.equal(created.path, "TaskNotes/Tasks/created.md");
+  assert.equal((await provider.update(created.path, { due: "2026-08-01" })).due, "2026-08-01");
+  assert.equal((await provider.addDependency(created.path, {
+    uid: "TaskNotes/Tasks/read.md"
+  })).dependencies[0]?.uid, "TaskNotes/Tasks/read.md");
+  assert.equal((await provider.removeDependency(created.path, "TaskNotes/Tasks/read.md")).dependencies.length, 0);
+  assert.equal((await provider.startTimer(created.path, "Deep work")).timeTrackingActive, true);
+  assert.equal((await provider.stopTimer(created.path)).timeTrackingActive, false);
+  assert.equal((await provider.complete(created.path)).completed, true);
+  assert.ok(readyCalls >= 8);
 });
 
 test("tool inspection returns patch diffs and sensitive-read warnings", async () => {
