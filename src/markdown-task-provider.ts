@@ -189,6 +189,8 @@ export class MarkdownTaskProvider implements TaskProvider {
         ? "earned"
         : frontmatter.exp_state === "planned" ? "planned" : null,
       recurrence: scalar(frontmatter.recurrence),
+      completedDate: scalar(frontmatter.completedDate),
+      completedInstances: array(frontmatter.complete_instances),
       dependencies: this.dependencies(frontmatter.blockedBy),
       timeTrackingActive: Array.isArray(frontmatter.timeEntries)
         && frontmatter.timeEntries.some((entry) => {

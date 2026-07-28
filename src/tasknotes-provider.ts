@@ -231,6 +231,12 @@ export class TaskNotesProvider implements TaskProvider {
     const rawExp = typeof task.exp === "number" ? task.exp : frontmatter.exp;
     const exp = typeof rawExp === "number" && Number.isFinite(rawExp) ? rawExp : null;
     const rawExpState = optionalString(task.expState) ?? optionalString(task.exp_state) ?? optionalString(frontmatter.exp_state);
+    const completedDate = optionalString(task.completedDate) ?? optionalString(frontmatter.completedDate);
+    const completedInstances = stringArray(
+      task.completedInstances
+      ?? task.complete_instances
+      ?? frontmatter.complete_instances
+    );
     const timeEntries = Array.isArray(task.timeEntries) ? task.timeEntries.map(record) : [];
     return {
       path,
@@ -246,6 +252,8 @@ export class TaskNotesProvider implements TaskProvider {
       exp,
       expState: rawExpState === "earned" ? "earned" : rawExpState === "planned" ? "planned" : null,
       recurrence: optionalString(task.recurrence),
+      completedDate,
+      completedInstances,
       dependencies: dependencies(task.blockedBy),
       timeTrackingActive: timeEntries.some((entry) => !entry.endTime),
       completed: task.completed === true || completedTaskStatus(status),

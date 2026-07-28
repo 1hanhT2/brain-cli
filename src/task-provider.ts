@@ -14,6 +14,8 @@ export interface BrainTask {
   exp: number | null;
   expState: "planned" | "earned" | null;
   recurrence: string | null;
+  completedDate: string | null;
+  completedInstances: string[];
   dependencies: Array<{ uid: string; reltype: string }>;
   timeTrackingActive: boolean;
   completed: boolean;
@@ -29,6 +31,7 @@ export interface TaskQuery {
   folder?: string;
   dueBefore?: string;
   dueAfter?: string;
+  completedOn?: string;
   includeCompleted?: boolean;
   limit?: number;
 }
@@ -94,6 +97,9 @@ export const taskDisplayTitle = (task: Pick<BrainTask, "title" | "exp">): string
 export const completedTaskStatus = (status: string): boolean =>
   ["done", "completed", "complete", "cancelled", "canceled"].includes(status.trim().toLocaleLowerCase());
 
+const taskDateKey = (value: string | null): string =>
+  value?.match(/\d{4}-\d{2}-\d{2}/)?.[0] ?? "";
+
 export const filterTasks = (tasks: BrainTask[], query: TaskQuery = {}): BrainTask[] => {
   const text = query.text?.trim().toLocaleLowerCase() ?? "";
   const status = query.status?.trim().toLocaleLowerCase() ?? "";
@@ -112,6 +118,9 @@ export const filterTasks = (tasks: BrainTask[], query: TaskQuery = {}): BrainTas
     ))
     .filter((task) => !query.dueBefore || Boolean(task.due && task.due <= query.dueBefore))
     .filter((task) => !query.dueAfter || Boolean(task.due && task.due >= query.dueAfter))
+    .filter((task) => !query.completedOn
+      || taskDateKey(task.completedDate) === query.completedOn
+      || task.completedInstances.some((value) => taskDateKey(value) === query.completedOn))
     .sort((left, right) =>
       (left.due ?? "9999").localeCompare(right.due ?? "9999")
       || left.title.localeCompare(right.title)

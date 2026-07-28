@@ -143,6 +143,9 @@ queue, activity, and estimated spend. Cancelling or disabling it aborts the
 active request before the EXP transaction can commit.
 The command-palette action **Run @exp on active TaskNote** performs the same
 workflow on demand. Existing time fields are left intact.
+Task queries also accept a `completed_on` date, including recurring
+`complete_instances`, so the agent can reliably find and score the outputs
+completed on a particular daily note.
 
 `/config`, `/setting`, and `/settings` open the terminal settings menu. Use
 the arrow keys to select an item, `Space` to toggle its checkbox, and `Enter`

@@ -387,6 +387,10 @@ export class AgentToolRegistry {
                 folder: { type: "string" },
                 due_before: { type: "string", description: "Inclusive YYYY-MM-DD upper bound." },
                 due_after: { type: "string", description: "Inclusive YYYY-MM-DD lower bound." },
+                completed_on: {
+                  type: "string",
+                  description: "YYYY-MM-DD completion date. Includes TaskNotes recurring complete_instances."
+                },
                 include_completed: { type: "boolean", description: "Defaults to false." },
                 limit: { type: "integer", minimum: 1, maximum: 200 }
               },
@@ -404,6 +408,7 @@ export class AgentToolRegistry {
             folder: typeof input.folder === "string" ? input.folder : undefined,
             dueBefore: typeof input.due_before === "string" ? input.due_before : undefined,
             dueAfter: typeof input.due_after === "string" ? input.due_after : undefined,
+            completedOn: typeof input.completed_on === "string" ? input.completed_on : undefined,
             includeCompleted: booleanArg(input, "include_completed"),
             limit: Math.min(numberArg(input, "limit", 50), 200)
           };

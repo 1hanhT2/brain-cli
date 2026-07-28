@@ -297,7 +297,8 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
       title: "Finished",
       status: "done",
       priority: "normal",
-      tags: "#study"
+      tags: "#study",
+      completedDate: "2026-07-28"
     }]
   ]);
   let readyCalls = 0;
@@ -367,6 +368,8 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
   assert.equal(studyTasks[0]?.exp, 200);
   assert.equal(studyTasks[0]?.expState, "planned");
   assert.equal(taskDisplayTitle(studyTasks[0]!), "[200] Read 15 pages");
+  const completedToday = await provider.list({ includeCompleted: true, completedOn: "2026-07-28" });
+  assert.deepEqual(completedToday.map((task) => task.title), ["Finished"]);
   const created = await provider.create({ title: "Created task", priority: "high" });
   assert.equal(created.path, "TaskNotes/Tasks/created.md");
   assert.equal((await provider.update(created.path, { due: "2026-08-01" })).due, "2026-08-01");
