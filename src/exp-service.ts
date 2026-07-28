@@ -15,6 +15,7 @@ import {
   type ExpRecordInput,
   type TaskExpState
 } from "./exp-core";
+import { formatExpTaskTitle, stripExpTitlePrefix } from "./task-provider";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const EXP_SCHEMA_VERSION = 1;
@@ -24,7 +25,8 @@ export class ExpService {
     private readonly app: App,
     private readonly vaultTools: VaultTools,
     private readonly taskService: TaskService,
-    private readonly getExpRoot: () => string
+    private readonly getExpRoot: () => string,
+    private readonly getTitleMaxLength: () => number = () => 100
   ) {}
 
   validate(input: ExpRecordInput): ExpRecordInput {
@@ -66,13 +68,16 @@ export class ExpService {
 
     const now = new Date().toISOString();
     const revision = (existing?.revision ?? 0) + 1;
-    const ledger = this.makeLedgerEntry(clean, task.title, now, revision);
+    const plainTitle = stripExpTitlePrefix(task.title);
+    const storedTitle = formatExpTaskTitle(plainTitle, clean.value, this.getTitleMaxLength());
+    const ledger = this.makeLedgerEntry(clean, plainTitle, now, revision);
     const ledgerFile = await this.vaultTools.createMarkdown(
       this.ledgerPath(ledger),
       this.renderLedger(ledger, task.citation)
     );
     try {
       await this.vaultTools.updateFrontmatter(task.path, {
+        title: storedTitle,
         exp_schema: EXP_SCHEMA_VERSION,
         exp: clean.value,
         exp_state: clean.action === "award" ? "earned" : "planned",
@@ -94,8 +99,8 @@ export class ExpService {
     return {
       task: {
         path: task.path,
-        title: task.title,
-        displayTitle: `[${verified.value}] ${task.title}`,
+        title: storedTitle,
+        displayTitle: storedTitle,
         citation: task.citation
       },
       exp: verified,

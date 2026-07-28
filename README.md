@@ -58,6 +58,8 @@ Type `/` to open the complete command list. Use `Tab` to complete, `↑` and
 `↓` to move through the list (it scrolls as needed) or input history, `Enter`
 to run, `Shift+Enter` for a newline, and `Ctrl+C` to stop generation.
 Type `@` to open the installed-skill list with the same arrow and Tab controls.
+After selecting a skill, typing a space shows every completion declared by that
+skill's `SKILL.md` frontmatter.
 `@exp` toggles EXP for the current conversation. EXP view requests such as
 `@exp history` run locally; other forms such as `@exp score this task` enable
 the skill and send the remaining request. `/skill <name>` remains available
@@ -126,14 +128,16 @@ flat task frontmatter and add an immutable event under
 auditable; only awards count toward totals and streaks. `@exp status` shows
 progress, `@exp history` pages through the ledger, `@exp review` checks score
 distribution and confidence, `@exp task` inspects one task, and
-`@exp calibrate` starts a rubric-guided scoring session. `/exp ...` remains a
-backward-compatible hidden alias.
+`@exp calibrate` starts a rubric-guided scoring session.
 
-Brain presents scored tasks as `[200] Task title` while keeping the actual
-TaskNotes title unchanged. With EXP active, a task created through Brain gets a
-planned-score proposal immediately after creation as a separate approval.
-Tasks created directly in TaskNotes are not sent to OpenRouter automatically;
-invoke EXP when they should be scored. Existing time fields are left intact.
+Brain stores scored TaskNotes as `[200] Task title`; an existing prefix is
+replaced, and titles longer than the configured limit are shortened at a word
+boundary. With EXP active, a task created through Brain gets a planned-score
+proposal as a separate approval unless automatic scoring is enabled. The
+opt-in automatic queue sends newly created non-sensitive TaskNotes to the
+background OpenRouter model and writes planned EXP without another approval.
+The command-palette action **Run @exp on active TaskNote** performs the same
+workflow on demand. Existing time fields are left intact.
 
 `/config`, `/setting`, and `/settings` open the terminal settings menu. Use
 the arrow keys to select an item, `Space` to toggle its checkbox, and `Enter`

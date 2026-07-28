@@ -47,10 +47,11 @@ import { MemoryCatalogStore } from "../src/catalog-store";
 import type { OpenRouterModel } from "../src/types";
 import type { TaskService } from "../src/task-service";
 import { TaskNotesProvider } from "../src/tasknotes-provider";
-import { taskDisplayTitle } from "../src/task-provider";
+import { formatExpTaskTitle, stripExpTitlePrefix, taskDisplayTitle } from "../src/task-provider";
 import { calculateExpStreaks, validateExpInput } from "../src/exp-core";
 import type { ExpService } from "../src/exp-service";
 import { parseSkillInvocation } from "../src/skill-invocation";
+import { parseExpScoringResponse } from "../src/exp-auto-scorer";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -379,6 +380,20 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
   assert.ok(readyCalls >= 8);
 });
 
+test("EXP task titles replace old prefixes and shorten cleanly at word boundaries", () => {
+  assert.equal(formatExpTaskTitle("Read fifteen pages", 200), "[200] Read fifteen pages");
+  assert.equal(formatExpTaskTitle("[100] Read fifteen pages", 225), "[225] Read fifteen pages");
+  const shortened = formatExpTaskTitle(
+    "Write a deliberately long task title that should lose trailing words cleanly",
+    150,
+    48
+  );
+  assert.ok(shortened.startsWith("[150] Write a deliberately long task"));
+  assert.ok(shortened.endsWith("…"));
+  assert.ok(shortened.length <= 48);
+  assert.equal(stripExpTitlePrefix(shortened).startsWith("Write"), true);
+});
+
 test("tool inspection returns patch diffs and sensitive-read warnings", async () => {
   const registry = makeRegistry({
     previewPatch: async () => ({ before: "old", after: "new", occurrences: 1 }),
@@ -673,6 +688,8 @@ test("semantic coordinator checkpoints vectors and re-embeds only changed chunks
     openRouterSecretId: "",
     interactiveModel: "openrouter/free",
     backgroundModel: "openrouter/free",
+    autoScoreTaskExp: false,
+    expTitleMaxLength: 100,
     favoriteModels: [],
     embeddingModel: "embedding/test",
     favoriteEmbeddingModels: [],
@@ -753,6 +770,8 @@ test("semantic coordinator isolates a rejected embedding input instead of stoppi
     openRouterSecretId: "",
     interactiveModel: "openrouter/free",
     backgroundModel: "openrouter/free",
+    autoScoreTaskExp: false,
+    expTitleMaxLength: 100,
     favoriteModels: [],
     embeddingModel: "embedding/test",
     favoriteEmbeddingModels: [],
@@ -815,6 +834,8 @@ test("semantic coordinator pauses before exceeding the configured spend cap", as
     openRouterSecretId: "",
     interactiveModel: "openrouter/free",
     backgroundModel: "openrouter/free",
+    autoScoreTaskExp: false,
+    expTitleMaxLength: 100,
     favoriteModels: [],
     embeddingModel: "embedding/expensive",
     favoriteEmbeddingModels: [],
@@ -1029,7 +1050,8 @@ test("model usage rankings aggregate popularity and positive growth", () => {
 });
 
 test("bundled EXP skill has valid metadata, workflow, references, and calibration", () => {
-  assert.match(EXP_SKILL, /^---\nname: exp\ndescription: .+\n---/);
+  assert.match(EXP_SKILL, /^---\nname: exp\ndescription: .+\n[\s\S]*?\n---/);
+  assert.match(EXP_SKILL, /completions:\n[\s\S]*value: score/);
   assert.match(EXP_SKILL, /25 to 1000/);
   assert.match(EXP_SKILL, /references\/rubric\.md/);
   assert.match(EXP_SKILL, /references\/examples\.md/);
@@ -1064,6 +1086,26 @@ test("EXP validation enforces calibrated scores and complete factor evidence", (
     ...valid,
     factors: { ...valid.factors, rigor: "" }
   }), /rigor/);
+});
+
+test("automatic EXP scoring parses JSON and normalizes model numbers", () => {
+  const parsed = parseExpScoringResponse(JSON.stringify({
+    value: 187,
+    confidence: 1.2,
+    reason: "Meaningful reading output with moderate friction.",
+    factors: {
+      output: "Fifteen pages read",
+      difficulty: "Moderate",
+      rigor: "Light",
+      friction: "Dense language",
+      independence: "Self-directed",
+      significance: "Advances a reading goal"
+    }
+  }), "TaskNotes/Tasks/read.md", "plan");
+  assert.equal(parsed.value, 175);
+  assert.equal(parsed.confidence, 1);
+  assert.equal(parsed.action, "plan");
+  assert.equal(parsed.factors.output, "Fifteen pages read");
 });
 
 test("EXP streaks count unique award days and allow yesterday's streak to remain current", () => {

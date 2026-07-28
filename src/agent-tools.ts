@@ -212,7 +212,8 @@ export class AgentToolRegistry {
     private readonly retrievalIndex: VaultRetrievalIndex,
     private readonly skillRegistry: SkillRegistry,
     private readonly taskService: TaskService,
-    private readonly expService: ExpService
+    private readonly expService: ExpService,
+    private readonly isAutoExpScoringEnabled: () => boolean = () => false
   ) {
     const registered: RegisteredTool[] = [
       {
@@ -229,6 +230,9 @@ export class AgentToolRegistry {
           ...this.vaultTools.getEnvironment(),
           retrieval: this.retrievalIndex.getStatus(),
           tasks: this.taskService.getStatus(),
+          automaticTaskExp: this.isAutoExpScoringEnabled()
+            ? "enabled for newly created non-sensitive tasks"
+            : "disabled",
           installedSkills: this.skillRegistry.list(),
           capabilities: [
             "render Obsidian Markdown including tables, links, callouts, code, and math",
@@ -243,7 +247,7 @@ export class AgentToolRegistry {
             "no shell or unrestricted filesystem access",
             "no access to excluded paths",
             "direct sensitive note reads require approval; semantic retrieval follows the user's global semantic consent",
-            "no write occurs without explicit approval"
+            "chat-requested writes require explicit approval; automatic task EXP writes occur only under the user's global opt-in"
           ]
         })
       },
@@ -548,7 +552,7 @@ export class AgentToolRegistry {
           type: "function",
           function: {
             name: "create_task",
-            description: "Create a task through TaskNotes, or as a generic Markdown task if TaskNotes is unavailable. Requires approval. When the EXP skill is active, inspect the created note and follow with a separate planned-EXP proposal.",
+            description: "Create a task through TaskNotes, or as a generic Markdown task if TaskNotes is unavailable. Requires approval. When EXP is active, propose planned EXP unless automatic task scoring is enabled; the automatic queue handles it in that mode.",
             parameters: {
               type: "object",
               properties: {
@@ -1085,7 +1089,7 @@ export class AgentToolRegistry {
         title: `${next.action === "award" ? "Award" : next.action === "recalibrate" ? "Recalibrate" : "Plan"} EXP: ${task.title}`,
         before: expPreview(await this.expService.taskState(next.path)),
         after: expPreview(next),
-        details: `${task.citation}\nImmutable Markdown ledger entry · time fields remain unchanged`
+        details: `${task.citation}\nTitle → ${taskDisplayTitle({ ...task, exp: next.value })}\nImmutable Markdown ledger entry · time fields remain unchanged`
       };
     } else if (call.function.name === "create_note") {
       preview = { title: `Create ${stringArg(input, "path")}`, before: "", after: previewText(stringArg(input, "content", false)) };

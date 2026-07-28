@@ -71,8 +71,25 @@ export interface TaskProvider {
 
 export const citationForTask = (path: string): string => `[[${path.replace(/\.md$/, "")}]]`;
 
+export const stripExpTitlePrefix = (title: string): string =>
+  title.replace(/^\[\d{1,4}\]\s*/, "").trim();
+
+export const formatExpTaskTitle = (title: string, exp: number, maxLength = 100): string => {
+  const prefix = `[${exp}] `;
+  const plain = stripExpTitlePrefix(title);
+  const limit = Math.min(Math.max(Math.floor(maxLength), 30), 200);
+  if (`${prefix}${plain}`.length <= limit) return `${prefix}${plain}`;
+  const available = Math.max(1, limit - prefix.length - 1);
+  const candidate = plain.slice(0, available).trimEnd();
+  const lastSpace = candidate.lastIndexOf(" ");
+  const shortened = lastSpace >= Math.floor(available * 0.6)
+    ? candidate.slice(0, lastSpace).trimEnd()
+    : candidate;
+  return `${prefix}${shortened}…`;
+};
+
 export const taskDisplayTitle = (task: Pick<BrainTask, "title" | "exp">): string =>
-  task.exp === null ? task.title : `[${task.exp}] ${task.title}`;
+  task.exp === null ? task.title : formatExpTaskTitle(task.title, task.exp, 200);
 
 export const completedTaskStatus = (status: string): boolean =>
   ["done", "completed", "complete", "cancelled", "canceled"].includes(status.trim().toLocaleLowerCase());

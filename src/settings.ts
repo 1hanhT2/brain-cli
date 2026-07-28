@@ -7,6 +7,8 @@ export interface BrainSettings {
   openRouterSecretId: string;
   interactiveModel: string;
   backgroundModel: string;
+  autoScoreTaskExp: boolean;
+  expTitleMaxLength: number;
   favoriteModels: string[];
   embeddingModel: string;
   favoriteEmbeddingModels: string[];
@@ -27,6 +29,8 @@ export const DEFAULT_SETTINGS: BrainSettings = {
   openRouterSecretId: "",
   interactiveModel: "openrouter/free",
   backgroundModel: "openrouter/free",
+  autoScoreTaskExp: false,
+  expTitleMaxLength: 100,
   favoriteModels: ["openrouter/free"],
   embeddingModel: "",
   favoriteEmbeddingModels: [],
@@ -112,11 +116,43 @@ export class BrainSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Background model")
-      .setDesc("Reserved for future task scoring, summaries, and memory extraction.")
+      .setDesc("Used for automatic EXP scoring, summaries, and memory extraction.")
       .addText((text) => text
         .setValue(this.plugin.settings.backgroundModel)
         .onChange(async (value) => {
           this.plugin.settings.backgroundModel = value.trim() || "openrouter/free";
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName("Automatically score new TaskNotes")
+      .setDesc("Opt in to sending newly created, non-sensitive task content to the background OpenRouter model. Brain writes planned EXP and prefixes the real title without another approval.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.autoScoreTaskExp)
+        .onChange(async (value) => {
+          if (value && !window.confirm(
+            "New non-sensitive TaskNotes will be sent to OpenRouter and updated automatically. Model usage may cost money. Enable automatic EXP scoring?"
+          )) {
+            toggle.setValue(false);
+            return;
+          }
+          try {
+            await this.plugin.setAutoScoreTaskExp(value);
+          } catch (error) {
+            toggle.setValue(!value);
+            this.plugin.reportError(error);
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName("EXP task title length")
+      .setDesc("Maximum stored TaskNote title length after adding [EXP]. Longer titles are shortened at a word boundary.")
+      .addText((text) => text
+        .setValue(String(this.plugin.settings.expTitleMaxLength))
+        .onChange(async (value) => {
+          const parsed = Number.parseInt(value, 10);
+          if (!Number.isInteger(parsed) || parsed < 30 || parsed > 200) return;
+          this.plugin.settings.expTitleMaxLength = parsed;
           await this.plugin.saveSettings();
         }));
 

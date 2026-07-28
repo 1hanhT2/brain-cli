@@ -102,7 +102,8 @@ const createSystemMessage = (): ChatMessage => ({
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
     "You can query, inspect, create, update, and complete TaskNotes tasks through the active task provider.",
     "You can use the EXP tools to plan, award, review, and persist accomplishment-first task EXP. Use record_task_exp instead of generic frontmatter writes for EXP.",
-    "When presenting a task with known EXP, use its displayTitle in the form [EXP] Task title. This is display-only; never rewrite the real task title to add the prefix.",
+    "When EXP is recorded, the task's actual title is stored as [EXP] Task title. Use displayTitle and do not add a second prefix.",
+    "Before proposing EXP after task creation, call get_environment. If automaticTaskExp is enabled, the background queue owns that write and you must not propose a duplicate score.",
     "A user message beginning @skill selects that active skill; treat the text after the skill name as the user's request.",
     "Use tools whenever the answer depends on the vault instead of guessing or merely describing safety.",
     "When the OpenRouter web search server tool is available, use it for current or external information instead of relying on potentially stale training knowledge.",
@@ -240,6 +241,7 @@ export class BrainChatView extends ItemView {
   private configMenuSelection = 0;
   private configMenuBusy = false;
   private sensitiveConsentPending = false;
+  private autoExpConsentPending = false;
   private folderPickerEl: HTMLElement | null = null;
   private folderPickerSelection = 0;
   private folderPickerFolders: string[] = [];
@@ -599,6 +601,7 @@ export class BrainChatView extends ItemView {
             `index cost $${(semantic?.estimatedCostUsd ?? 0).toFixed(4)} / $${this.plugin.settings.semanticSpendCapUsd.toFixed(2)} cap`,
             `web        ${this.plugin.settings.useWebSearch ? "enabled · OpenRouter server tool" : "disabled"}`,
             `tasks      ${tasks.active.provider}${tasks.tasknotes.available ? ` · TaskNotes API v${tasks.tasknotes.apiVersion}` : " · Markdown fallback"}`,
+            `auto EXP   ${this.plugin.settings.autoScoreTaskExp ? `enabled · ${this.plugin.settings.backgroundModel || this.plugin.settings.interactiveModel}` : "disabled"}`,
             `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
             `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
             `pending    ${this.pendingApproval ? "approval" : "none"}`,
@@ -673,9 +676,6 @@ export class BrainChatView extends ItemView {
           } else {
             await this.handleSkillCommand(argument);
           }
-          return;
-        case "exp":
-          await this.expCommand(parts);
           return;
         case "memory":
           await this.saveMemoryCommand(argument);
@@ -1489,6 +1489,30 @@ export class BrainChatView extends ItemView {
         }
       },
       {
+        id: "auto-exp",
+        label: "Automatically score new TaskNotes",
+        description: "Send new non-sensitive tasks to the background model, write planned EXP, and prefix the actual title.",
+        checked: () => this.plugin.settings.autoScoreTaskExp,
+        detail: () => this.autoExpConsentPending
+          ? "press Space again to confirm automatic model calls and writes"
+          : this.plugin.settings.autoScoreTaskExp
+            ? `enabled · ${this.plugin.settings.backgroundModel || this.plugin.settings.interactiveModel}`
+            : "disabled · explicit opt-in required",
+        toggle: async () => {
+          if (this.plugin.settings.autoScoreTaskExp) {
+            this.autoExpConsentPending = false;
+            await this.plugin.setAutoScoreTaskExp(false);
+            return;
+          }
+          if (!this.autoExpConsentPending) {
+            this.autoExpConsentPending = true;
+            return;
+          }
+          this.autoExpConsentPending = false;
+          await this.plugin.setAutoScoreTaskExp(true);
+        }
+      },
+      {
         id: "semantic",
         label: "Enable hybrid semantic search",
         description: "Embed selected folders through OpenRouter and fuse semantic results with lexical search.",
@@ -1573,7 +1597,7 @@ export class BrainChatView extends ItemView {
     this.configMenuSelection = Math.max(0, Math.min(this.configMenuSelection, items.length - 1));
     this.configMenuEl.empty();
     this.configMenuEl.createDiv({ cls: "obsidian-brain-config-title", text: "config" });
-    this.configMenuEl.createDiv({ cls: "obsidian-brain-config-section", text: "retrieval" });
+    this.configMenuEl.createDiv({ cls: "obsidian-brain-config-section", text: "features and retrieval" });
     items.forEach((item, index) => {
       const row = this.configMenuEl!.createDiv({
         cls: `obsidian-brain-config-item${index === this.configMenuSelection ? " is-selected" : ""}`,
@@ -2410,6 +2434,40 @@ export class BrainChatView extends ItemView {
       this.renderCommandSuggestions();
       return;
     }
+    if (value.startsWith("@") && !value.includes("\n") && value.includes(" ")) {
+      const match = value.match(/^@([a-z0-9-]{1,63})\s+(.*)$/i);
+      const skill = match ? this.plugin.skillRegistry.get(match[1].toLocaleLowerCase()) : undefined;
+      if (skill) {
+        const query = match?.[2]?.toLocaleLowerCase() ?? "";
+        const completions = skill.completions.length > 0
+          ? skill.completions
+          : [{ value: "<request>", description: `Send a request using the ${skill.name} skill` }];
+        this.visibleSuggestions = completions
+          .filter((completion) => completion.value.toLocaleLowerCase().startsWith(query))
+          .map((completion) => ({
+            kind: "skill" as const,
+            name: skill.name,
+            usage: `@${skill.name} ${completion.value}`,
+            description: completion.description,
+            completion: `@${skill.name} ${completion.value === "<request>" ? "" : completion.value}`
+          }));
+        this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
+        this.renderCommandSuggestions();
+        return;
+      }
+      if (!this.skillSuggestionsLoading) {
+        this.skillSuggestionsLoading = true;
+        void this.plugin.skillRegistry.initialize()
+          .then(() => this.plugin.skillRegistry.refresh())
+          .then(() => {
+            if (this.inputEl.value.startsWith("@") && this.inputEl.value.includes(" ")) {
+              this.updateCommandSuggestions();
+            }
+          })
+          .catch((error) => this.plugin.reportError(error))
+          .finally(() => { this.skillSuggestionsLoading = false; });
+      }
+    }
     if (value.startsWith("@") && !value.includes("\n") && !value.includes(" ")) {
       const query = value.slice(1).toLocaleLowerCase();
       const skills = this.plugin.skillRegistry.list();
@@ -2480,12 +2538,14 @@ export class BrainChatView extends ItemView {
   private completeSuggestion(): void {
     const suggestion = this.visibleSuggestions[this.suggestionIndex];
     if (!suggestion) return;
+    const expandSkillCompletions = suggestion.kind === "skill" && !suggestion.completion;
     this.inputEl.value = suggestion.completion ?? (suggestion.kind === "skill"
       ? `@${suggestion.name} `
       : `/${suggestion.name}${suggestion.usage.includes(" ") ? " " : ""}`);
     this.inputEl.focus();
     this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
-    this.hideCommandSuggestions();
+    if (expandSkillCompletions) this.updateCommandSuggestions();
+    else this.hideCommandSuggestions();
     this.resizeInput();
   }
 

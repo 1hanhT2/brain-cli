@@ -27,6 +27,7 @@ import { TaskNotesProvider } from "./tasknotes-provider";
 import { MarkdownTaskProvider } from "./markdown-task-provider";
 import { TaskService } from "./task-service";
 import { ExpService } from "./exp-service";
+import { ExpAutoScorer } from "./exp-auto-scorer";
 
 interface CatalogCache {
   models?: { fetchedAt: number; rows: OpenRouterModel[] };
@@ -52,6 +53,7 @@ export default class ObsidianBrainPlugin extends Plugin {
   semanticIndex!: SemanticIndexCoordinator;
   taskService!: TaskService;
   expService!: ExpService;
+  expAutoScorer!: ExpAutoScorer;
   readonly performance = new PerformanceTracer();
   private catalogCache: CatalogCache = {};
   private legacyCatalogCache: CatalogCache | null = null;
@@ -87,7 +89,22 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.app,
         this.vaultTools,
         this.taskService,
-        () => brainPath(this.settings, "EXP")
+        () => brainPath(this.settings, "EXP"),
+        () => this.settings.expTitleMaxLength
+      );
+      this.expAutoScorer = new ExpAutoScorer(
+        this.app,
+        this.taskService,
+        this.expService,
+        this.openRouter,
+        () => this.settings,
+        (result) => new Notice(`Obsidian Brain scored ${result.title} at ${result.value} EXP.`),
+        (path, error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          if (/Task not found/i.test(message)) return;
+          console.error(`[Obsidian Brain] Automatic EXP scoring failed for ${path}.`, error);
+          new Notice(`Automatic EXP scoring failed for ${path}: ${message}`, 0);
+        }
       );
       const semanticStore = new IndexedDbSemanticStore(`obsidian-brain:${this.settings.semanticVaultId}`);
       this.catalogStore = new IndexedDbCatalogStore(`obsidian-brain-catalogs:${this.settings.semanticVaultId}`);
@@ -115,7 +132,8 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.retrievalIndex,
         this.skillRegistry,
         this.taskService,
-        this.expService
+        this.expService,
+        () => this.settings.autoScoreTaskExp
       );
       this.chatStore = new ChatStore(this.app, () => this.settings, this.performance);
       stage = "registering chat view";
@@ -125,6 +143,18 @@ export default class ObsidianBrainPlugin extends Plugin {
       this.addCommand({ id: "open-chat", name: "Open chat", callback: () => void this.activateChat() });
       this.addCommand({ id: "create-brain-layout", name: "Create or repair Brain data folders", callback: () => void this.ensureDataLayout() });
       this.addCommand({ id: "refresh-openrouter-models", name: "Refresh OpenRouter model catalog", callback: () => void this.refreshOpenRouterModels() });
+      this.addCommand({
+        id: "run-exp-on-active-task",
+        name: "Run @exp on active TaskNote",
+        checkCallback: (checking) => {
+          const file = this.app.workspace.getActiveFile();
+          const available = file instanceof TFile && file.extension === "md";
+          if (available && !checking) {
+            void this.runBrainWorkflowOnActiveNote("@exp", file).catch((error) => this.reportError(error));
+          }
+          return available;
+        }
+      });
       this.addCommand({
         id: "show-performance-diagnostics",
         name: "Show performance diagnostics",
@@ -172,6 +202,7 @@ export default class ObsidianBrainPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.expAutoScorer?.dispose();
     this.semanticIndex?.cancel();
     void this.app.workspace.detachLeavesOfType(BRAIN_VIEW_TYPE);
   }
@@ -185,6 +216,29 @@ export default class ObsidianBrainPlugin extends Plugin {
 
   async ensureDataLayout(): Promise<void> {
     await ensureBrainLayout(this.app.vault, this.settings);
+  }
+
+  async setAutoScoreTaskExp(enabled: boolean): Promise<void> {
+    if (enabled && !this.settings.openRouterSecretId) {
+      throw new Error("Choose an OpenRouter API key before enabling automatic EXP scoring.");
+    }
+    if (enabled && !(this.settings.backgroundModel || this.settings.interactiveModel)) {
+      throw new Error("Choose a background model before enabling automatic EXP scoring.");
+    }
+    this.settings.autoScoreTaskExp = enabled;
+    await this.saveSettings();
+    if (!enabled) this.expAutoScorer.cancel();
+  }
+
+  async runBrainWorkflowOnActiveNote(workflow: string, file = this.app.workspace.getActiveFile()): Promise<void> {
+    if (!(file instanceof TFile) || file.extension !== "md") {
+      throw new Error("Open a Markdown TaskNote before running a Brain workflow.");
+    }
+    if (workflow.trim().toLocaleLowerCase() !== "@exp") {
+      throw new Error(`Unsupported active-note workflow: ${workflow}`);
+    }
+    const result = await this.expAutoScorer.scoreNow(file.path);
+    new Notice(`Obsidian Brain stored ${result.value} EXP as ${result.title}.`);
   }
 
   async refreshOpenRouterModels(showNotice = true): Promise<void> {
@@ -345,6 +399,7 @@ export default class ObsidianBrainPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("create", (file) => {
       if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
       if (file instanceof TFile) this.semanticIndex.queueUpdate(file);
+      if (file instanceof TFile) this.expAutoScorer.queue(file.path);
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.vault.on("modify", (file) => {

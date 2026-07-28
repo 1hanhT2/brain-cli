@@ -1,6 +1,19 @@
 export const EXP_SKILL = `---
 name: exp
 description: Score completed or planned work with experience points based on effort, difficulty, rigor, engagement, and meaningful output. Use for EXP scoring, task valuation, progress reviews, TaskNotes EXP fields, study output, completed work, or replacing time-first tracking with accomplishment-first tracking.
+completions:
+  - value: status
+    description: Show EXP totals, level, and streaks
+  - value: history
+    description: Browse the EXP ledger
+  - value: review
+    description: Review scoring consistency
+  - value: task
+    description: Inspect EXP stored on a task
+  - value: calibrate
+    description: Start rubric-guided calibration
+  - value: score
+    description: Score a task or described work
 ---
 
 # EXP
@@ -22,7 +35,7 @@ Evaluate meaningful output while retaining time only as supporting context.
 
 The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event. Never award the same completion twice. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion.
 
-When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created. This remains a separate approval. Tasks created directly in TaskNotes are not sent to a model automatically; score them when the user invokes this skill or asks for unscored tasks.
+When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.
 `;
 
 export const EXP_RUBRIC = `# EXP scoring rubric
@@ -76,6 +89,7 @@ export const EXP_SCHEMA = `# EXP storage schema
 
 The task note stores its current EXP state in flat frontmatter:
 
+- \`title: "[EXP] Task title"\` (existing numeric prefixes are replaced)
 - \`exp_schema: 1\`
 - \`exp: 25..1000\`, rounded to 25
 - \`exp_state: planned|earned\`

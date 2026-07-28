@@ -9,9 +9,28 @@ export interface SkillMetadata {
   description: string;
   path: string;
   folder: string;
+  completions: SkillCompletion[];
+}
+
+export interface SkillCompletion {
+  value: string;
+  description: string;
 }
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+const EXP_COMPLETIONS: SkillCompletion[] = [
+  { value: "status", description: "Show EXP totals, level, and streaks" },
+  { value: "history", description: "Browse the EXP ledger" },
+  { value: "review", description: "Review scoring consistency" },
+  { value: "task", description: "Inspect EXP stored on a task" },
+  { value: "calibrate", description: "Start rubric-guided calibration" },
+  { value: "score", description: "Score a task or described work" }
+];
+const EXP_COMPLETIONS_YAML = EXP_COMPLETIONS
+  .map((completion) => `  - value: ${completion.value}\n    description: ${completion.description}`)
+  .join("\n");
+const LEGACY_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created. This remains a separate approval. Tasks created directly in TaskNotes are not sent to a model automatically; score them when the user invokes this skill or asks for unscored tasks.";
+const CURRENT_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.";
 
 export class SkillRegistry {
   private skills = new Map<string, SkillMetadata>();
@@ -115,13 +134,28 @@ export class SkillRegistry {
     const frontmatter = parseYaml(match[1]) as Record<string, unknown> | null;
     const name = typeof frontmatter?.name === "string" ? frontmatter.name.trim().toLocaleLowerCase() : "";
     const description = typeof frontmatter?.description === "string" ? frontmatter.description.trim() : "";
+    const completions = Array.isArray(frontmatter?.completions)
+      ? frontmatter.completions.flatMap((entry) => {
+          const row = entry && typeof entry === "object" && !Array.isArray(entry)
+            ? entry as Record<string, unknown>
+            : {};
+          const value = typeof row.value === "string" ? row.value.trim() : "";
+          const completionDescription = typeof row.description === "string"
+            ? row.description.trim()
+            : "";
+          return value ? [{ value, description: completionDescription || `Run ${value}` }] : [];
+        })
+      : [];
     if (!/^[a-z0-9-]{1,63}$/.test(name)) throw new Error("Skill name must use lowercase letters, digits, and hyphens.");
     if (!description) throw new Error("Skill description is required.");
     return {
       name,
       description,
       path: file.path,
-      folder: file.parent?.path ?? ""
+      folder: file.parent?.path ?? "",
+      completions: completions.length > 0
+        ? completions
+        : name === "exp" ? EXP_COMPLETIONS : []
     };
   }
 
@@ -136,7 +170,26 @@ export class SkillRegistry {
     ];
     for (const entry of files) {
       const existing = await this.getPathKind(entry.path);
-      if (existing === "file") continue;
+      if (existing === "file") {
+        const file = this.app.vault.getAbstractFileByPath(entry.path);
+        if (file instanceof TFile) {
+          const content = await this.app.vault.cachedRead(file);
+          let migrated = content;
+          if (entry.path === `${root}/SKILL.md`) {
+            migrated = this.migrateExpSkill(migrated);
+          } else if (
+            entry.path === `${root}/references/schema.md`
+            && !migrated.includes('title: "[EXP] Task title"')
+          ) {
+            migrated = migrated.replace(
+              "The task note stores its current EXP state in flat frontmatter:\n",
+              'The task note stores its current EXP state in flat frontmatter:\n\n- `title: "[EXP] Task title"` (existing numeric prefixes are replaced)\n'
+            );
+          }
+          if (migrated !== content) await this.app.vault.modify(file, migrated);
+        }
+        continue;
+      }
       if (existing === "folder") throw new Error(`Cannot create bundled skill file because a folder exists at ${entry.path}.`);
       await this.ensureFolder(entry.path.split("/").slice(0, -1).join("/"));
       try {
@@ -146,6 +199,16 @@ export class SkillRegistry {
         throw error;
       }
     }
+  }
+
+  private migrateExpSkill(content: string): string {
+    let migrated = content.replace(LEGACY_EXP_CREATION_RULE, CURRENT_EXP_CREATION_RULE);
+    const frontmatter = migrated.match(FRONTMATTER_PATTERN)?.[0] ?? "";
+    if (frontmatter && !/\ncompletions:\s*\n/.test(frontmatter)) {
+      const expanded = frontmatter.replace(/\r?\n---\r?\n?$/, `\ncompletions:\n${EXP_COMPLETIONS_YAML}\n---\n`);
+      migrated = `${expanded}${migrated.slice(frontmatter.length)}`;
+    }
+    return migrated;
   }
 
   private async ensureFolder(path: string): Promise<void> {
