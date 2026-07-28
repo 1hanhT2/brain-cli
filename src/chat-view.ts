@@ -24,10 +24,18 @@ import {
   rankTrendingModels,
   type ModelUsageRanking
 } from "./model-rankings";
+import { parseSkillInvocation } from "./skill-invocation";
 
 export const BRAIN_VIEW_TYPE = "obsidian-brain-chat";
 
 interface BrainCommand {
+  name: string;
+  usage: string;
+  description: string;
+}
+
+interface InputSuggestion {
+  kind: "command" | "skill";
   name: string;
   usage: string;
   description: string;
@@ -92,6 +100,7 @@ const createSystemMessage = (): ChatMessage => ({
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
     "You can query, inspect, create, update, and complete TaskNotes tasks through the active task provider.",
     "You can use the EXP tools to plan, award, review, and persist accomplishment-first task EXP. Use record_task_exp instead of generic frontmatter writes for EXP.",
+    "A user message beginning @skill selects that active skill; treat the text after the skill name as the user's request.",
     "Use tools whenever the answer depends on the vault instead of guessing or merely describing safety.",
     "When the OpenRouter web search server tool is available, use it for current or external information instead of relying on potentially stale training knowledge.",
     "When asked what you can do or what environment you are in, call get_environment and explain the returned capabilities and limitations plainly.",
@@ -219,7 +228,8 @@ export class BrainChatView extends ItemView {
   private commandHistory: string[] = [];
   private historyIndex = 0;
   private suggestionIndex = 0;
-  private visibleSuggestions: BrainCommand[] = [];
+  private visibleSuggestions: InputSuggestion[] = [];
+  private skillSuggestionsLoading = false;
   private lastModelResults: OpenRouterModel[] = [];
   private lastEmbeddingResults: EmbeddingModel[] = [];
   private lastChatResults: ChatSummary[] = [];
@@ -475,13 +485,34 @@ export class BrainChatView extends ItemView {
       await this.executeCommand(text);
       return;
     }
+    let prompt = text;
+    if (text.startsWith("@")) {
+      const invocation = parseSkillInvocation(text);
+      if (!invocation) {
+        await this.addTerminalOutput("invalid skill invocation · use `@<skill> [request]`", "error");
+        return;
+      }
+      await this.plugin.skillRegistry.initialize();
+      await this.plugin.skillRegistry.refresh();
+      if (!this.plugin.skillRegistry.get(invocation.name)) {
+        await this.addTerminalOutput(`skill not found: \`@${invocation.name}\` · type \`@\` to list skills`, "error");
+        return;
+      }
+      if (!invocation.prompt) {
+        this.addCommandEcho(text);
+        await this.toggleSkill(invocation.name);
+        return;
+      }
+      await this.activateSkill(invocation.name, false);
+      prompt = invocation.prompt;
+    }
     this.addMessage("user", text);
     this.messages.push({ role: "user", content: text });
     await this.ensureCurrentChat(text);
     await this.persistCurrentChat();
 
     await this.plugin.skillRegistry.initialize();
-    await this.prepareSkillContext(text);
+    await this.prepareSkillContext(prompt);
     this.turnCitations.clear();
     this.abortController = new AbortController();
     this.setGenerating(true);
@@ -2008,6 +2039,22 @@ export class BrainChatView extends ItemView {
     }
   }
 
+  private async toggleSkill(name: string): Promise<void> {
+    const marker = `[Active skill: ${name.toLocaleLowerCase()}]`;
+    const activeIndex = this.messages.findIndex((message) =>
+      message.role === "system" && message.content.startsWith(marker)
+    );
+    if (activeIndex >= 0) {
+      this.messages.splice(activeIndex, 1);
+      await this.persistCurrentChat();
+      await this.addTerminalOutput(`disabled **${name}** for this conversation`);
+      return;
+    }
+    await this.activateSkill(name, false);
+    await this.persistCurrentChat();
+    await this.addTerminalOutput(`enabled **${name}** for this conversation`);
+  }
+
   private async prepareSkillContext(userText: string): Promise<void> {
     this.refreshBaseSystemMessage();
     await this.plugin.skillRegistry.refresh();
@@ -2218,7 +2265,7 @@ export class BrainChatView extends ItemView {
     const empty = this.transcriptEl.createDiv({ cls: "obsidian-brain-empty" });
     empty.createDiv({ cls: "obsidian-brain-empty-mark", text: "OBSIDIAN_BRAIN" });
     empty.createDiv({ text: "vault agent online" });
-    empty.createDiv({ cls: "obsidian-brain-empty-hint", text: "type /help for commands · plain text starts a conversation" });
+    empty.createDiv({ cls: "obsidian-brain-empty-hint", text: "type / for commands · @ for skills · plain text starts a conversation" });
   }
 
   private renderPromptContext(): void {
@@ -2253,15 +2300,40 @@ export class BrainChatView extends ItemView {
 
   private updateCommandSuggestions(): void {
     const value = this.inputEl.value;
-    if (!value.startsWith("/") || value.includes("\n") || value.includes(" ")) {
-      this.hideCommandSuggestions();
+    if (value.startsWith("/") && !value.includes("\n") && !value.includes(" ")) {
+      const query = value.slice(1).toLocaleLowerCase();
+      this.visibleSuggestions = BRAIN_COMMANDS
+        .filter((command) => command.name.startsWith(query))
+        .map((command) => ({ ...command, kind: "command" as const }));
+      this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
+      this.renderCommandSuggestions();
       return;
     }
-    const query = value.slice(1).toLocaleLowerCase();
-    this.visibleSuggestions = BRAIN_COMMANDS
-      .filter((command) => command.name.startsWith(query));
-    this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
-    this.renderCommandSuggestions();
+    if (value.startsWith("@") && !value.includes("\n") && !value.includes(" ")) {
+      const query = value.slice(1).toLocaleLowerCase();
+      const skills = this.plugin.skillRegistry.list();
+      this.visibleSuggestions = skills
+        .filter((skill) => skill.name.startsWith(query))
+        .map((skill) => ({
+          kind: "skill" as const,
+          name: skill.name,
+          usage: `@${skill.name}`,
+          description: skill.description
+        }));
+      this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
+      this.renderCommandSuggestions();
+      if (skills.length === 0 && !this.skillSuggestionsLoading) {
+        this.skillSuggestionsLoading = true;
+        void this.plugin.skillRegistry.initialize()
+          .then(() => {
+            if (this.inputEl.value.startsWith("@")) this.updateCommandSuggestions();
+          })
+          .catch((error) => this.plugin.reportError(error))
+          .finally(() => { this.skillSuggestionsLoading = false; });
+      }
+      return;
+    }
+    this.hideCommandSuggestions();
   }
 
   private renderCommandSuggestions(): void {
@@ -2305,9 +2377,11 @@ export class BrainChatView extends ItemView {
   }
 
   private completeSuggestion(): void {
-    const command = this.visibleSuggestions[this.suggestionIndex];
-    if (!command) return;
-    this.inputEl.value = `/${command.name}${command.usage.includes(" ") ? " " : ""}`;
+    const suggestion = this.visibleSuggestions[this.suggestionIndex];
+    if (!suggestion) return;
+    this.inputEl.value = suggestion.kind === "skill"
+      ? `@${suggestion.name} `
+      : `/${suggestion.name}${suggestion.usage.includes(" ") ? " " : ""}`;
     this.inputEl.focus();
     this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
     this.hideCommandSuggestions();

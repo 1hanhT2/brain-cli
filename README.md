@@ -56,6 +56,10 @@ there is no separate browser preview to keep in sync.
 Type `/` to open the complete command list. Use `Tab` to complete, `↑` and
 `↓` to move through the list (it scrolls as needed) or input history, `Enter`
 to run, `Shift+Enter` for a newline, and `Ctrl+C` to stop generation.
+Type `@` to open the installed-skill list with the same arrow and Tab controls.
+`@exp` toggles EXP for the current conversation; `@exp <request>` enables it
+and sends the remaining request. `/skill <name>` remains available for explicit
+activation without toggling.
 
 ```text
 /help [page]

@@ -49,6 +49,7 @@ import type { TaskService } from "../src/task-service";
 import { TaskNotesProvider } from "../src/tasknotes-provider";
 import { calculateExpStreaks, validateExpInput } from "../src/exp-core";
 import type { ExpService } from "../src/exp-service";
+import { parseSkillInvocation } from "../src/skill-invocation";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -125,6 +126,17 @@ test("all writes require approval while reads do not", () => {
   assert.equal(requiresApproval("low-write"), true);
   assert.equal(requiresApproval("high-write"), true);
   assert.equal(requiresApproval("destructive"), true);
+});
+
+test("@ skill invocations support toggles and inline prompts", () => {
+  assert.deepEqual(parseSkillInvocation("@exp"), { name: "exp", prompt: "" });
+  assert.deepEqual(parseSkillInvocation("@EXP history"), { name: "exp", prompt: "history" });
+  assert.deepEqual(parseSkillInvocation("@exp score this completed task"), {
+    name: "exp",
+    prompt: "score this completed task"
+  });
+  assert.equal(parseSkillInvocation("@"), null);
+  assert.equal(parseSkillInvocation("@bad/name prompt"), null);
 });
 
 test("Brain layout creation is idempotent while the Vault index is stale", async () => {
