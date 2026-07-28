@@ -726,6 +726,16 @@ test("semantic coordinator checkpoints vectors and re-embeds only changed chunks
   await coordinator.start("vault-change");
   assert.equal(embeddingCalls, 2);
   assert.match((await store.getAll())[0]?.excerpt ?? "", /momentum/);
+
+  await coordinator.clear();
+  assert.equal((await store.getAll()).length, 0);
+  assert.equal(coordinator.getStatus().indexedChunks, 0);
+  assert.equal(coordinator.getStatus().state, "idle");
+
+  await coordinator.refresh();
+  assert.equal(embeddingCalls, 3);
+  assert.equal((await store.getAll()).length, 1);
+  assert.equal(coordinator.getStatus().partial, false);
 });
 
 test("semantic coordinator isolates a rejected embedding input instead of stopping the queue", async () => {

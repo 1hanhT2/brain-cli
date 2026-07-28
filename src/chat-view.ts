@@ -39,6 +39,7 @@ interface InputSuggestion {
   name: string;
   usage: string;
   description: string;
+  completion?: string;
 }
 
 interface ConfigMenuItem {
@@ -53,6 +54,7 @@ interface ConfigMenuItem {
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
 const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate"]);
+const EMBEDDING_MANAGEMENT_ACTIONS = new Set(["status", "refresh", "delete", "pause", "resume", "cancel"]);
 const TRANSCRIPT_INITIAL_MESSAGES = 40;
 const TRANSCRIPT_PAGE_MESSAGES = 40;
 
@@ -75,7 +77,7 @@ const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "favorite", usage: "/favorite [number|id]", description: "Toggle a model favorite" },
   { name: "refresh", usage: "/refresh", description: "Refresh the OpenRouter model catalog" },
   { name: "embeddings", usage: "/embeddings [all|favorites] [page] [query]", description: "List paged OpenRouter embedding models" },
-  { name: "embedding", usage: "/embedding <number|id> [--confirm]", description: "Select the semantic embedding model" },
+  { name: "embedding", usage: "/embedding <model|status|refresh|delete|pause|resume>", description: "Select a model or manage the embedding database" },
   { name: "embedding-favorite", usage: "/embedding-favorite [number|id]", description: "Toggle an embedding model favorite" },
   { name: "skills", usage: "/skills [page]", description: "List installed SKILL.md skills" },
   { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
@@ -649,7 +651,11 @@ export class BrainChatView extends ItemView {
           await this.listEmbeddingModelsCommand(parts);
           return;
         case "embedding":
-          await this.selectEmbeddingModelCommand(parts);
+          if (EMBEDDING_MANAGEMENT_ACTIONS.has(parts[0]?.toLocaleLowerCase() ?? "")) {
+            await this.embeddingManagementCommand(parts);
+          } else {
+            await this.selectEmbeddingModelCommand(parts);
+          }
           return;
         case "embedding-favorite":
           await this.favoriteEmbeddingModelCommand(argument);
@@ -1071,6 +1077,66 @@ export class BrainChatView extends ItemView {
     if (!this.plugin.settings.semanticSearchEnabled && this.plugin.settings.semanticFolders.length === 0) {
       this.openFolderPicker(true);
     }
+  }
+
+  private async embeddingManagementCommand(parts: string[]): Promise<void> {
+    const action = parts[0]?.toLocaleLowerCase() ?? "status";
+    const target = parts[1]?.toLocaleLowerCase() ?? "";
+    const semantic = this.plugin.semanticIndex;
+    if (action === "status") {
+      await this.addTerminalOutput(this.semanticStatusMarkdown(semantic.getStatus()));
+      return;
+    }
+    if (action === "refresh" && target === "models") {
+      this.statusEl.setText("refreshing embedding models…");
+      await this.plugin.refreshEmbeddingModels(true);
+      this.statusEl.setText("ready");
+      await this.addTerminalOutput(
+        `embedding model catalog refreshed · ${this.plugin.embeddingModelCatalog.length} models`
+      );
+      return;
+    }
+    if (action === "refresh" && (target === "db" || target === "database")) {
+      this.statusEl.setText("refreshing embedding database…");
+      await semantic.refresh(parts.includes("--uncapped"));
+      this.statusEl.setText("ready");
+      await this.addTerminalOutput(this.semanticStatusMarkdown(semantic.getStatus()));
+      return;
+    }
+    if (action === "delete" && target === "all") {
+      if (!parts.includes("--confirm")) {
+        await this.addTerminalOutput([
+          "This deletes every locally stored semantic vector and its index metadata.",
+          "Your Markdown notes and OpenRouter account data are not affected.",
+          "",
+          "Run `/embedding delete all --confirm` to continue."
+        ].join("\n"), "warning");
+        return;
+      }
+      await semantic.clear();
+      await this.addTerminalOutput([
+        "embedding database deleted · 0 vectors stored",
+        "",
+        "Semantic search remains configured but empty. Run `/embedding refresh db` when you want to rebuild it."
+      ].join("\n"));
+      return;
+    }
+    if (action === "pause") semantic.pause();
+    else if (action === "resume") await semantic.resume(parts.includes("--uncapped"));
+    else if (action === "cancel") semantic.cancel();
+    else {
+      await this.addTerminalOutput([
+        "usage:",
+        "- `/embedding <number|id> [--confirm]`",
+        "- `/embedding status`",
+        "- `/embedding refresh db [--uncapped]`",
+        "- `/embedding refresh models`",
+        "- `/embedding delete all --confirm`",
+        "- `/embedding pause|resume|cancel`"
+      ].join("\n"), "error");
+      return;
+    }
+    await this.addTerminalOutput(this.semanticStatusMarkdown(semantic.getStatus()));
   }
 
   private async favoriteEmbeddingModelCommand(argument: string): Promise<void> {
@@ -2317,6 +2383,24 @@ export class BrainChatView extends ItemView {
 
   private updateCommandSuggestions(): void {
     const value = this.inputEl.value;
+    if (value.startsWith("/embedding ") && !value.includes("\n")) {
+      const query = value.slice("/embedding ".length).toLocaleLowerCase();
+      const commands: InputSuggestion[] = [
+        { kind: "command", name: "status", usage: "/embedding status", description: "Show vector database state and progress", completion: "/embedding status" },
+        { kind: "command", name: "refresh-db", usage: "/embedding refresh db", description: "Reconcile the local vector database", completion: "/embedding refresh db" },
+        { kind: "command", name: "refresh-models", usage: "/embedding refresh models", description: "Refresh available embedding models", completion: "/embedding refresh models" },
+        { kind: "command", name: "delete-all", usage: "/embedding delete all", description: "Delete all local vectors (confirmation required)", completion: "/embedding delete all" },
+        { kind: "command", name: "pause", usage: "/embedding pause", description: "Pause active embedding work", completion: "/embedding pause" },
+        { kind: "command", name: "resume", usage: "/embedding resume", description: "Resume embedding work", completion: "/embedding resume" },
+        { kind: "command", name: "cancel", usage: "/embedding cancel", description: "Cancel the current embedding run", completion: "/embedding cancel" }
+      ];
+      this.visibleSuggestions = commands.filter((command) =>
+        command.usage.slice("/embedding ".length).startsWith(query)
+      );
+      this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
+      this.renderCommandSuggestions();
+      return;
+    }
     if (value.startsWith("/") && !value.includes("\n") && !value.includes(" ")) {
       const query = value.slice(1).toLocaleLowerCase();
       this.visibleSuggestions = BRAIN_COMMANDS
@@ -2396,9 +2480,9 @@ export class BrainChatView extends ItemView {
   private completeSuggestion(): void {
     const suggestion = this.visibleSuggestions[this.suggestionIndex];
     if (!suggestion) return;
-    this.inputEl.value = suggestion.kind === "skill"
+    this.inputEl.value = suggestion.completion ?? (suggestion.kind === "skill"
       ? `@${suggestion.name} `
-      : `/${suggestion.name}${suggestion.usage.includes(" ") ? " " : ""}`;
+      : `/${suggestion.name}${suggestion.usage.includes(" ") ? " " : ""}`);
     this.inputEl.focus();
     this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
     this.hideCommandSuggestions();

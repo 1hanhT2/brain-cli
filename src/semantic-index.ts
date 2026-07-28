@@ -138,6 +138,13 @@ export class SemanticIndexCoordinator {
     await this.start("rebuild", allowUnknownPricing);
   }
 
+  async refresh(allowUnknownPricing = false): Promise<void> {
+    this.activeController?.abort();
+    await this.activePromise?.catch(() => undefined);
+    this.patchStatus({ state: "idle", reason: "rebuild" });
+    await this.start("rebuild", allowUnknownPricing);
+  }
+
   async reconfigure(): Promise<void> {
     this.activeController?.abort();
     await this.activePromise?.catch(() => undefined);
@@ -152,6 +159,13 @@ export class SemanticIndexCoordinator {
   async clear(): Promise<void> {
     this.cancel();
     await this.activePromise?.catch(() => undefined);
+    if (this.updateTimer !== null) {
+      window.clearTimeout(this.updateTimer);
+      this.updateTimer = null;
+    }
+    this.pendingPaths.clear();
+    this.pendingVersions.clear();
+    this.removedPaths.clear();
     await this.store.clear();
     this.queryCache.clear();
     this.status = {

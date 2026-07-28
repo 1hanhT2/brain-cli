@@ -78,6 +78,11 @@ for explicit activation, and `/skill exp history` is an EXP-view alias.
 /refresh
 /embeddings [all|favorites] [page] [query]
 /embedding <number|id> [--confirm]
+/embedding status
+/embedding refresh db [--uncapped]
+/embedding refresh models
+/embedding delete all --confirm
+/embedding pause|resume|cancel
 /embedding-favorite [number|id]
 /skills [page]
 /skill <name>
@@ -156,6 +161,9 @@ model call; `retrieve_context` exposes the same hybrid engine to tool-capable
 models. Disabling sensitive semantic access immediately purges sensitive
 vectors. Enabling it requires two confirmations because both embedding and
 automatic retrieval may disclose those excerpts to OpenRouter models.
+Embedding maintenance lives under `/embedding`: `refresh db` reconciles the
+selected folders while reusing unchanged vectors, and `delete all --confirm`
+clears only the local IndexedDB vector cache without touching Markdown notes.
 
 List commands use 30-row pages instead of truncating results. For example,
 `/models all 2`, `/models popular 30d 1`, `/models trending 7d 2`,
