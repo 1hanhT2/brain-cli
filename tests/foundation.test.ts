@@ -15,7 +15,7 @@ import { reciprocalRankFusion, VaultRetrievalIndex, type RankedChunk } from "../
 import type { SkillRegistry } from "../src/skill-registry";
 import type { App, TFile } from "obsidian";
 import type { SensitiveContentGuard } from "../src/sensitive-content";
-import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SKILL } from "../src/bundled-exp-skill";
+import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SCHEMA, EXP_SKILL } from "../src/bundled-exp-skill";
 import { ensureFolders } from "../src/folder-layout";
 import {
   OmnisearchProvider,
@@ -47,6 +47,8 @@ import { MemoryCatalogStore } from "../src/catalog-store";
 import type { OpenRouterModel } from "../src/types";
 import type { TaskService } from "../src/task-service";
 import { TaskNotesProvider } from "../src/tasknotes-provider";
+import { calculateExpStreaks, validateExpInput } from "../src/exp-core";
+import type { ExpService } from "../src/exp-service";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -77,7 +79,36 @@ const makeRegistry = (vaultTools: VaultTools): AgentToolRegistry =>
       create: async () => { throw new Error("not configured"); },
       update: async () => { throw new Error("not configured"); },
       complete: async () => { throw new Error("not configured"); }
-    } as unknown as TaskService
+    } as unknown as TaskService,
+    {
+      progress: async () => ({
+        total: 0,
+        today: 0,
+        last7Days: 0,
+        last30Days: 0,
+        currentStreak: 0,
+        longestStreak: 0,
+        level: 1,
+        levelProgress: 0,
+        nextLevelAt: 1000,
+        awards: 0,
+        recent: []
+      }),
+      review: async () => ({
+        days: 30,
+        awards: 0,
+        average: 0,
+        median: 0,
+        lowConfidence: 0,
+        buckets: [],
+        commonScores: [],
+        observations: [],
+        recent: []
+      }),
+      taskState: async () => null,
+      record: async () => { throw new Error("not configured"); },
+      validate: (input: unknown) => input
+    } as unknown as ExpService
   );
 
 test("vault path policy rejects hidden config, traversal, absolute paths, and URLs", () => {
@@ -111,6 +142,8 @@ test("Brain layout creation is idempotent while the Vault index is stale", async
     "Brain/Chats",
     "Brain/Memory",
     "Brain/Calibration",
+    "Brain/EXP",
+    "Brain/EXP/Ledger",
     "Brain/Settings",
     "Brain/Queue",
     "Brain/Skills"
@@ -122,6 +155,8 @@ test("Brain layout creation is idempotent while the Vault index is stale", async
   assert.deepEqual(createCalls, [
     "Brain/Memory",
     "Brain/Calibration",
+    "Brain/EXP",
+    "Brain/EXP/Ledger",
     "Brain/Settings",
     "Brain/Queue",
     "Brain/Skills"
@@ -143,11 +178,13 @@ test("Brain layout tolerates a concurrent folder creation race", async () => {
     "Brain/Chats",
     "Brain/Memory",
     "Brain/Calibration",
+    "Brain/EXP",
+    "Brain/EXP/Ledger",
     "Brain/Settings",
     "Brain/Queue",
     "Brain/Skills"
   ]);
-  assert.equal(folders.size, 7);
+  assert.equal(folders.size, 9);
 });
 
 test("registry exposes the complete foundational tool surface", () => {
@@ -162,6 +199,10 @@ test("registry exposes the complete foundational tool surface", () => {
       "retrieve_context",
       "query_tasks",
       "get_task",
+      "get_task_exp",
+      "get_exp_progress",
+      "review_exp_calibration",
+      "record_task_exp",
       "create_task",
       "update_task",
       "complete_task",
@@ -183,6 +224,8 @@ test("registry exposes the complete foundational tool surface", () => {
     ]
   );
   assert.equal(registry.riskFor("read_note"), "read");
+  assert.equal(registry.riskFor("get_exp_progress"), "read");
+  assert.equal(registry.riskFor("record_task_exp"), "high-write");
   assert.equal(registry.riskFor("create_note"), "high-write");
   assert.equal(registry.riskFor("missing"), null);
 });
@@ -876,8 +919,49 @@ test("bundled EXP skill has valid metadata, workflow, references, and calibratio
   assert.match(EXP_SKILL, /25 to 1000/);
   assert.match(EXP_SKILL, /references\/rubric\.md/);
   assert.match(EXP_SKILL, /references\/examples\.md/);
+  assert.match(EXP_SKILL, /record_task_exp/);
   assert.match(EXP_RUBRIC, /Round to the nearest 25/);
   assert.match(EXP_EXAMPLES, /Read 15 pages of the Bible: 200 EXP/);
+  assert.match(EXP_SCHEMA, /immutable ordinary Markdown/);
   assert.match(EXP_AGENT_METADATA, /default_prompt: "Use \$exp/);
-  assert.doesNotMatch(`${EXP_SKILL}${EXP_RUBRIC}${EXP_EXAMPLES}`, /TODO/);
+  assert.doesNotMatch(`${EXP_SKILL}${EXP_RUBRIC}${EXP_EXAMPLES}${EXP_SCHEMA}`, /TODO/);
+});
+
+test("EXP validation enforces calibrated scores and complete factor evidence", () => {
+  const valid = {
+    path: "TaskNotes/Tasks/read.md",
+    action: "award" as const,
+    value: 200,
+    confidence: 0.8,
+    reason: "Meaningful reading completed.",
+    factors: {
+      output: "15 pages",
+      difficulty: "moderate language",
+      rigor: "light",
+      friction: "low engagement",
+      independence: "self-directed",
+      significance: "supports a reading goal"
+    }
+  };
+  assert.equal(validateExpInput(valid).value, 200);
+  assert.throws(() => validateExpInput({ ...valid, value: 210 }), /nearest 25/);
+  assert.throws(() => validateExpInput({ ...valid, path: "../outside.md" }), /vault-relative/);
+  assert.throws(() => validateExpInput({
+    ...valid,
+    factors: { ...valid.factors, rigor: "" }
+  }), /rigor/);
+});
+
+test("EXP streaks count unique award days and allow yesterday's streak to remain current", () => {
+  const entries = [
+    { action: "award" as const, recordedAt: "2026-07-24T09:00:00+07:00" },
+    { action: "award" as const, recordedAt: "2026-07-25T09:00:00+07:00" },
+    { action: "plan" as const, recordedAt: "2026-07-26T09:00:00+07:00" },
+    { action: "award" as const, recordedAt: "2026-07-27T09:00:00+07:00" },
+    { action: "award" as const, recordedAt: "2026-07-27T18:00:00+07:00" }
+  ];
+  assert.deepEqual(
+    calculateExpStreaks(entries, new Date("2026-07-28T08:00:00+07:00")),
+    { current: 1, longest: 2 }
+  );
 });

@@ -70,6 +70,7 @@ const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "embedding-favorite", usage: "/embedding-favorite [number|id]", description: "Toggle an embedding model favorite" },
   { name: "skills", usage: "/skills [page]", description: "List installed SKILL.md skills" },
   { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
+  { name: "exp", usage: "/exp [status|history|review|task|calibrate]", description: "View EXP progress, ledger history, task scores, and calibration" },
   { name: "memory", usage: "/memory <text>", description: "Save a low-risk Markdown memory fragment" },
   { name: "search", usage: "/search <query> [--mode hybrid|semantic|lexical]", description: "Search the vault and show cited excerpts" },
   { name: "index", usage: "/index status|rebuild|pause|resume|cancel|clear", description: "Inspect and control retrieval indexing" },
@@ -90,6 +91,7 @@ const createSystemMessage = (): ChatMessage => ({
     "You are Obsidian Brain, a concise and thoughtful agent operating inside an Obsidian vault.",
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
     "You can query, inspect, create, update, and complete TaskNotes tasks through the active task provider.",
+    "You can use the EXP tools to plan, award, review, and persist accomplishment-first task EXP. Use record_task_exp instead of generic frontmatter writes for EXP.",
     "Use tools whenever the answer depends on the vault instead of guessing or merely describing safety.",
     "When the OpenRouter web search server tool is available, use it for current or external information instead of relying on potentially stale training knowledge.",
     "When asked what you can do or what environment you are in, call get_environment and explain the returned capabilities and limitations plainly.",
@@ -618,6 +620,9 @@ export class BrainChatView extends ItemView {
           return;
         case "skill":
           await this.handleSkillCommand(argument);
+          return;
+        case "exp":
+          await this.expCommand(parts);
           return;
         case "memory":
           await this.saveMemoryCommand(argument);
@@ -1175,6 +1180,128 @@ export class BrainChatView extends ItemView {
       `error       ${status.lastError ?? "none"}`,
       "```"
     ].join("\n");
+  }
+
+  private async expCommand(parts: string[]): Promise<void> {
+    const action = parts[0]?.toLocaleLowerCase() ?? "status";
+    if (action === "status") {
+      const progress = await this.plugin.expService.progress();
+      const filled = Math.round(progress.levelProgress / 100);
+      const bar = `${"█".repeat(filled)}${"░".repeat(10 - filled)}`;
+      await this.addTerminalOutput([
+        "## EXP progress",
+        "",
+        "| Period | Earned |",
+        "| --- | ---: |",
+        `| Today | **${progress.today.toLocaleString()} EXP** |`,
+        `| Last 7 days | ${progress.last7Days.toLocaleString()} EXP |`,
+        `| Last 30 days | ${progress.last30Days.toLocaleString()} EXP |`,
+        `| All time | **${progress.total.toLocaleString()} EXP** |`,
+        "",
+        `Level **${progress.level}** · \`${bar}\` ${progress.levelProgress}/1000 toward level ${progress.level + 1}`,
+        "",
+        `Current streak: **${progress.currentStreak} day${progress.currentStreak === 1 ? "" : "s"}** · longest: ${progress.longestStreak} · ${progress.awards} award${progress.awards === 1 ? "" : "s"}`,
+        "",
+        progress.recent.length
+          ? `Recent: ${progress.recent.map((entry) => `${entry.value} EXP — ${entry.taskTitle}`).join(" · ")}`
+          : "No earned EXP yet. Activate `/skill exp`, then ask Brain to score completed work."
+      ].join("\n"));
+      return;
+    }
+    if (action === "history") {
+      const { page, remaining } = readLeadingPage(parts.slice(1));
+      if (remaining.length > 0) {
+        await this.addTerminalOutput("usage: `/exp history [page]`", "error");
+        return;
+      }
+      const history = await this.plugin.expService.history();
+      const paged = paginate(history, page);
+      if (history.length === 0) {
+        await this.addTerminalOutput("no EXP ledger entries yet");
+        return;
+      }
+      if (paged.outOfRange) {
+        await this.addPageOutOfRange("EXP event", paged);
+        return;
+      }
+      await this.addTerminalOutput([
+        "| When | Action | EXP | Task | Confidence |",
+        "| --- | --- | ---: | --- | ---: |",
+        ...paged.items.map((entry) =>
+          `| ${this.formatDate(entry.recordedAt)} | ${entry.action} | **${entry.value}** | ${this.escapeTable(entry.taskTitle)} | ${Math.round(entry.confidence * 100)}% |`
+        ),
+        "",
+        this.paginationLine(paged, "EXP events", (target) => `/exp history ${target}`)
+      ].join("\n"));
+      return;
+    }
+    if (action === "review") {
+      const days = parts[1] === undefined ? 30 : Number.parseInt(parts[1], 10);
+      if (!Number.isInteger(days) || days < 1 || days > 365 || parts.length > 2) {
+        await this.addTerminalOutput("usage: `/exp review [1-365 days]`", "error");
+        return;
+      }
+      const review = await this.plugin.expService.review(days);
+      await this.addTerminalOutput([
+        `## EXP calibration review · ${review.days} days`,
+        "",
+        `Awards: **${review.awards}** · average: **${review.average} EXP** · median: **${review.median} EXP** · low-confidence: **${review.lowConfidence}**`,
+        "",
+        "| Rubric band | Awards |",
+        "| --- | ---: |",
+        ...review.buckets.map((bucket) => `| ${bucket.label} | ${bucket.count} |`),
+        "",
+        review.commonScores.length
+          ? `Most-used scores: ${review.commonScores.map((score) => `${score.value} (${score.count})`).join(" · ")}`
+          : "No earned EXP in this period.",
+        "",
+        ...review.observations.map((observation) => `- ${observation}`),
+        "",
+        "Use `/exp calibrate` to activate the EXP rubric before reviewing or scoring tasks."
+      ].join("\n"));
+      return;
+    }
+    if (action === "task") {
+      const path = parts.slice(1).join(" ");
+      if (!path) {
+        await this.addTerminalOutput("usage: `/exp task <task-path>`", "error");
+        return;
+      }
+      const exp = await this.plugin.expService.taskState(path);
+      if (!exp) {
+        await this.addTerminalOutput(`no EXP score is stored on \`${path}\``);
+        return;
+      }
+      await this.addTerminalOutput([
+        `## Task EXP · [[${path.replace(/\.md$/i, "")}]]`,
+        "",
+        `**${exp.value} EXP** · ${exp.state} · ${Math.round(exp.confidence * 100)}% confidence · revision ${exp.revision}`,
+        "",
+        exp.reason,
+        "",
+        "| Factor | Assessment |",
+        "| --- | --- |",
+        ...Object.entries(exp.factors).map(([name, value]) =>
+          `| ${name} | ${this.escapeTable(value)} |`
+        )
+      ].join("\n"));
+      return;
+    }
+    if (action === "calibrate") {
+      if (parts.length > 1) {
+        await this.addTerminalOutput("usage: `/exp calibrate`", "error");
+        return;
+      }
+      await this.handleSkillCommand("exp");
+      await this.addTerminalOutput(
+        "EXP calibration mode is ready. Describe completed work or name a TaskNotes task. Brain will inspect it, apply the rubric, propose one score, and show an approval preview before writing the task and Markdown ledger."
+      );
+      return;
+    }
+    await this.addTerminalOutput(
+      "usage: `/exp [status|history [page]|review [days]|task <path>|calibrate]`",
+      "error"
+    );
   }
 
   private async saveMemoryCommand(content: string): Promise<void> {
@@ -1899,17 +2026,26 @@ export class BrainChatView extends ItemView {
 
   private async activateSkill(name: string, automatic: boolean): Promise<boolean> {
     const marker = `[Active skill: ${name.toLocaleLowerCase()}]`;
-    if (this.messages.some((message) =>
-      message.role === "system" && message.content.startsWith(marker)
-    )) return false;
     const skill = await this.plugin.skillRegistry.load(name);
+    const content = `${marker}\n${skill.instructions}`;
+    const activeIndex = this.messages.findIndex((message) =>
+      message.role === "system" && message.content.startsWith(marker)
+    );
+    if (activeIndex >= 0) {
+      if (this.messages[activeIndex].content === content) return false;
+      this.messages[activeIndex] = { role: "system", content };
+    }
     const firstConversationMessage = this.messages.findIndex((message) => message.role !== "system");
-    this.messages.splice(firstConversationMessage < 0 ? this.messages.length : firstConversationMessage, 0, {
-      role: "system",
-      content: `${marker}\n${skill.instructions}`
-    });
+    if (activeIndex < 0) {
+      this.messages.splice(firstConversationMessage < 0 ? this.messages.length : firstConversationMessage, 0, {
+        role: "system",
+        content
+      });
+    }
     const event = this.transcriptEl.createDiv({ cls: "obsidian-brain-skill-event" });
-    event.createSpan({ text: automatic ? "Auto-activated skill: " : "Activated skill: " });
+    event.createSpan({
+      text: activeIndex >= 0 ? "Refreshed skill: " : automatic ? "Auto-activated skill: " : "Activated skill: "
+    });
     event.createEl("strong", { text: skill.metadata.name });
     event.scrollIntoView({ block: "end" });
     return true;

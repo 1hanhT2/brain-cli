@@ -26,7 +26,8 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Optional OpenRouter server-side web search alongside Brain's local vault tools.
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
-- Bundled EXP skill with a calibrated 25-1000 accomplishment-first rubric.
+- Bundled EXP skill with a calibrated 25-1000 accomplishment-first rubric, approval-gated task scoring, and repeat-award protection.
+- Flat TaskNotes-compatible EXP frontmatter plus an immutable Markdown event ledger for totals, recurring-task history, streaks, levels, and calibration reviews.
 - Markdown-backed chats with command-operated new/open/continue/rename/trash session controls.
 - Automatic context budgeting with model-generated summaries and safe trimming.
 - Command-searchable OpenRouter catalog with favorites and free/paid filters.
@@ -74,6 +75,7 @@ to run, `Shift+Enter` for a newline, and `Ctrl+C` to stop generation.
 /embedding-favorite [number|id]
 /skills [page]
 /skill <name>
+/exp [status|history [page]|review [days]|task <path>|calibrate]
 /memory <text>
 /search <query> [--mode hybrid|semantic|lexical] [--folder path] [--tag tag] [--property key=value] [--limit n]
 /index status
@@ -104,6 +106,16 @@ Brain prefers TaskNotes's mobile-safe
 in-process runtime API and uses its configured status and recurrence behavior.
 If TaskNotes API v1 is unavailable, the same stable tool contract operates on
 ordinary frontmatter tasks in the configured fallback task folder.
+
+`/skill exp` activates the accomplishment-first scoring workflow. The model
+inspects the task, applies the six-factor rubric, and uses `record_task_exp` to
+show a readable approval preview. Approved changes store the current score in
+flat task frontmatter and add an immutable event under
+`Brain/EXP/Ledger/YYYY-MM/`. `plan`, `award`, and `recalibrate` events remain
+auditable; only awards count toward totals and streaks. `/exp` shows progress,
+`/exp history` pages through the ledger, `/exp review` checks score distribution
+and confidence, `/exp task` inspects one task, and `/exp calibrate` starts a
+rubric-guided scoring session. Existing TaskNotes time fields are left intact.
 
 `/config`, `/setting`, and `/settings` open the terminal settings menu. Use
 the arrow keys to select an item, `Space` to toggle its checkbox, and `Enter`

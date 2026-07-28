@@ -5,6 +5,8 @@ import type { VaultRetrievalIndex } from "./retrieval-index";
 import type { SkillRegistry } from "./skill-registry";
 import type { TaskService } from "./task-service";
 import type { BrainTask, TaskCreateInput, TaskPatch, TaskQuery } from "./task-provider";
+import type { ExpService } from "./exp-service";
+import type { ExpAction, ExpFactors, ExpRecordInput, TaskExpState } from "./exp-core";
 
 export interface ToolExecutionResult {
   ok: boolean;
@@ -117,6 +119,27 @@ const taskFields = (input: Record<string, unknown>): TaskPatch => ({
   ...(input.blocked_by !== undefined ? { dependencies: dependencyArrayArg(input, "blocked_by") } : {})
 });
 
+const expInput = (input: Record<string, unknown>): ExpRecordInput => {
+  const action = stringArg(input, "action") as ExpAction;
+  if (!["plan", "award", "recalibrate"].includes(action)) {
+    throw new Error('Tool argument "action" must be plan, award, or recalibrate.');
+  }
+  const rawFactors = objectInput(input.factors);
+  const factors = Object.fromEntries(
+    ["output", "difficulty", "rigor", "friction", "independence", "significance"]
+      .map((name) => [name, stringArg(rawFactors, name)])
+  ) as unknown as ExpFactors;
+  return {
+    path: stringArg(input, "path"),
+    action,
+    value: numberArg(input, "value", Number.NaN),
+    confidence: numberArg(input, "confidence", Number.NaN),
+    reason: stringArg(input, "reason"),
+    factors,
+    allowRepeat: booleanArg(input, "allow_repeat")
+  };
+};
+
 const citationForPath = (path: string): string => `[[${path.replace(/\.md$/, "")}]]`;
 const previewText = (value: string): string =>
   value.length <= 40_000 ? value : `${value.slice(0, 40_000)}\n[Preview truncated]`;
@@ -151,6 +174,23 @@ const taskPreview = (task: TaskPreviewInput): string => {
   return lines.join("\n") || "No task fields set.";
 };
 
+const expPreview = (exp: TaskExpState | ExpRecordInput | null): string => {
+  if (!exp) return "No EXP score recorded.";
+  const state = "state" in exp ? exp.state : exp.action === "award" ? "earned" : "planned";
+  return [
+    `EXP: ${exp.value}`,
+    `State: ${state}`,
+    `Confidence: ${Math.round(exp.confidence * 100)}%`,
+    `Reason: ${exp.reason}`,
+    `Output: ${exp.factors.output}`,
+    `Difficulty: ${exp.factors.difficulty}`,
+    `Rigor: ${exp.factors.rigor}`,
+    `Friction: ${exp.factors.friction}`,
+    `Independence: ${exp.factors.independence}`,
+    `Significance: ${exp.factors.significance}`
+  ].join("\n");
+};
+
 export class AgentToolRegistry {
   private readonly tools: Map<string, RegisteredTool>;
 
@@ -158,7 +198,8 @@ export class AgentToolRegistry {
     private readonly vaultTools: VaultTools,
     private readonly retrievalIndex: VaultRetrievalIndex,
     private readonly skillRegistry: SkillRegistry,
-    private readonly taskService: TaskService
+    private readonly taskService: TaskService,
+    private readonly expService: ExpService
   ) {
     const registered: RegisteredTool[] = [
       {
@@ -182,6 +223,7 @@ export class AgentToolRegistry {
             "create, append, patch, replace, rename, move, trash, and update frontmatter after approval",
             "discover and load traditional SKILL.md skills",
             "query, inspect, create, update, and complete TaskNotes tasks",
+            "score, award, review, and track accomplishment-first task EXP",
             "cite vault sources with clickable Obsidian wikilinks"
           ],
           limitations: [
@@ -377,6 +419,111 @@ export class AgentToolRegistry {
           if (!task) throw new Error(`Task not found: ${path}`);
           return task;
         }
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "get_task_exp",
+            description: "Read the current accomplishment-first EXP score stored on one task.",
+            parameters: {
+              type: "object",
+              properties: { path: { type: "string" } },
+              required: ["path"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "read",
+        execute: async (input) => {
+          const path = stringArg(input, "path");
+          const task = await this.taskService.get(path, true);
+          if (!task) throw new Error(`Task not found: ${path}`);
+          return {
+            task: { path: task.path, title: task.title, citation: task.citation },
+            exp: await this.expService.taskState(path)
+          };
+        }
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "get_exp_progress",
+            description: "Read earned EXP totals, streaks, level progress, and recent awards from the Markdown EXP ledger.",
+            parameters: { type: "object", properties: {}, additionalProperties: false }
+          }
+        },
+        risk: "read",
+        execute: async () => this.expService.progress()
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "review_exp_calibration",
+            description: "Review recent EXP score distribution, confidence, common values, and rubric buckets for consistency.",
+            parameters: {
+              type: "object",
+              properties: {
+                days: { type: "integer", minimum: 1, maximum: 365, description: "Review window; defaults to 30 days." }
+              },
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "read",
+        execute: async (input) => this.expService.review(numberArg(input, "days", 30))
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "record_task_exp",
+            description: "Plan, award, or recalibrate task EXP. Writes task frontmatter and an immutable Markdown ledger entry after approval.",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Vault-relative task Markdown path." },
+                action: {
+                  type: "string",
+                  enum: ["plan", "award", "recalibrate"],
+                  description: "Plan scores upcoming work; award records completed work; recalibrate replaces the current planned score."
+                },
+                value: {
+                  type: "integer",
+                  minimum: 25,
+                  maximum: 1000,
+                  multipleOf: 25,
+                  description: "Calibrated EXP score."
+                },
+                confidence: { type: "number", minimum: 0, maximum: 1 },
+                reason: { type: "string", description: "Short overall scoring rationale." },
+                factors: {
+                  type: "object",
+                  properties: {
+                    output: { type: "string" },
+                    difficulty: { type: "string" },
+                    rigor: { type: "string" },
+                    friction: { type: "string" },
+                    independence: { type: "string" },
+                    significance: { type: "string" }
+                  },
+                  required: ["output", "difficulty", "rigor", "friction", "independence", "significance"],
+                  additionalProperties: false
+                },
+                allow_repeat: {
+                  type: "boolean",
+                  description: "Use only for a new recurrence or an intentional additional award on an already-awarded task."
+                }
+              },
+              required: ["path", "action", "value", "confidence", "reason", "factors"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "high-write",
+        execute: async (input) => this.expService.record(expInput(input))
       },
       {
         definition: {
@@ -849,7 +996,7 @@ export class AgentToolRegistry {
       const report = await this.vaultTools.inspectSensitivity(stringArg(input, "path"));
       sensitive = report.sensitive;
       sensitivityReasons = report.reasons;
-    } else if (call.function.name === "get_task") {
+    } else if (call.function.name === "get_task" || call.function.name === "get_task_exp") {
       const report = await this.taskService.inspectSensitivity(stringArg(input, "path"));
       sensitive = report.sensitive;
       sensitivityReasons = report.reasons;
@@ -908,6 +1055,19 @@ export class AgentToolRegistry {
         before: before.timeTrackingActive ? "timer active" : "timer stopped",
         after: starting ? "timer active" : "timer stopped",
         details: before.citation
+      };
+    } else if (call.function.name === "record_task_exp") {
+      const next = this.expService.validate(expInput(input));
+      const task = await this.taskService.get(next.path, true);
+      if (!task) throw new Error(`Task not found: ${next.path}`);
+      const report = await this.taskService.inspectSensitivity(next.path);
+      sensitive = report.sensitive;
+      sensitivityReasons = report.reasons;
+      preview = {
+        title: `${next.action === "award" ? "Award" : next.action === "recalibrate" ? "Recalibrate" : "Plan"} EXP: ${task.title}`,
+        before: expPreview(await this.expService.taskState(next.path)),
+        after: expPreview(next),
+        details: `${task.citation}\nImmutable Markdown ledger entry · time fields remain unchanged`
       };
     } else if (call.function.name === "create_note") {
       preview = { title: `Create ${stringArg(input, "path")}`, before: "", after: previewText(stringArg(input, "content", false)) };

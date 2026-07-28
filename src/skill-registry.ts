@@ -1,7 +1,7 @@
 import { normalizePath, parseYaml, TFile, type App } from "obsidian";
 import { brainPath } from "./data-layout";
 import type { BrainSettings } from "./settings";
-import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SKILL } from "./bundled-exp-skill";
+import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SCHEMA, EXP_SKILL } from "./bundled-exp-skill";
 import { ensureFolders, type LayoutPathKind } from "./folder-layout";
 
 export interface SkillMetadata {
@@ -131,7 +131,8 @@ export class SkillRegistry {
       { path: `${root}/SKILL.md`, content: EXP_SKILL },
       { path: `${root}/agents/openai.yaml`, content: EXP_AGENT_METADATA },
       { path: `${root}/references/rubric.md`, content: EXP_RUBRIC },
-      { path: `${root}/references/examples.md`, content: EXP_EXAMPLES }
+      { path: `${root}/references/examples.md`, content: EXP_EXAMPLES },
+      { path: `${root}/references/schema.md`, content: EXP_SCHEMA }
     ];
     for (const entry of files) {
       const existing = await this.getPathKind(entry.path);

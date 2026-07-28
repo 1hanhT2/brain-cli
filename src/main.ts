@@ -26,6 +26,7 @@ import { compactEmbeddingModel, compactOpenRouterModel } from "./catalog-models"
 import { TaskNotesProvider } from "./tasknotes-provider";
 import { MarkdownTaskProvider } from "./markdown-task-provider";
 import { TaskService } from "./task-service";
+import { ExpService } from "./exp-service";
 
 interface CatalogCache {
   models?: { fetchedAt: number; rows: OpenRouterModel[] };
@@ -50,6 +51,7 @@ export default class ObsidianBrainPlugin extends Plugin {
   openRouter!: OpenRouterClient;
   semanticIndex!: SemanticIndexCoordinator;
   taskService!: TaskService;
+  expService!: ExpService;
   readonly performance = new PerformanceTracer();
   private catalogCache: CatalogCache = {};
   private legacyCatalogCache: CatalogCache | null = null;
@@ -81,6 +83,12 @@ export default class ObsidianBrainPlugin extends Plugin {
         () => this.effectiveExcludedPaths(),
         () => this.settings.sensitiveTags
       );
+      this.expService = new ExpService(
+        this.app,
+        this.vaultTools,
+        this.taskService,
+        () => brainPath(this.settings, "EXP")
+      );
       const semanticStore = new IndexedDbSemanticStore(`obsidian-brain:${this.settings.semanticVaultId}`);
       this.catalogStore = new IndexedDbCatalogStore(`obsidian-brain-catalogs:${this.settings.semanticVaultId}`);
       this.semanticIndex = new SemanticIndexCoordinator(
@@ -106,7 +114,8 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.vaultTools,
         this.retrievalIndex,
         this.skillRegistry,
-        this.taskService
+        this.taskService,
+        this.expService
       );
       this.chatStore = new ChatStore(this.app, () => this.settings, this.performance);
       stage = "registering chat view";

@@ -12,13 +12,15 @@ Evaluate meaningful output while retaining time only as supporting context.
 1. Inspect the task note and relevant context before scoring.
 2. Read \`references/rubric.md\` for the scoring factors.
 3. Read \`references/examples.md\` when calibration is uncertain or the task resembles an example.
-4. Ask for missing information only when it could materially change the score.
-5. Propose one score from 25 to 1000, rounded to the nearest 25.
-6. Give a short factor breakdown and confidence.
-7. Update task frontmatter only after the user approves the write.
-8. Preserve any existing time fields; EXP is the primary progress measure, not a replacement for recorded time.
+4. Read \`references/schema.md\` before recording or recalibrating EXP.
+5. Ask for missing information only when it could materially change the score.
+6. Propose one score from 25 to 1000, rounded to the nearest 25.
+7. Give a short breakdown for output, difficulty, rigor, friction, independence, and significance, plus confidence from 0 to 1.
+8. Use \`record_task_exp\` with action \`plan\` for upcoming work, \`award\` for completed work, or \`recalibrate\` when replacing a planned score.
+9. Let the approval preview show the exact change. Never bypass the EXP tool with a generic frontmatter write.
+10. Use \`get_exp_progress\` and \`review_exp_calibration\` for progress and consistency reviews.
 
-Use the general note and frontmatter tools. Do not assume TaskNotes field names without inspecting the note.
+The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event. Never award the same completion twice. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion.
 `;
 
 export const EXP_RUBRIC = `# EXP scoring rubric
@@ -66,6 +68,27 @@ export const EXP_EXAMPLES = `# Calibration examples
 - Complete a major delayed life task with several steps: about 250-450 EXP.
 
 Treat these as calibration points, not fixed lookup values.
+`;
+
+export const EXP_SCHEMA = `# EXP storage schema
+
+The task note stores its current EXP state in flat frontmatter:
+
+- \`exp_schema: 1\`
+- \`exp: 25..1000\`, rounded to 25
+- \`exp_state: planned|earned\`
+- \`exp_confidence: 0..1\`
+- \`exp_reason: short rationale\`
+- \`exp_factors: { output, difficulty, rigor, friction, independence, significance }\`
+- \`exp_scored_at: ISO timestamp\`
+- \`exp_awarded_at: ISO timestamp or null\`
+- \`exp_revision: positive integer\`
+
+Every plan, award, and recalibration also creates an immutable ordinary Markdown
+event under \`Brain/EXP/Ledger/YYYY-MM/\` (or the configured Brain folder).
+Totals and streaks count only events whose action is \`award\`. This keeps
+recurring-task awards, adjustments, and calibration history reproducible without
+a SQL database. Time-tracking fields are never removed or rewritten.
 `;
 
 export const EXP_AGENT_METADATA = `interface:
