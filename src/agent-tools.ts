@@ -4,7 +4,7 @@ import type { VaultTools } from "./vault-tools";
 import type { VaultRetrievalIndex } from "./retrieval-index";
 import type { SkillRegistry } from "./skill-registry";
 import type { TaskService } from "./task-service";
-import type { TaskCreateInput, TaskPatch, TaskQuery } from "./task-provider";
+import type { BrainTask, TaskCreateInput, TaskPatch, TaskQuery } from "./task-provider";
 
 export interface ToolExecutionResult {
   ok: boolean;
@@ -120,6 +120,36 @@ const taskFields = (input: Record<string, unknown>): TaskPatch => ({
 const citationForPath = (path: string): string => `[[${path.replace(/\.md$/, "")}]]`;
 const previewText = (value: string): string =>
   value.length <= 40_000 ? value : `${value.slice(0, 40_000)}\n[Preview truncated]`;
+
+type TaskPreviewInput = Partial<Omit<BrainTask, "dependencies">> & {
+  dependencies?: Array<{ uid: string; reltype?: string }>;
+};
+
+const taskPreview = (task: TaskPreviewInput): string => {
+  const lines: string[] = [];
+  const add = (label: string, value: string | number | null | undefined): void => {
+    if (value !== undefined && value !== null && value !== "") lines.push(`${label}: ${value}`);
+  };
+  const addList = (label: string, values: string[] | undefined): void => {
+    if (values?.length) lines.push(`${label}: ${values.join(", ")}`);
+  };
+
+  add("Title", task.title);
+  add("Status", task.status);
+  add("Priority", task.priority);
+  add("Due", task.due);
+  add("Scheduled", task.scheduled);
+  addList("Tags", task.tags);
+  addList("Contexts", task.contexts);
+  addList("Projects", task.projects);
+  add("Estimated time", task.timeEstimate === null || task.timeEstimate === undefined ? undefined : `${task.timeEstimate} min`);
+  add("Recurrence", task.recurrence);
+  if (task.dependencies?.length) {
+    lines.push(`Blocked by: ${task.dependencies.map((dependency) => dependency.uid).join(", ")}`);
+  }
+  add("Path", task.path);
+  return lines.join("\n") || "No task fields set.";
+};
 
 export class AgentToolRegistry {
   private readonly tools: Map<string, RegisteredTool>;
@@ -826,8 +856,8 @@ export class AgentToolRegistry {
     } else if (call.function.name === "create_task") {
       preview = {
         title: `Create task: ${stringArg(input, "title")}`,
-        before: "",
-        after: JSON.stringify({ ...taskFields(input), title: stringArg(input, "title") }, null, 2),
+        before: "Task does not exist yet.",
+        after: taskPreview({ ...taskFields(input), title: stringArg(input, "title") }),
         details: `Provider: ${this.taskService.getStatus().active.provider}`
       };
     } else if (call.function.name === "update_task") {
@@ -837,8 +867,8 @@ export class AgentToolRegistry {
       const updates = taskFields(objectInput(input.updates));
       preview = {
         title: `Update task: ${before.title}`,
-        before: JSON.stringify(before, null, 2),
-        after: JSON.stringify({ ...before, ...updates }, null, 2),
+        before: taskPreview(before),
+        after: taskPreview({ ...before, ...updates }),
         details: before.citation
       };
     } else if (call.function.name === "complete_task") {
@@ -847,7 +877,7 @@ export class AgentToolRegistry {
       if (!before) throw new Error(`Task not found: ${path}`);
       preview = {
         title: `Complete task: ${before.title}`,
-        before: JSON.stringify(before, null, 2),
+        before: taskPreview(before),
         after: "TaskNotes will apply its configured completion status and recurrence behavior.",
         details: before.citation
       };
@@ -864,8 +894,8 @@ export class AgentToolRegistry {
         : before.dependencies.filter((dependency) => dependency.uid !== dependencyPath);
       preview = {
         title: `${call.function.name === "add_task_dependency" ? "Add" : "Remove"} task dependency`,
-        before: JSON.stringify(before.dependencies, null, 2),
-        after: JSON.stringify(dependencies, null, 2),
+        before: before.dependencies.length ? before.dependencies.map((dependency) => dependency.uid).join("\n") : "No task dependencies.",
+        after: dependencies.length ? dependencies.map((dependency) => dependency.uid).join("\n") : "No task dependencies.",
         details: before.citation
       };
     } else if (call.function.name === "start_task_timer" || call.function.name === "stop_task_timer") {

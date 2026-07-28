@@ -504,11 +504,15 @@
 }
 
 .obsidian-brain-diff-pane.is-before pre {
-  background: var(--background-modifier-error);
+  border: var(--border-width, 1px) solid var(--text-error);
+  background: var(--brain-surface);
+  color: var(--brain-text);
 }
 
 .obsidian-brain-diff-pane.is-after pre {
-  background: var(--background-modifier-success, var(--brain-surface));
+  border: var(--border-width, 1px) solid var(--text-success);
+  background: var(--brain-surface);
+  color: var(--brain-text);
 }
 
 .obsidian-brain-diff-label {
