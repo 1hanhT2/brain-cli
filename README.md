@@ -57,9 +57,10 @@ Type `/` to open the complete command list. Use `Tab` to complete, `↑` and
 `↓` to move through the list (it scrolls as needed) or input history, `Enter`
 to run, `Shift+Enter` for a newline, and `Ctrl+C` to stop generation.
 Type `@` to open the installed-skill list with the same arrow and Tab controls.
-`@exp` toggles EXP for the current conversation; `@exp <request>` enables it
-and sends the remaining request. `/skill <name>` remains available for explicit
-activation without toggling.
+`@exp` toggles EXP for the current conversation. EXP view requests such as
+`@exp history` run locally; other forms such as `@exp score this task` enable
+the skill and send the remaining request. `/skill <name>` remains available
+for explicit activation, and `/skill exp history` is an EXP-view alias.
 
 ```text
 /help [page]
@@ -79,7 +80,6 @@ activation without toggling.
 /embedding-favorite [number|id]
 /skills [page]
 /skill <name>
-/exp [status|history [page]|review [days]|task <path>|calibrate]
 /memory <text>
 /search <query> [--mode hybrid|semantic|lexical] [--folder path] [--tag tag] [--property key=value] [--limit n]
 /index status
@@ -111,15 +111,23 @@ in-process runtime API and uses its configured status and recurrence behavior.
 If TaskNotes API v1 is unavailable, the same stable tool contract operates on
 ordinary frontmatter tasks in the configured fallback task folder.
 
-`/skill exp` activates the accomplishment-first scoring workflow. The model
-inspects the task, applies the six-factor rubric, and uses `record_task_exp` to
+`/skill exp` or `@exp <request>` activates the accomplishment-first scoring
+workflow. The model reads the complete task note and relevant context, applies
+the six-factor rubric, and uses `record_task_exp` to
 show a readable approval preview. Approved changes store the current score in
 flat task frontmatter and add an immutable event under
 `Brain/EXP/Ledger/YYYY-MM/`. `plan`, `award`, and `recalibrate` events remain
-auditable; only awards count toward totals and streaks. `/exp` shows progress,
-`/exp history` pages through the ledger, `/exp review` checks score distribution
-and confidence, `/exp task` inspects one task, and `/exp calibrate` starts a
-rubric-guided scoring session. Existing TaskNotes time fields are left intact.
+auditable; only awards count toward totals and streaks. `@exp status` shows
+progress, `@exp history` pages through the ledger, `@exp review` checks score
+distribution and confidence, `@exp task` inspects one task, and
+`@exp calibrate` starts a rubric-guided scoring session. `/exp ...` remains a
+backward-compatible hidden alias.
+
+Brain presents scored tasks as `[200] Task title` while keeping the actual
+TaskNotes title unchanged. With EXP active, a task created through Brain gets a
+planned-score proposal immediately after creation as a separate approval.
+Tasks created directly in TaskNotes are not sent to OpenRouter automatically;
+invoke EXP when they should be scored. Existing time fields are left intact.
 
 `/config`, `/setting`, and `/settings` open the terminal settings menu. Use
 the arrow keys to select an item, `Space` to toggle its checkbox, and `Enter`

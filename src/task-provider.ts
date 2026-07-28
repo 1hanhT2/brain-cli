@@ -11,6 +11,8 @@ export interface BrainTask {
   contexts: string[];
   projects: string[];
   timeEstimate: number | null;
+  exp: number | null;
+  expState: "planned" | "earned" | null;
   recurrence: string | null;
   dependencies: Array<{ uid: string; reltype: string }>;
   timeTrackingActive: boolean;
@@ -68,6 +70,9 @@ export interface TaskProvider {
 }
 
 export const citationForTask = (path: string): string => `[[${path.replace(/\.md$/, "")}]]`;
+
+export const taskDisplayTitle = (task: Pick<BrainTask, "title" | "exp">): string =>
+  task.exp === null ? task.title : `[${task.exp}] ${task.title}`;
 
 export const completedTaskStatus = (status: string): boolean =>
   ["done", "completed", "complete", "cancelled", "canceled"].includes(status.trim().toLocaleLowerCase());

@@ -52,6 +52,7 @@ interface ConfigMenuItem {
 
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
+const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate"]);
 const TRANSCRIPT_INITIAL_MESSAGES = 40;
 const TRANSCRIPT_PAGE_MESSAGES = 40;
 
@@ -78,7 +79,6 @@ const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "embedding-favorite", usage: "/embedding-favorite [number|id]", description: "Toggle an embedding model favorite" },
   { name: "skills", usage: "/skills [page]", description: "List installed SKILL.md skills" },
   { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
-  { name: "exp", usage: "/exp [status|history|review|task|calibrate]", description: "View EXP progress, ledger history, task scores, and calibration" },
   { name: "memory", usage: "/memory <text>", description: "Save a low-risk Markdown memory fragment" },
   { name: "search", usage: "/search <query> [--mode hybrid|semantic|lexical]", description: "Search the vault and show cited excerpts" },
   { name: "index", usage: "/index status|rebuild|pause|resume|cancel|clear", description: "Inspect and control retrieval indexing" },
@@ -100,6 +100,7 @@ const createSystemMessage = (): ChatMessage => ({
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
     "You can query, inspect, create, update, and complete TaskNotes tasks through the active task provider.",
     "You can use the EXP tools to plan, award, review, and persist accomplishment-first task EXP. Use record_task_exp instead of generic frontmatter writes for EXP.",
+    "When presenting a task with known EXP, use its displayTitle in the form [EXP] Task title. This is display-only; never rewrite the real task title to add the prefix.",
     "A user message beginning @skill selects that active skill; treat the text after the skill name as the user's request.",
     "Use tools whenever the answer depends on the vault instead of guessing or merely describing safety.",
     "When the OpenRouter web search server tool is available, use it for current or external information instead of relying on potentially stale training knowledge.",
@@ -503,6 +504,13 @@ export class BrainChatView extends ItemView {
         await this.toggleSkill(invocation.name);
         return;
       }
+      const skillParts = commandTokens(invocation.prompt);
+      if (invocation.name === "exp" && EXP_LOCAL_ACTIONS.has(skillParts[0]?.toLocaleLowerCase() ?? "")) {
+        this.addCommandEcho(text);
+        await this.activateSkill(invocation.name, false);
+        await this.expCommand(skillParts);
+        return;
+      }
       await this.activateSkill(invocation.name, false);
       prompt = invocation.prompt;
     }
@@ -650,7 +658,15 @@ export class BrainChatView extends ItemView {
           await this.handleSkillCommand("", parts);
           return;
         case "skill":
-          await this.handleSkillCommand(argument);
+          if (
+            parts[0]?.toLocaleLowerCase() === "exp"
+            && EXP_LOCAL_ACTIONS.has(parts[1]?.toLocaleLowerCase() ?? "")
+          ) {
+            await this.handleSkillCommand("exp");
+            await this.expCommand(parts.slice(1));
+          } else {
+            await this.handleSkillCommand(argument);
+          }
           return;
         case "exp":
           await this.expCommand(parts);
@@ -1235,14 +1251,14 @@ export class BrainChatView extends ItemView {
         "",
         progress.recent.length
           ? `Recent: ${progress.recent.map((entry) => `${entry.value} EXP — ${entry.taskTitle}`).join(" · ")}`
-          : "No earned EXP yet. Activate `/skill exp`, then ask Brain to score completed work."
+          : "No earned EXP yet. Use `@exp score my completed task`."
       ].join("\n"));
       return;
     }
     if (action === "history") {
       const { page, remaining } = readLeadingPage(parts.slice(1));
       if (remaining.length > 0) {
-        await this.addTerminalOutput("usage: `/exp history [page]`", "error");
+        await this.addTerminalOutput("usage: `@exp history [page]`", "error");
         return;
       }
       const history = await this.plugin.expService.history();
@@ -1262,14 +1278,14 @@ export class BrainChatView extends ItemView {
           `| ${this.formatDate(entry.recordedAt)} | ${entry.action} | **${entry.value}** | ${this.escapeTable(entry.taskTitle)} | ${Math.round(entry.confidence * 100)}% |`
         ),
         "",
-        this.paginationLine(paged, "EXP events", (target) => `/exp history ${target}`)
+        this.paginationLine(paged, "EXP events", (target) => `@exp history ${target}`)
       ].join("\n"));
       return;
     }
     if (action === "review") {
       const days = parts[1] === undefined ? 30 : Number.parseInt(parts[1], 10);
       if (!Number.isInteger(days) || days < 1 || days > 365 || parts.length > 2) {
-        await this.addTerminalOutput("usage: `/exp review [1-365 days]`", "error");
+        await this.addTerminalOutput("usage: `@exp review [1-365 days]`", "error");
         return;
       }
       const review = await this.plugin.expService.review(days);
@@ -1288,14 +1304,14 @@ export class BrainChatView extends ItemView {
         "",
         ...review.observations.map((observation) => `- ${observation}`),
         "",
-        "Use `/exp calibrate` to activate the EXP rubric before reviewing or scoring tasks."
+        "Use `@exp calibrate` to activate the EXP rubric before reviewing or scoring tasks."
       ].join("\n"));
       return;
     }
     if (action === "task") {
       const path = parts.slice(1).join(" ");
       if (!path) {
-        await this.addTerminalOutput("usage: `/exp task <task-path>`", "error");
+        await this.addTerminalOutput("usage: `@exp task <task-path>`", "error");
         return;
       }
       const exp = await this.plugin.expService.taskState(path);
@@ -1320,7 +1336,7 @@ export class BrainChatView extends ItemView {
     }
     if (action === "calibrate") {
       if (parts.length > 1) {
-        await this.addTerminalOutput("usage: `/exp calibrate`", "error");
+        await this.addTerminalOutput("usage: `@exp calibrate`", "error");
         return;
       }
       await this.handleSkillCommand("exp");
@@ -1330,7 +1346,7 @@ export class BrainChatView extends ItemView {
       return;
     }
     await this.addTerminalOutput(
-      "usage: `/exp [status|history [page]|review [days]|task <path>|calibrate]`",
+      "usage: `@exp [status|history [page]|review [days]|task <path>|calibrate]`",
       "error"
     );
   }

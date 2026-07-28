@@ -47,6 +47,7 @@ import { MemoryCatalogStore } from "../src/catalog-store";
 import type { OpenRouterModel } from "../src/types";
 import type { TaskService } from "../src/task-service";
 import { TaskNotesProvider } from "../src/tasknotes-provider";
+import { taskDisplayTitle } from "../src/task-provider";
 import { calculateExpStreaks, validateExpInput } from "../src/exp-core";
 import type { ExpService } from "../src/exp-service";
 import { parseSkillInvocation } from "../src/skill-invocation";
@@ -286,7 +287,9 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
       title: "Read 15 pages",
       status: "open",
       priority: "normal",
-      tags: ["study"]
+      tags: ["study"],
+      exp: 200,
+      exp_state: "planned"
     }],
     ["TaskNotes/Tasks/done.md", {
       path: "TaskNotes/Tasks/done.md",
@@ -347,6 +350,9 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
     }
   };
   const app = {
+    metadataCache: {
+      getCache: () => null
+    },
     plugins: {
       getPlugin: (id: string) => id === "tasknotes" ? { api } : null,
       plugins: { tasknotes: { api } }
@@ -355,7 +361,11 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
   const provider = new TaskNotesProvider(app);
 
   assert.equal(provider.status().available, true);
-  assert.deepEqual((await provider.list({ tags: ["study"] })).map((task) => task.title), ["Read 15 pages"]);
+  const studyTasks = await provider.list({ tags: ["study"] });
+  assert.deepEqual(studyTasks.map((task) => task.title), ["Read 15 pages"]);
+  assert.equal(studyTasks[0]?.exp, 200);
+  assert.equal(studyTasks[0]?.expState, "planned");
+  assert.equal(taskDisplayTitle(studyTasks[0]!), "[200] Read 15 pages");
   const created = await provider.create({ title: "Created task", priority: "high" });
   assert.equal(created.path, "TaskNotes/Tasks/created.md");
   assert.equal((await provider.update(created.path, { due: "2026-08-01" })).due, "2026-08-01");

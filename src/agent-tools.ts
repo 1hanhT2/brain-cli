@@ -4,7 +4,13 @@ import type { VaultTools } from "./vault-tools";
 import type { VaultRetrievalIndex } from "./retrieval-index";
 import type { SkillRegistry } from "./skill-registry";
 import type { TaskService } from "./task-service";
-import type { BrainTask, TaskCreateInput, TaskPatch, TaskQuery } from "./task-provider";
+import {
+  taskDisplayTitle,
+  type BrainTask,
+  type TaskCreateInput,
+  type TaskPatch,
+  type TaskQuery
+} from "./task-provider";
 import type { ExpService } from "./exp-service";
 import type { ExpAction, ExpFactors, ExpRecordInput, TaskExpState } from "./exp-core";
 
@@ -157,7 +163,9 @@ const taskPreview = (task: TaskPreviewInput): string => {
     if (values?.length) lines.push(`${label}: ${values.join(", ")}`);
   };
 
-  add("Title", task.title);
+  add("Title", task.title === undefined ? undefined : task.exp === null || task.exp === undefined
+    ? task.title
+    : `[${task.exp}] ${task.title}`);
   add("Status", task.status);
   add("Priority", task.priority);
   add("Due", task.due);
@@ -173,6 +181,11 @@ const taskPreview = (task: TaskPreviewInput): string => {
   add("Path", task.path);
   return lines.join("\n") || "No task fields set.";
 };
+
+const presentTask = (task: BrainTask): BrainTask & { displayTitle: string } => ({
+  ...task,
+  displayTitle: taskDisplayTitle(task)
+});
 
 const expPreview = (exp: TaskExpState | ExpRecordInput | null): string => {
   if (!exp) return "No EXP score recorded.";
@@ -394,7 +407,7 @@ export class AgentToolRegistry {
           return {
             provider: this.taskService.getStatus().active.provider,
             count: tasks.length,
-            tasks
+            tasks: tasks.map(presentTask)
           };
         }
       },
@@ -417,7 +430,7 @@ export class AgentToolRegistry {
           const path = stringArg(input, "path");
           const task = await this.taskService.get(path, options.allowSensitive);
           if (!task) throw new Error(`Task not found: ${path}`);
-          return task;
+          return presentTask(task);
         }
       },
       {
@@ -440,7 +453,12 @@ export class AgentToolRegistry {
           const task = await this.taskService.get(path, true);
           if (!task) throw new Error(`Task not found: ${path}`);
           return {
-            task: { path: task.path, title: task.title, citation: task.citation },
+            task: {
+              path: task.path,
+              title: task.title,
+              displayTitle: taskDisplayTitle(task),
+              citation: task.citation
+            },
             exp: await this.expService.taskState(path)
           };
         }
@@ -530,7 +548,7 @@ export class AgentToolRegistry {
           type: "function",
           function: {
             name: "create_task",
-            description: "Create a task through TaskNotes, or as a generic Markdown task if TaskNotes is unavailable. Requires approval.",
+            description: "Create a task through TaskNotes, or as a generic Markdown task if TaskNotes is unavailable. Requires approval. When the EXP skill is active, inspect the created note and follow with a separate planned-EXP proposal.",
             parameters: {
               type: "object",
               properties: {
@@ -568,7 +586,7 @@ export class AgentToolRegistry {
             ...taskFields(input),
             title: stringArg(input, "title")
           } as TaskCreateInput);
-          return { task: created, verified: true };
+          return { task: presentTask(created), verified: true };
         }
       },
       {
@@ -620,7 +638,7 @@ export class AgentToolRegistry {
           const path = stringArg(input, "path");
           const updates = taskFields(objectInput(input.updates));
           if (Object.keys(updates).length === 0) throw new Error("No task fields were provided.");
-          return { task: await this.taskService.update(path, updates), verified: true };
+          return { task: presentTask(await this.taskService.update(path, updates)), verified: true };
         }
       },
       {
@@ -639,7 +657,7 @@ export class AgentToolRegistry {
         },
         risk: "high-write",
         execute: async (input) => ({
-          task: await this.taskService.complete(stringArg(input, "path")),
+          task: presentTask(await this.taskService.complete(stringArg(input, "path"))),
           verified: true
         })
       },
@@ -663,10 +681,10 @@ export class AgentToolRegistry {
         },
         risk: "high-write",
         execute: async (input) => ({
-          task: await this.taskService.addDependency(stringArg(input, "path"), {
+          task: presentTask(await this.taskService.addDependency(stringArg(input, "path"), {
             uid: stringArg(input, "dependency_path"),
             ...(typeof input.relationship === "string" ? { reltype: input.relationship } : {})
-          }),
+          })),
           verified: true
         })
       },
@@ -689,10 +707,10 @@ export class AgentToolRegistry {
         },
         risk: "high-write",
         execute: async (input) => ({
-          task: await this.taskService.removeDependency(
+          task: presentTask(await this.taskService.removeDependency(
             stringArg(input, "path"),
             stringArg(input, "dependency_path")
-          ),
+          )),
           verified: true
         })
       },
@@ -715,10 +733,10 @@ export class AgentToolRegistry {
         },
         risk: "low-write",
         execute: async (input) => ({
-          task: await this.taskService.startTimer(
+          task: presentTask(await this.taskService.startTimer(
             stringArg(input, "path"),
             typeof input.description === "string" ? input.description : undefined
-          ),
+          )),
           verified: true
         })
       },
@@ -738,7 +756,7 @@ export class AgentToolRegistry {
         },
         risk: "low-write",
         execute: async (input) => ({
-          task: await this.taskService.stopTimer(stringArg(input, "path")),
+          task: presentTask(await this.taskService.stopTimer(stringArg(input, "path"))),
           verified: true
         })
       },

@@ -9,7 +9,7 @@ Evaluate meaningful output while retaining time only as supporting context.
 
 ## Workflow
 
-1. Inspect the task note and relevant context before scoring.
+1. Call \`get_task\`, then call \`read_note\` on the task path before scoring. Use the task body, frontmatter, subtasks, and relevant linked context; never score from the title alone unless the note contains no other useful information.
 2. Read \`references/rubric.md\` for the scoring factors.
 3. Read \`references/examples.md\` when calibration is uncertain or the task resembles an example.
 4. Read \`references/schema.md\` before recording or recalibrating EXP.
@@ -21,6 +21,8 @@ Evaluate meaningful output while retaining time only as supporting context.
 10. Use \`get_exp_progress\` and \`review_exp_calibration\` for progress and consistency reviews.
 
 The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event. Never award the same completion twice. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion.
+
+When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created. This remains a separate approval. Tasks created directly in TaskNotes are not sent to a model automatically; score them when the user invokes this skill or asks for unscored tasks.
 `;
 
 export const EXP_RUBRIC = `# EXP scoring rubric

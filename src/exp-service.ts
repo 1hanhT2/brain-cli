@@ -51,7 +51,7 @@ export class ExpService {
   }
 
   async record(input: ExpRecordInput): Promise<{
-    task: { path: string; title: string; citation: string };
+    task: { path: string; title: string; displayTitle: string; citation: string };
     exp: TaskExpState;
     ledger: ExpLedgerEntry;
     verified: true;
@@ -92,7 +92,12 @@ export class ExpService {
       throw new Error(`EXP metadata could not be verified after writing ${task.path}.`);
     }
     return {
-      task: { path: task.path, title: task.title, citation: task.citation },
+      task: {
+        path: task.path,
+        title: task.title,
+        displayTitle: `[${verified.value}] ${task.title}`,
+        citation: task.citation
+      },
       exp: verified,
       ledger,
       verified: true

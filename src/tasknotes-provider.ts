@@ -226,6 +226,10 @@ export class TaskNotesProvider implements TaskProvider {
     const timeEstimate = typeof task.timeEstimate === "number" && Number.isFinite(task.timeEstimate)
       ? task.timeEstimate
       : null;
+    const frontmatter = this.app.metadataCache.getCache(path)?.frontmatter ?? {};
+    const rawExp = typeof task.exp === "number" ? task.exp : frontmatter.exp;
+    const exp = typeof rawExp === "number" && Number.isFinite(rawExp) ? rawExp : null;
+    const rawExpState = optionalString(task.expState) ?? optionalString(task.exp_state) ?? optionalString(frontmatter.exp_state);
     const timeEntries = Array.isArray(task.timeEntries) ? task.timeEntries.map(record) : [];
     return {
       path,
@@ -238,6 +242,8 @@ export class TaskNotesProvider implements TaskProvider {
       contexts: stringArray(task.contexts),
       projects: stringArray(task.projects),
       timeEstimate,
+      exp,
+      expState: rawExpState === "earned" ? "earned" : rawExpState === "planned" ? "planned" : null,
       recurrence: optionalString(task.recurrence),
       dependencies: dependencies(task.blockedBy),
       timeTrackingActive: timeEntries.some((entry) => !entry.endTime),
