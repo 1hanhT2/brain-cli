@@ -22,6 +22,11 @@ const BATCH_CHARACTER_LIMIT = 32_000;
 const UPDATE_DEBOUNCE_MS = 900;
 const QUERY_CACHE_SIZE = 20;
 
+const isRecoverableEmbeddingInputError = (error: unknown): boolean =>
+  /(?:http\s+422|input length|maximum\s+\d+|context length|too long|truncate)/i.test(
+    error instanceof Error ? error.message : String(error)
+  );
+
 const emptyStatus = (): SemanticIndexStatus => ({
   enabled: false,
   state: "disabled",
@@ -376,8 +381,57 @@ export class SemanticIndexCoordinator {
               completedChunks: this.status.completedChunks + batch.length
             });
           } catch (error) {
-            this.patchStatus({ failedChunks: this.status.failedChunks + batch.length });
-            throw error;
+            if (!isRecoverableEmbeddingInputError(error)) {
+              this.patchStatus({ failedChunks: this.status.failedChunks + batch.length });
+              throw error;
+            }
+            // A provider can reject one member of a batch for its tokenization
+            // even when our character bound is respected. Isolate that member
+            // so valid chunks still checkpoint and the queue keeps moving.
+            const recoveredRecords: SemanticChunkRecord[] = [];
+            let recoveredTokens = 0;
+            let failed = 0;
+            for (const candidate of batch) {
+              try {
+                const embedded = await this.embeddings.embed(
+                  settings.embeddingModel,
+                  [candidate.embeddingText],
+                  signal
+                );
+                const vector = embedded.vectors[0];
+                if (!vector) throw new Error("OpenRouter returned an incomplete embedding batch.");
+                recoveredTokens += embedded.promptTokens
+                  || Math.ceil(candidate.embeddingText.length / 4);
+                recoveredRecords.push({
+                  ...candidate,
+                  vector,
+                  modelId: settings.embeddingModel,
+                  dimensions: vector.length,
+                  indexVersion: INDEX_VERSION,
+                  chunkerVersion: CHUNKER_VERSION,
+                  metadataVersion: METADATA_VERSION,
+                  updatedAt: Date.now()
+                });
+              } catch (candidateError) {
+                if (!isRecoverableEmbeddingInputError(candidateError)) throw candidateError;
+                failed += 1;
+              }
+            }
+            if (recoveredRecords.length > 0) {
+              await this.store.putRecords(recoveredRecords);
+              await this.refreshStoredCounts();
+            }
+            const price = this.embeddingPricePerToken();
+            const failedMessage = failed > 0
+              ? `Skipped ${failed} embedding input${failed === 1 ? "" : "s"} rejected by the model's context limit.`
+              : this.status.lastError;
+            this.patchStatus({
+              promptTokens: this.status.promptTokens + recoveredTokens,
+              estimatedCostUsd: (this.status.promptTokens + recoveredTokens) * (price ?? 0),
+              completedChunks: this.status.completedChunks + recoveredRecords.length,
+              failedChunks: this.status.failedChunks + failed,
+              lastError: failedMessage
+            });
           }
         }
         this.clearReconciledPending(path, preparedVersions.get(path) ?? 0);

@@ -181,6 +181,7 @@ export class OpenRouterClient {
     const apiKey = await this.getApiKey();
     let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      let retryable = true;
       try {
         const response = await fetch(EMBEDDINGS_URL, {
           method: "POST",
@@ -189,7 +190,12 @@ export class OpenRouterClient {
             "Content-Type": "application/json",
             "X-OpenRouter-Title": "Obsidian Brain"
           },
-          body: JSON.stringify({ model, input: inputs, encoding_format: "float" }),
+          body: JSON.stringify({
+            model,
+            input: inputs,
+            encoding_format: "float",
+            truncate: "END"
+          }),
           signal
         });
         if (!response.ok) {
@@ -199,10 +205,14 @@ export class OpenRouterClient {
             await this.retryDelay(500 * (2 ** attempt), signal);
             continue;
           }
+          retryable = false;
           throw new Error(message);
         }
         const body = await response.json() as EmbeddingResponse;
-        if (body.error) throw new Error(`OpenRouter embedding error: ${body.error.message ?? "Unknown provider error."}`);
+        if (body.error) {
+          retryable = false;
+          throw new Error(`OpenRouter embedding error: ${body.error.message ?? "Unknown provider error."}`);
+        }
         const rows = [...(body.data ?? [])].sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
         if (rows.length !== inputs.length || rows.some((row) => !Array.isArray(row.embedding))) {
           throw new Error("OpenRouter returned an incomplete embedding batch.");
@@ -215,10 +225,11 @@ export class OpenRouterClient {
       } catch (error) {
         if (signal.aborted) throw error;
         lastError = error;
-        if (attempt < 2) {
+        if (retryable && attempt < 2) {
           await this.retryDelay(500 * (2 ** attempt), signal);
           continue;
         }
+        break;
       }
     }
     throw lastError instanceof Error ? lastError : new Error("OpenRouter embedding request failed.");

@@ -592,6 +592,19 @@ test("semantic chunking is deterministic and embeds curated metadata without YAM
   assert.equal(first[0]?.citation, "[[TaskNotes/Read#Notes]]");
 });
 
+test("semantic chunking bounds huge source lines and embedding inputs", () => {
+  const chunks = prepareMarkdownChunks(
+    { path: "Study/Huge.md", basename: "Huge" } as TFile,
+    `# Imported data\n${"x".repeat(20_000)}`,
+    { description: "m".repeat(10_000) },
+    false
+  );
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.embeddingText.length <= 3_000));
+  assert.ok(chunks.every((chunk) => chunk.excerpt.length <= 2_500));
+  assert.ok(chunks.every((chunk) => chunk.lineStart <= chunk.lineEnd));
+});
+
 test("semantic filters support folders, tags, and arbitrary frontmatter properties", () => {
   const chunk = prepareMarkdownChunks(
     { path: "TaskNotes/Study/Read.md", basename: "Read" } as TFile,
@@ -713,6 +726,69 @@ test("semantic coordinator checkpoints vectors and re-embeds only changed chunks
   await coordinator.start("vault-change");
   assert.equal(embeddingCalls, 2);
   assert.match((await store.getAll())[0]?.excerpt ?? "", /momentum/);
+});
+
+test("semantic coordinator isolates a rejected embedding input instead of stopping the queue", async () => {
+  const file = { path: "Study/Mixed.md", basename: "Mixed", extension: "md" } as TFile;
+  const content = `# Mixed\n${"first section ".repeat(130)}\n\n${"second section ".repeat(130)}`;
+  const app = {
+    vault: {
+      getMarkdownFiles: () => [file],
+      cachedRead: async () => content
+    },
+    metadataCache: { getFileCache: () => null }
+  } as unknown as App;
+  const settings = {
+    brainFolder: "Brain",
+    openRouterSecretId: "",
+    interactiveModel: "openrouter/free",
+    backgroundModel: "openrouter/free",
+    favoriteModels: [],
+    embeddingModel: "embedding/test",
+    favoriteEmbeddingModels: [],
+    useOmnisearch: false,
+    useWebSearch: false,
+    semanticSearchEnabled: true,
+    semanticFolders: ["Study"],
+    includeSensitiveSemantic: false,
+    semanticSpendCapUsd: 0.25,
+    semanticVaultId: "test-recovery",
+    excludedPaths: [],
+    sensitiveTags: []
+  } satisfies BrainSettings;
+  const store = new MemorySemanticStore();
+  let calls = 0;
+  let singleCalls = 0;
+  const coordinator = new SemanticIndexCoordinator(
+    app,
+    () => settings,
+    () => [],
+    { inspectFile: () => ({ sensitive: false, reasons: [] }) } as unknown as SensitiveContentGuard,
+    store,
+    {
+      listEmbeddingModels: async () => [],
+      embed: async (_model: string, inputs: string[]) => {
+        calls += 1;
+        if (inputs.length > 1) throw new Error("HTTP 422: input length exceeds model maximum");
+        singleCalls += 1;
+        if (singleCalls === 2) {
+          throw new Error("HTTP 422: input length exceeds model maximum");
+        }
+        return {
+          vectors: [Float32Array.from([1, 0])],
+          promptTokens: 5,
+          totalTokens: 5
+        };
+      }
+    },
+    () => [{ id: "embedding/test", pricing: { prompt: "0.000001" } }]
+  );
+  await coordinator.start("rebuild");
+  assert.ok(calls >= 3);
+  assert.equal(coordinator.getStatus().state, "idle");
+  assert.equal(coordinator.getStatus().failedChunks, 1);
+  assert.ok(coordinator.getStatus().completedChunks > 0);
+  assert.ok((await store.getAll()).length > 0);
 });
 
 test("semantic coordinator pauses before exceeding the configured spend cap", async () => {

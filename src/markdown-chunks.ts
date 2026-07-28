@@ -18,6 +18,10 @@ const NOISY_FRONTMATTER = new Set([
   "rrule"
 ]);
 
+export const MAX_EMBEDDING_INPUT_CHARACTERS = 3_000;
+const MAX_METADATA_TEXT_CHARACTERS = 1_000;
+const MAX_SOURCE_LINE_CHARACTERS = 1_200;
+
 export const normalizeVaultPath = (value: string): string =>
   value.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "");
 
@@ -53,7 +57,21 @@ export const normalizeMetadata = (
 const metadataText = (metadata: Record<string, string[]>): string =>
   Object.entries(metadata)
     .map(([key, values]) => `${key}: ${values.join(", ")}`)
-    .join("\n");
+    .join("\n")
+    .slice(0, MAX_METADATA_TEXT_CHARACTERS);
+
+const splitSourceLines = (lines: string[]): Array<{ text: string; sourceLine: number }> =>
+  lines.flatMap((line, sourceLine) => {
+    if (line.length <= MAX_SOURCE_LINE_CHARACTERS) return [{ text: line, sourceLine }];
+    const segments: Array<{ text: string; sourceLine: number }> = [];
+    for (let offset = 0; offset < line.length; offset += MAX_SOURCE_LINE_CHARACTERS) {
+      segments.push({
+        text: line.slice(offset, offset + MAX_SOURCE_LINE_CHARACTERS),
+        sourceLine
+      });
+    }
+    return segments;
+  });
 
 export const prepareMarkdownChunks = (
   file: Pick<TFile, "path" | "basename">,
@@ -63,13 +81,14 @@ export const prepareMarkdownChunks = (
 ): PreparedChunk[] => {
   const path = normalizeVaultPath(file.path);
   const metadata = normalizeMetadata(frontmatter);
-  const lines = content.split(/\r?\n/);
-  if (lines[0]?.trim() === "---") {
-    const closing = lines.findIndex((line, index) => index > 0 && line.trim() === "---");
+  const sourceLines = content.split(/\r?\n/);
+  if (sourceLines[0]?.trim() === "---") {
+    const closing = sourceLines.findIndex((line, index) => index > 0 && line.trim() === "---");
     if (closing > 0) {
-      for (let index = 0; index <= closing; index += 1) lines[index] = "";
+      for (let index = 0; index <= closing; index += 1) sourceLines[index] = "";
     }
   }
+  const lines = splitSourceLines(sourceLines);
   const chunks: PreparedChunk[] = [];
   let heading: string | null = null;
   let headingOrdinal = 0;
@@ -92,16 +111,20 @@ export const prepareMarkdownChunks = (
       metadataText(metadata),
       heading ? `Heading: ${heading}` : ""
     ].filter(Boolean).join("\n");
+    const fullEmbeddingText = `${prefix}\n\n${excerpt}`;
+    const embeddingText = fullEmbeddingText.slice(0, MAX_EMBEDDING_INPUT_CHARACTERS);
     chunks.push({
       id: `${stableHash(path)}:${headingOrdinal}:${chunkOrdinal}:${stableHash(identity)}`,
       path,
       heading,
-      lineStart: start + 1,
-      lineEnd: end + 1,
+      lineStart: (lines[start]?.sourceLine ?? start) + 1,
+      lineEnd: (lines[end]?.sourceLine ?? end) + 1,
       excerpt,
       citation: `[[${target}${heading ? `#${heading}` : ""}]]`,
-      embeddingText: `${prefix}\n\n${excerpt}`,
-      contentHash: stableHash(`${prefix}\n${excerpt}`),
+      embeddingText,
+      contentHash: fullEmbeddingText.length <= MAX_EMBEDDING_INPUT_CHARACTERS
+        ? stableHash(`${prefix}\n${excerpt}`)
+        : stableHash(embeddingText),
       metadata,
       sensitive
     });
@@ -111,7 +134,8 @@ export const prepareMarkdownChunks = (
   };
 
   for (let index = 0; index < lines.length; index += 1) {
-    const headingMatch = lines[index].match(/^#{1,6}\s+(.+?)\s*#*$/);
+    const line = lines[index].text;
+    const headingMatch = line.match(/^#{1,6}\s+(.+?)\s*#*$/);
     if (headingMatch) {
       if (buffer.length > 0) flush(index - 1);
       heading = headingMatch[1];
@@ -119,9 +143,9 @@ export const prepareMarkdownChunks = (
       chunkOrdinal = 0;
       start = index;
     }
-    buffer.push(lines[index]);
+    buffer.push(line);
     const bufferedLength = buffer.reduce((total, line) => total + line.length + 1, 0);
-    if (bufferedLength >= 1_400 || (lines[index].trim() === "" && bufferedLength >= 700)) {
+    if (bufferedLength >= 1_400 || (line.trim() === "" && bufferedLength >= 700)) {
       flush(index);
     }
   }
