@@ -118,7 +118,7 @@ export class SemanticIndexCoordinator {
       .finally(() => {
         this.activeController = null;
         this.activePromise = null;
-        if (this.pendingPaths.size > 0 && this.status.state !== "paused") this.scheduleQueuedUpdates(0);
+        if (this.pendingPaths.size > 0 && this.status.state === "idle") this.scheduleQueuedUpdates(0);
       });
     return this.activePromise;
   }
@@ -130,6 +130,7 @@ export class SemanticIndexCoordinator {
 
   disable(): void {
     this.patchStatus({ enabled: false, state: "disabled", reason: null, partial: this.status.indexedChunks > 0 });
+    this.clearQueuedUpdates();
     this.activeController?.abort();
   }
 
@@ -153,7 +154,14 @@ export class SemanticIndexCoordinator {
 
   cancel(): void {
     this.patchStatus({ state: "cancelled", reason: "user", partial: true });
+    this.clearQueuedUpdates();
     this.activeController?.abort();
+  }
+
+  dispose(): void {
+    this.clearQueuedUpdates();
+    this.activeController?.abort();
+    this.listeners.clear();
   }
 
   async clear(): Promise<void> {
@@ -189,7 +197,7 @@ export class SemanticIndexCoordinator {
     this.removedPaths.delete(path);
     this.pendingPaths.add(path);
     this.pendingVersions.set(path, (this.pendingVersions.get(path) ?? 0) + 1);
-    if (!this.activePromise) {
+    if (!this.activePromise && !["paused", "cancelled", "disabled"].includes(this.status.state)) {
       this.patchStatus({ queuedNotes: this.pendingPaths.size });
       this.scheduleQueuedUpdates(UPDATE_DEBOUNCE_MS);
     }
@@ -463,7 +471,7 @@ export class SemanticIndexCoordinator {
         state: "idle",
         reason: null,
         queuedNotes: this.pendingPaths.size,
-        partial: false,
+        partial: this.status.failedChunks > 0,
         elapsedMs: this.status.startedAt ? Date.now() - this.status.startedAt : 0,
         startedAt: null
       });
@@ -519,7 +527,11 @@ export class SemanticIndexCoordinator {
   }
 
   private async processQueuedUpdates(): Promise<void> {
-    if (this.activePromise || this.status.state === "paused" || this.pendingPaths.size === 0) return;
+    if (
+      this.activePromise
+      || ["paused", "cancelled", "disabled"].includes(this.status.state)
+      || this.pendingPaths.size === 0
+    ) return;
     const paths = [...this.pendingPaths];
     this.pendingPaths.clear();
     this.patchStatus({ queuedNotes: paths.length });
@@ -534,6 +546,17 @@ export class SemanticIndexCoordinator {
     if ((this.pendingVersions.get(path) ?? 0) !== version) return;
     this.pendingPaths.delete(path);
     this.pendingVersions.delete(path);
+  }
+
+  private clearQueuedUpdates(): void {
+    if (this.updateTimer !== null) {
+      window.clearTimeout(this.updateTimer);
+      this.updateTimer = null;
+    }
+    this.pendingPaths.clear();
+    this.pendingVersions.clear();
+    this.removedPaths.clear();
+    this.patchStatus({ queuedNotes: 0 });
   }
 
   private isInScope(path: string): boolean {

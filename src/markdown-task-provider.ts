@@ -21,7 +21,9 @@ const scalar = (value: unknown): string | null => {
 };
 
 const array = (value: unknown): string[] =>
-  Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+  (Array.isArray(value) ? value : value === null || value === undefined ? [] : [value])
+    .flatMap((item) => String(item).split(/[\s,]+/))
+    .filter(Boolean);
 
 export class MarkdownTaskProvider implements TaskProvider {
   constructor(

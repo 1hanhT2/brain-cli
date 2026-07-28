@@ -43,6 +43,7 @@ export interface ExpLedgerEntry {
   recordedAt: string;
   revision: number;
   citation: string;
+  sensitive?: boolean;
 }
 
 export interface ExpProgress {
@@ -143,6 +144,22 @@ export const validateExpInput = (input: ExpRecordInput): ExpRecordInput => {
       Object.entries(input.factors).map(([key, value]) => [key, value.trim()])
     ) as unknown as ExpFactors
   };
+};
+
+export const validateExpTransition = (
+  action: ExpAction,
+  existing: Pick<TaskExpState, "state"> | null,
+  allowRepeat = false
+): void => {
+  if (action === "plan" && existing) {
+    throw new Error("This task already has EXP. Use recalibrate for a planned score or award when the work is complete.");
+  }
+  if (action === "recalibrate" && (!existing || existing.state !== "planned")) {
+    throw new Error("Only an existing planned EXP score can be recalibrated.");
+  }
+  if (action === "award" && existing?.state === "earned" && !allowRepeat) {
+    throw new Error("This task already has earned EXP. Use allow_repeat only for a new recurrence or intentional second award.");
+  }
 };
 
 export const calculateExpStreaks = (

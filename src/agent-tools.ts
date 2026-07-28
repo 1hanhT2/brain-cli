@@ -1033,6 +1033,7 @@ export class AgentToolRegistry {
       const path = stringArg(input, "path");
       const before = await this.taskService.get(path, true);
       if (!before) throw new Error(`Task not found: ${path}`);
+      ({ sensitive, reasons: sensitivityReasons } = await this.taskService.inspectSensitivity(path));
       const updates = taskFields(objectInput(input.updates));
       preview = {
         title: `Update task: ${before.title}`,
@@ -1044,6 +1045,7 @@ export class AgentToolRegistry {
       const path = stringArg(input, "path");
       const before = await this.taskService.get(path, true);
       if (!before) throw new Error(`Task not found: ${path}`);
+      ({ sensitive, reasons: sensitivityReasons } = await this.taskService.inspectSensitivity(path));
       preview = {
         title: `Complete task: ${before.title}`,
         before: taskPreview(before),
@@ -1054,6 +1056,12 @@ export class AgentToolRegistry {
       const path = stringArg(input, "path");
       const before = await this.taskService.get(path, true);
       if (!before) throw new Error(`Task not found: ${path}`);
+      ({ sensitive, reasons: sensitivityReasons } = await this.taskService.inspectSensitivity(path));
+      if (call.function.name === "add_task_dependency") {
+        const dependencyReport = await this.taskService.inspectSensitivity(stringArg(input, "dependency_path"));
+        sensitive ||= dependencyReport.sensitive;
+        sensitivityReasons.push(...dependencyReport.reasons);
+      }
       const dependencyPath = stringArg(input, "dependency_path");
       const dependencies = call.function.name === "add_task_dependency"
         ? [...before.dependencies, {
@@ -1071,6 +1079,7 @@ export class AgentToolRegistry {
       const path = stringArg(input, "path");
       const before = await this.taskService.get(path, true);
       if (!before) throw new Error(`Task not found: ${path}`);
+      ({ sensitive, reasons: sensitivityReasons } = await this.taskService.inspectSensitivity(path));
       const starting = call.function.name === "start_task_timer";
       preview = {
         title: `${starting ? "Start" : "Stop"} task timer: ${before.title}`,

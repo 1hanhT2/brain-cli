@@ -48,8 +48,9 @@ const optionalString = (value: unknown): string | null => {
 };
 
 const stringArray = (value: unknown): string[] => {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => typeof item === "string" ? item : String(item)).filter(Boolean);
+  return (Array.isArray(value) ? value : value === null || value === undefined ? [] : [value])
+    .flatMap((item) => (typeof item === "string" ? item : String(item)).split(/[\s,]+/))
+    .filter(Boolean);
 };
 
 const dependencies = (value: unknown): Array<{ uid: string; reltype: string }> =>
@@ -238,7 +239,7 @@ export class TaskNotesProvider implements TaskProvider {
       priority: optionalString(task.priority),
       due: optionalString(task.due),
       scheduled: optionalString(task.scheduled),
-      tags: stringArray(task.tags),
+      tags: stringArray(task.tags ?? frontmatter.tags),
       contexts: stringArray(task.contexts),
       projects: stringArray(task.projects),
       timeEstimate,

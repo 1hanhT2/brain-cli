@@ -136,6 +136,11 @@ boundary. With EXP active, a task created through Brain gets a planned-score
 proposal as a separate approval unless automatic scoring is enabled. The
 opt-in automatic queue sends newly created non-sensitive TaskNotes to the
 background OpenRouter model and writes planned EXP without another approval.
+The queue is task-scoped, waits for note metadata to settle, survives reloads,
+retries transient or malformed responses up to three times, and stops at the
+configurable per-session spend cap (default `$0.10`). `/status` shows its
+queue, activity, and estimated spend. Cancelling or disabling it aborts the
+active request before the EXP transaction can commit.
 The command-palette action **Run @exp on active TaskNote** performs the same
 workflow on demand. Existing time fields are left intact.
 
@@ -148,6 +153,12 @@ result against its own exclusions and sensitive-content policy and skips its
 complete-vault lexical scan at startup. If Omnisearch is disabled, unavailable,
 or errors, the persistent built-in index loads cached notes and rereads only
 new or changed Markdown.
+Changing excluded paths or sensitive tags immediately cancels active indexing,
+purges stale eligibility, and rebuilds both lexical and enabled semantic
+coverage. Task privacy checks inspect the actual Markdown body and frontmatter,
+including scalar tags, `sensitive: true`, privacy labels, and credential
+patterns. Approved sensitive tool results and derived assistant text are
+ephemeral and are redacted from saved chat state after that turn.
 The neighboring OpenRouter web-search checkbox adds
 `openrouter:web_search` to chat requests. The model can then search current
 internet sources while retaining access to Brain's local tools; web search is

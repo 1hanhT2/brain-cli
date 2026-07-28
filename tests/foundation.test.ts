@@ -45,10 +45,10 @@ import { PerformanceTracer } from "../src/performance";
 import { compactEmbeddingModel, compactOpenRouterModel } from "../src/catalog-models";
 import { MemoryCatalogStore } from "../src/catalog-store";
 import type { OpenRouterModel } from "../src/types";
-import type { TaskService } from "../src/task-service";
+import { TaskService } from "../src/task-service";
 import { TaskNotesProvider } from "../src/tasknotes-provider";
 import { formatExpTaskTitle, stripExpTitlePrefix, taskDisplayTitle } from "../src/task-provider";
-import { calculateExpStreaks, validateExpInput } from "../src/exp-core";
+import { calculateExpStreaks, validateExpInput, validateExpTransition } from "../src/exp-core";
 import type { ExpService } from "../src/exp-service";
 import { parseSkillInvocation } from "../src/skill-invocation";
 import { parseExpScoringResponse } from "../src/exp-auto-scorer";
@@ -297,7 +297,7 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
       title: "Finished",
       status: "done",
       priority: "normal",
-      tags: ["study"]
+      tags: "#study"
     }]
   ]);
   let readyCalls = 0;
@@ -378,6 +378,70 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
   assert.equal((await provider.stopTimer(created.path)).timeTrackingActive, false);
   assert.equal((await provider.complete(created.path)).completed, true);
   assert.ok(readyCalls >= 8);
+});
+
+test("task service uses full-note sensitivity checks and fails closed while listing", async () => {
+  const tasks = [
+    {
+      path: "TaskNotes/Tasks/public.md",
+      title: "Public",
+      status: "open",
+      priority: null,
+      due: null,
+      scheduled: null,
+      tags: [],
+      contexts: [],
+      projects: [],
+      timeEstimate: null,
+      exp: null,
+      expState: null,
+      recurrence: null,
+      dependencies: [],
+      timeTrackingActive: false,
+      completed: false,
+      provider: "markdown",
+      citation: "[[TaskNotes/Tasks/public]]"
+    },
+    {
+      path: "TaskNotes/Tasks/private.md",
+      title: "Private",
+      status: "open",
+      priority: null,
+      due: null,
+      scheduled: null,
+      tags: [],
+      contexts: [],
+      projects: [],
+      timeEstimate: null,
+      exp: null,
+      expState: null,
+      recurrence: null,
+      dependencies: [],
+      timeTrackingActive: false,
+      completed: false,
+      provider: "markdown",
+      citation: "[[TaskNotes/Tasks/private]]"
+    }
+  ];
+  const provider = {
+    status: () => ({ provider: "markdown", available: true, reason: "test" }),
+    list: async () => tasks,
+    get: async (path: string) => tasks.find((task) => task.path === path) ?? null
+  };
+  const service = new TaskService(
+    { status: () => ({ provider: "tasknotes", available: false, reason: "test" }) } as never,
+    provider as never,
+    () => [],
+    {
+      inspectPath: async (path: string) => ({
+        sensitive: path.endsWith("private.md"),
+        reasons: path.endsWith("private.md") ? ["frontmatter marks the note as sensitive"] : []
+      })
+    } as SensitiveContentGuard
+  );
+  assert.deepEqual((await service.list()).map((task) => task.title), ["Public"]);
+  await assert.rejects(() => service.get("TaskNotes/Tasks/private.md"), /Sensitive task approval required/);
+  assert.equal((await service.get("TaskNotes/Tasks/private.md", true))?.title, "Private");
 });
 
 test("EXP task titles replace old prefixes and shorten cleanly at word boundaries", () => {
@@ -689,6 +753,9 @@ test("semantic coordinator checkpoints vectors and re-embeds only changed chunks
     interactiveModel: "openrouter/free",
     backgroundModel: "openrouter/free",
     autoScoreTaskExp: false,
+    autoExpSpendCapUsd: 0.10,
+    autoExpQueue: [],
+    fallbackTaskFolder: "TaskNotes/Tasks",
     expTitleMaxLength: 100,
     favoriteModels: [],
     embeddingModel: "embedding/test",
@@ -771,6 +838,9 @@ test("semantic coordinator isolates a rejected embedding input instead of stoppi
     interactiveModel: "openrouter/free",
     backgroundModel: "openrouter/free",
     autoScoreTaskExp: false,
+    autoExpSpendCapUsd: 0.10,
+    autoExpQueue: [],
+    fallbackTaskFolder: "TaskNotes/Tasks",
     expTitleMaxLength: 100,
     favoriteModels: [],
     embeddingModel: "embedding/test",
@@ -816,8 +886,75 @@ test("semantic coordinator isolates a rejected embedding input instead of stoppi
   assert.ok(calls >= 3);
   assert.equal(coordinator.getStatus().state, "idle");
   assert.equal(coordinator.getStatus().failedChunks, 1);
+  assert.equal(coordinator.getStatus().partial, true);
   assert.ok(coordinator.getStatus().completedChunks > 0);
   assert.ok((await store.getAll()).length > 0);
+});
+
+test("semantic cancellation aborts the active request and does not restart queued work", async () => {
+  const file = { path: "Study/Cancel.md", basename: "Cancel", extension: "md" } as TFile;
+  const app = {
+    vault: {
+      getMarkdownFiles: () => [file],
+      cachedRead: async () => "# Cancel\nThis request should be aborted."
+    },
+    metadataCache: { getFileCache: () => null }
+  } as unknown as App;
+  const settings = {
+    brainFolder: "Brain",
+    fallbackTaskFolder: "TaskNotes/Tasks",
+    openRouterSecretId: "",
+    interactiveModel: "openrouter/free",
+    backgroundModel: "openrouter/free",
+    autoScoreTaskExp: false,
+    autoExpSpendCapUsd: 0.10,
+    autoExpQueue: [],
+    expTitleMaxLength: 100,
+    favoriteModels: [],
+    embeddingModel: "embedding/test",
+    favoriteEmbeddingModels: [],
+    useOmnisearch: false,
+    useWebSearch: false,
+    semanticSearchEnabled: true,
+    semanticFolders: ["Study"],
+    includeSensitiveSemantic: false,
+    semanticSpendCapUsd: 0.25,
+    semanticVaultId: "test-cancel",
+    excludedPaths: [],
+    sensitiveTags: []
+  } satisfies BrainSettings;
+  let started!: () => void;
+  const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+  let calls = 0;
+  const coordinator = new SemanticIndexCoordinator(
+    app,
+    () => settings,
+    () => [],
+    { inspectFile: () => ({ sensitive: false, reasons: [] }) } as unknown as SensitiveContentGuard,
+    new MemorySemanticStore(),
+    {
+      listEmbeddingModels: async () => [],
+      embed: async (_model: string, _inputs: string[], signal: AbortSignal) => {
+        calls += 1;
+        started();
+        return new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+      }
+    },
+    () => [{ id: "embedding/test", pricing: { prompt: "0" } }]
+  );
+  const running = coordinator.start("rebuild");
+  await requestStarted;
+  coordinator.queueUpdate(file);
+  coordinator.cancel();
+  await running;
+  assert.equal(calls, 1);
+  assert.equal(coordinator.getStatus().state, "cancelled");
+  assert.equal(coordinator.getStatus().queuedNotes, 0);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(calls, 1);
 });
 
 test("semantic coordinator pauses before exceeding the configured spend cap", async () => {
@@ -835,6 +972,9 @@ test("semantic coordinator pauses before exceeding the configured spend cap", as
     interactiveModel: "openrouter/free",
     backgroundModel: "openrouter/free",
     autoScoreTaskExp: false,
+    autoExpSpendCapUsd: 0.10,
+    autoExpQueue: [],
+    fallbackTaskFolder: "TaskNotes/Tasks",
     expTitleMaxLength: 100,
     favoriteModels: [],
     embeddingModel: "embedding/expensive",
@@ -1088,6 +1228,17 @@ test("EXP validation enforces calibrated scores and complete factor evidence", (
   }), /rigor/);
 });
 
+test("EXP transitions prevent silent overwrites and duplicate awards", () => {
+  assert.doesNotThrow(() => validateExpTransition("plan", null));
+  assert.doesNotThrow(() => validateExpTransition("recalibrate", { state: "planned" }));
+  assert.doesNotThrow(() => validateExpTransition("award", { state: "planned" }));
+  assert.doesNotThrow(() => validateExpTransition("award", { state: "earned" }, true));
+  assert.throws(() => validateExpTransition("plan", { state: "planned" }), /already has EXP/);
+  assert.throws(() => validateExpTransition("recalibrate", null), /existing planned/);
+  assert.throws(() => validateExpTransition("recalibrate", { state: "earned" }), /existing planned/);
+  assert.throws(() => validateExpTransition("award", { state: "earned" }), /already has earned EXP/);
+});
+
 test("automatic EXP scoring parses JSON and normalizes model numbers", () => {
   const parsed = parseExpScoringResponse(JSON.stringify({
     value: 187,
@@ -1106,6 +1257,22 @@ test("automatic EXP scoring parses JSON and normalizes model numbers", () => {
   assert.equal(parsed.confidence, 1);
   assert.equal(parsed.action, "plan");
   assert.equal(parsed.factors.output, "Fifteen pages read");
+});
+
+test("automatic EXP scoring rejects malformed numeric model output", () => {
+  assert.throws(() => parseExpScoringResponse(JSON.stringify({
+    value: "not-a-number",
+    confidence: 0.8,
+    reason: "invalid",
+    factors: {
+      output: "x",
+      difficulty: "x",
+      rigor: "x",
+      friction: "x",
+      independence: "x",
+      significance: "x"
+    }
+  }), "TaskNotes/Tasks/a.md", "plan"), /invalid numeric/);
 });
 
 test("EXP streaks count unique award days and allow yesterday's streak to remain current", () => {

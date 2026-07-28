@@ -9,6 +9,7 @@ import {
   localDateKey,
   parseExpFactors,
   validateExpInput,
+  validateExpTransition,
   type ExpCalibrationReview,
   type ExpLedgerEntry,
   type ExpProgress,
@@ -19,6 +20,10 @@ import { formatExpTaskTitle, stripExpTitlePrefix } from "./task-provider";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const EXP_SCHEMA_VERSION = 1;
+const EXP_FRONTMATTER_KEYS = [
+  "title", "exp_schema", "exp", "exp_state", "exp_confidence", "exp_reason",
+  "exp_factors", "exp_scored_at", "exp_awarded_at", "exp_revision"
+];
 
 export class ExpService {
   constructor(
@@ -52,30 +57,29 @@ export class ExpService {
     };
   }
 
-  async record(input: ExpRecordInput): Promise<{
+  async record(input: ExpRecordInput, signal?: AbortSignal): Promise<{
     task: { path: string; title: string; displayTitle: string; citation: string };
     exp: TaskExpState;
     ledger: ExpLedgerEntry;
     verified: true;
   }> {
     const clean = this.validate(input);
+    if (signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
     const task = await this.taskService.get(clean.path, true);
     if (!task) throw new Error(`Task not found: ${clean.path}`);
     const existing = await this.taskState(task.path);
-    if (clean.action === "award" && existing?.state === "earned" && !clean.allowRepeat) {
-      throw new Error("This task already has earned EXP. Use allow_repeat only for a new recurrence or intentional second award.");
-    }
+    validateExpTransition(clean.action, existing, clean.allowRepeat);
 
     const now = new Date().toISOString();
     const revision = (existing?.revision ?? 0) + 1;
     const plainTitle = stripExpTitlePrefix(task.title);
     const storedTitle = formatExpTaskTitle(plainTitle, clean.value, this.getTitleMaxLength());
-    const ledger = this.makeLedgerEntry(clean, plainTitle, now, revision);
-    const ledgerFile = await this.vaultTools.createMarkdown(
-      this.ledgerPath(ledger),
-      this.renderLedger(ledger, task.citation)
-    );
+    const sensitivity = await this.taskService.inspectSensitivity(task.path);
+    const ledger = this.makeLedgerEntry(clean, plainTitle, now, revision, sensitivity.sensitive);
+    const taskFile = this.requireFile(task.path);
+    const before = await this.frontmatter(taskFile);
     try {
+      if (signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
       await this.vaultTools.updateFrontmatter(task.path, {
         title: storedTitle,
         exp_schema: EXP_SCHEMA_VERSION,
@@ -88,25 +92,32 @@ export class ExpService {
         exp_awarded_at: clean.action === "award" ? now : null,
         exp_revision: revision
       });
+      const verified = await this.taskState(task.path);
+      if (signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+      if (!verified || verified.value !== clean.value || verified.revision !== revision) {
+        throw new Error(`EXP metadata could not be verified after writing ${task.path}.`);
+      }
+      await this.vaultTools.createMarkdown(
+        this.ledgerPath(ledger),
+        this.renderLedger(ledger, task.citation)
+      );
+      return {
+        task: {
+          path: task.path,
+          title: storedTitle,
+          displayTitle: storedTitle,
+          citation: task.citation
+        },
+        exp: verified,
+        ledger,
+        verified: true
+      };
     } catch (error) {
-      await this.app.vault.trash(ledgerFile, false).catch(() => undefined);
+      await this.vaultTools.restoreFrontmatter(task.path, before, EXP_FRONTMATTER_KEYS).catch((rollbackError) => {
+        console.error(`[Obsidian Brain] Failed to roll back EXP metadata for ${task.path}.`, rollbackError);
+      });
       throw error;
     }
-    const verified = await this.taskState(task.path);
-    if (!verified || verified.value !== clean.value || verified.revision !== revision) {
-      throw new Error(`EXP metadata could not be verified after writing ${task.path}.`);
-    }
-    return {
-      task: {
-        path: task.path,
-        title: storedTitle,
-        displayTitle: storedTitle,
-        citation: task.citation
-      },
-      exp: verified,
-      ledger,
-      verified: true
-    };
   }
 
   async history(): Promise<ExpLedgerEntry[]> {
@@ -118,10 +129,17 @@ export class ExpService {
       if (frontmatter.type !== "exp-entry") continue;
       const action = frontmatter.action;
       if (action !== "plan" && action !== "award" && action !== "recalibrate") continue;
+      const taskPath = expString(frontmatter.task);
+      let sensitive = frontmatter.sensitive === true;
+      if (!sensitive && taskPath) {
+        sensitive = await this.taskService.inspectSensitivity(taskPath)
+          .then((report) => report.sensitive)
+          .catch(() => false);
+      }
       entries.push({
         id: expString(frontmatter.id),
         action,
-        taskPath: expString(frontmatter.task),
+        taskPath,
         taskTitle: expString(frontmatter.task_title),
         value: expNumber(frontmatter.exp),
         confidence: expNumber(frontmatter.confidence),
@@ -129,7 +147,8 @@ export class ExpService {
         factors: parseExpFactors(frontmatter.factors),
         recordedAt: expString(frontmatter.recorded_at),
         revision: expNumber(frontmatter.revision),
-        citation: `[[${file.path.replace(/\.md$/i, "")}]]`
+        citation: `[[${file.path.replace(/\.md$/i, "")}]]`,
+        sensitive
       });
     }
     return entries.sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
@@ -162,7 +181,7 @@ export class ExpService {
       levelProgress: total % 1000,
       nextLevelAt: level * 1000,
       awards: awards.length,
-      recent: awards.slice(0, 5)
+      recent: this.redactSensitive(awards.slice(0, 5))
     };
   }
 
@@ -222,7 +241,7 @@ export class ExpService {
         .sort((left, right) => right.count - left.count || left.value - right.value)
         .slice(0, 5),
       observations,
-      recent: awards.slice(0, 10)
+      recent: this.redactSensitive(awards.slice(0, 10))
     };
   }
 
@@ -230,7 +249,8 @@ export class ExpService {
     input: ExpRecordInput,
     taskTitle: string,
     recordedAt: string,
-    revision: number
+    revision: number,
+    sensitive: boolean
   ): ExpLedgerEntry {
     const id = typeof crypto?.randomUUID === "function"
       ? crypto.randomUUID()
@@ -246,7 +266,8 @@ export class ExpService {
       factors: input.factors,
       recordedAt,
       revision,
-      citation: ""
+      citation: "",
+      sensitive
     };
   }
 
@@ -270,6 +291,7 @@ export class ExpService {
       `factors: ${JSON.stringify(entry.factors)}`,
       `recorded_at: ${JSON.stringify(entry.recordedAt)}`,
       `revision: ${entry.revision}`,
+      `sensitive: ${entry.sensitive === true}`,
       "---",
       "",
       `# ${entry.action === "award" ? "EXP earned" : "EXP score"}: ${entry.taskTitle}`,
@@ -289,6 +311,26 @@ export class ExpService {
     const file = this.app.vault.getAbstractFileByPath(normalized);
     if (!(file instanceof TFile) || file.extension !== "md") throw new Error(`Task not found: ${path}`);
     return file;
+  }
+
+  private redactSensitive(entries: ExpLedgerEntry[]): ExpLedgerEntry[] {
+    return entries.map((entry) => entry.sensitive
+      ? {
+          ...entry,
+          taskPath: "[sensitive task]",
+          taskTitle: "[sensitive task]",
+          reason: "[sensitive]",
+          factors: {
+            output: "[sensitive]",
+            difficulty: "[sensitive]",
+            rigor: "[sensitive]",
+            friction: "[sensitive]",
+            independence: "[sensitive]",
+            significance: "[sensitive]"
+          },
+          citation: ""
+        }
+      : entry);
   }
 
   private async frontmatter(file: TFile): Promise<Record<string, unknown>> {

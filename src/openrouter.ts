@@ -96,6 +96,18 @@ interface TextCompletionResponse extends OpenRouterErrorBody {
       content?: string | null;
     };
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
+export interface TextCompletionResult {
+  content: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 }
 
 export interface ChatCompletionResult {
@@ -416,6 +428,15 @@ export class OpenRouterClient {
     userPrompt: string,
     signal: AbortSignal
   ): Promise<string> {
+    return (await this.completeTextWithUsage(model, systemPrompt, userPrompt, signal)).content;
+  }
+
+  async completeTextWithUsage(
+    model: string,
+    systemPrompt: string,
+    userPrompt: string,
+    signal: AbortSignal
+  ): Promise<TextCompletionResult> {
     const apiKey = await this.getApiKey();
     const response = await fetch(CHAT_COMPLETIONS_URL, {
       method: "POST",
@@ -442,7 +463,14 @@ export class OpenRouterClient {
     }
     const content = body.choices?.[0]?.message?.content?.trim();
     if (!content) throw new Error("The summarization model returned no text.");
-    return content;
+    return {
+      content,
+      promptTokens: body.usage?.prompt_tokens ?? Math.ceil((systemPrompt.length + userPrompt.length) / 4),
+      completionTokens: body.usage?.completion_tokens ?? Math.ceil(content.length / 4),
+      totalTokens: body.usage?.total_tokens
+        ?? (body.usage?.prompt_tokens ?? Math.ceil((systemPrompt.length + userPrompt.length) / 4))
+          + (body.usage?.completion_tokens ?? Math.ceil(content.length / 4))
+    };
   }
 
   private async getApiKey(): Promise<string> {

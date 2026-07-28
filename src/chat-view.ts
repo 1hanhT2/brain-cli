@@ -51,6 +51,11 @@ interface ConfigMenuItem {
   toggle: () => Promise<void>;
 }
 
+interface HandledToolCall {
+  value: unknown;
+  sensitive: boolean;
+}
+
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
 const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate"]);
@@ -229,6 +234,9 @@ export class BrainChatView extends ItemView {
   private chatSummaries: ChatSummary[] = [];
   private readonly markdownComponents = new Map<HTMLElement, Component>();
   private readonly turnCitations = new Set<string>();
+  private readonly sensitiveToolCallIds = new Set<string>();
+  private readonly sensitiveAssistantMessages = new Set<ChatMessage>();
+  private sensitiveContextActive = false;
   private commandHistory: string[] = [];
   private historyIndex = 0;
   private suggestionIndex = 0;
@@ -542,7 +550,9 @@ export class BrainChatView extends ItemView {
       if (this.isAbortError(error)) {
         if (this.activeAssistantBody && this.activePartial) {
           this.activeAssistantBody.setText(`${this.activePartial}\n\n[stopped]`);
-          this.messages.push({ role: "assistant", content: this.activePartial });
+          const stoppedMessage: ChatMessage = { role: "assistant", content: this.activePartial };
+          this.messages.push(stoppedMessage);
+          if (this.sensitiveContextActive) this.sensitiveAssistantMessages.add(stoppedMessage);
           await this.persistCurrentChat();
         } else if (this.activeAssistantBody) {
           this.activeAssistantBody.parentElement?.remove();
@@ -563,6 +573,11 @@ export class BrainChatView extends ItemView {
         this.plugin.reportError(error);
       }
     } finally {
+      if (this.sensitiveContextActive) {
+        this.redactSensitiveContextInMemory();
+        this.sensitiveContextActive = false;
+        await this.persistCurrentChat();
+      }
       this.activeAssistantBody?.removeClass("obsidian-brain-stream-cursor");
       this.activeAssistantBody = null;
       this.activePartial = "";
@@ -586,6 +601,7 @@ export class BrainChatView extends ItemView {
         case "status": {
           const retrieval = this.plugin.retrievalIndex.getStatus();
           const semantic = retrieval.semantic;
+          const autoExp = this.plugin.expAutoScorer.getStatus();
           const skills = this.plugin.skillRegistry.list();
           const tasks = this.plugin.taskService.getStatus();
           await this.addTerminalOutput([
@@ -601,7 +617,7 @@ export class BrainChatView extends ItemView {
             `index cost $${(semantic?.estimatedCostUsd ?? 0).toFixed(4)} / $${this.plugin.settings.semanticSpendCapUsd.toFixed(2)} cap`,
             `web        ${this.plugin.settings.useWebSearch ? "enabled · OpenRouter server tool" : "disabled"}`,
             `tasks      ${tasks.active.provider}${tasks.tasknotes.available ? ` · TaskNotes API v${tasks.tasknotes.apiVersion}` : " · Markdown fallback"}`,
-            `auto EXP   ${this.plugin.settings.autoScoreTaskExp ? `enabled · ${this.plugin.settings.backgroundModel || this.plugin.settings.interactiveModel}` : "disabled"}`,
+            `auto EXP   ${this.plugin.settings.autoScoreTaskExp ? `enabled · ${autoExp.running ? "running" : `${autoExp.queued} queued`} · $${autoExp.estimatedSpendUsd.toFixed(4)} / $${autoExp.capUsd.toFixed(2)} cap` : "disabled"}`,
             `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
             `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
             `pending    ${this.pendingApproval ? "approval" : "none"}`,
@@ -1496,7 +1512,10 @@ export class BrainChatView extends ItemView {
         detail: () => this.autoExpConsentPending
           ? "press Space again to confirm automatic model calls and writes"
           : this.plugin.settings.autoScoreTaskExp
-            ? `enabled · ${this.plugin.settings.backgroundModel || this.plugin.settings.interactiveModel}`
+            ? (() => {
+                const status = this.plugin.expAutoScorer.getStatus();
+                return `enabled · ${status.running ? "running" : `${status.queued} queued`} · $${status.estimatedSpendUsd.toFixed(4)} / $${status.capUsd.toFixed(2)}`;
+              })()
             : "disabled · explicit opt-in required",
         toggle: async () => {
           if (this.plugin.settings.autoScoreTaskExp) {
@@ -1919,11 +1938,13 @@ export class BrainChatView extends ItemView {
         const missing = [...this.turnCitations].filter((citation) => !completed.includes(citation));
         if (missing.length > 0) completed = `${completed}\n\n**Sources:** ${missing.join(" · ")}`;
       }
-      this.messages.push({
+      const assistantMessage: ChatMessage = {
         role: "assistant",
         content: completed || null,
         ...(result.toolCalls.length > 0 ? { tool_calls: result.toolCalls } : {})
-      });
+      };
+      this.messages.push(assistantMessage);
+      if (this.sensitiveContextActive) this.sensitiveAssistantMessages.add(assistantMessage);
       await this.persistCurrentChat();
 
       if (completed) {
@@ -1936,18 +1957,26 @@ export class BrainChatView extends ItemView {
 
       if (result.toolCalls.length === 0) {
         if (!completed) throw new Error("OpenRouter completed without returning text or requesting a tool.");
+        if (this.sensitiveContextActive) {
+          this.redactSensitiveContextInMemory();
+          this.sensitiveContextActive = false;
+        }
         this.statusEl.setText(result.finishReason ? `ready · ${result.finishReason}` : "ready");
         return;
       }
 
       for (const call of result.toolCalls) {
         if (signal.aborted) throw new DOMException("Generation stopped.", "AbortError");
-        const toolResult = await this.handleToolCall(call, signal);
+        const handled = await this.handleToolCall(call, signal);
+        if (handled.sensitive) {
+          this.sensitiveToolCallIds.add(call.id);
+          this.sensitiveContextActive = true;
+        }
         this.messages.push({
           role: "tool",
           tool_call_id: call.id,
           name: call.function.name,
-          content: this.serializeToolResult(toolResult)
+          content: this.serializeToolResult(handled.value)
         });
         await this.persistCurrentChat();
       }
@@ -1955,12 +1984,12 @@ export class BrainChatView extends ItemView {
     throw new Error(`The agent exceeded ${maxIterations} tool iterations.`);
   }
 
-  private async handleToolCall(call: ToolCall, signal: AbortSignal): Promise<unknown> {
+  private async handleToolCall(call: ToolCall, signal: AbortSignal): Promise<HandledToolCall> {
     const risk = this.plugin.agentTools.riskFor(call.function.name);
     const card = this.addToolCard(call, risk);
     if (!risk) {
       card.setStatus("unknown tool", "error");
-      return { ok: false, error: `Unknown tool: ${call.function.name}` };
+      return { value: { ok: false, error: `Unknown tool: ${call.function.name}` }, sensitive: false };
     }
     let inspection;
     try {
@@ -1968,7 +1997,7 @@ export class BrainChatView extends ItemView {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       card.setStatus(message, "error");
-      return { ok: false, error: message };
+      return { value: { ok: false, error: message }, sensitive: false };
     }
     if (inspection.preview) card.setPreview(inspection.preview);
     if (inspection.sensitive) {
@@ -1983,10 +2012,13 @@ export class BrainChatView extends ItemView {
       if (!approved) {
         card.setStatus("denied", "error");
         return {
-          ok: false,
-          error: inspection.sensitive
-            ? "The user denied access to sensitive note content."
-            : "The user denied this write action."
+          value: {
+            ok: false,
+            error: inspection.sensitive
+              ? "The user denied access to sensitive note content."
+              : "The user denied this write action."
+          },
+          sensitive: inspection.sensitive
         };
       }
     }
@@ -1999,7 +2031,7 @@ export class BrainChatView extends ItemView {
       citations.forEach((citation) => this.turnCitations.add(citation));
       card.setSources(citations);
     }
-    return result;
+    return { value: result, sensitive: inspection.sensitive };
   }
 
   private addToolCard(call: ToolCall, risk: ToolRisk | null): {
@@ -2207,12 +2239,50 @@ export class BrainChatView extends ItemView {
 
   private async persistCurrentChat(): Promise<void> {
     if (!this.currentChat) return;
+    const persistedMessages = this.messages.map((message): ChatMessage => {
+      if (message.role === "assistant" && this.sensitiveAssistantMessages.has(message)) {
+        return {
+          role: "assistant",
+          content: "[Sensitive assistant response omitted from persisted chat.]",
+          ...(message.tool_calls ? { tool_calls: message.tool_calls } : {})
+        };
+      }
+      if (message.role !== "tool" || !this.sensitiveToolCallIds.has(message.tool_call_id)) return message;
+      return {
+        ...message,
+        content: JSON.stringify({
+          ok: false,
+          error: "Sensitive tool result omitted from persisted chat. Approve and read it again if needed."
+        })
+      };
+    });
     this.currentChat = await this.plugin.chatStore.save({
       ...this.currentChat,
       model: this.plugin.settings.interactiveModel,
-      messages: this.messages
+      messages: persistedMessages
     });
     await this.refreshChatSummaries(false);
+  }
+
+  private redactSensitiveContextInMemory(): void {
+    this.messages = this.messages.map((message): ChatMessage => {
+      if (message.role === "assistant" && this.sensitiveAssistantMessages.has(message)) {
+        return {
+          role: "assistant",
+          content: "[Sensitive assistant response expired after the approved turn.]",
+          ...(message.tool_calls ? { tool_calls: message.tool_calls } : {})
+        };
+      }
+      if (message.role !== "tool" || !this.sensitiveToolCallIds.has(message.tool_call_id)) return message;
+      return {
+        ...message,
+        content: JSON.stringify({
+          ok: false,
+          error: "Sensitive tool result expired after the approved turn. Read it again with approval if needed."
+        })
+      };
+    });
+    this.sensitiveAssistantMessages.clear();
   }
 
   private async refreshChatSummaries(updateSelection = true): Promise<void> {
@@ -2238,6 +2308,9 @@ export class BrainChatView extends ItemView {
     if (this.abortController) return;
     try {
       this.currentChat = await this.plugin.chatStore.load(path);
+      this.sensitiveToolCallIds.clear();
+      this.sensitiveAssistantMessages.clear();
+      this.sensitiveContextActive = false;
       this.messages = this.currentChat.messages;
       this.transcriptVisibleStart = null;
       this.refreshBaseSystemMessage();
@@ -2260,6 +2333,9 @@ export class BrainChatView extends ItemView {
   private startNewChat(): void {
     if (this.abortController) return;
     this.currentChat = null;
+    this.sensitiveToolCallIds.clear();
+    this.sensitiveAssistantMessages.clear();
+    this.sensitiveContextActive = false;
     this.messages = [createSystemMessage()];
     this.transcriptVisibleStart = null;
     this.disposeMarkdownComponents();

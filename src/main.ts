@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, type WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, TFile, TFolder, normalizePath, type WorkspaceLeaf } from "obsidian";
 import { brainPath, ensureBrainLayout } from "./data-layout";
 import { BRAIN_VIEW_TYPE, BrainChatView } from "./chat-view";
 import { BrainSettingTab, DEFAULT_SETTINGS, type BrainSettings } from "./settings";
@@ -83,7 +83,7 @@ export default class ObsidianBrainPlugin extends Plugin {
         new TaskNotesProvider(this.app),
         new MarkdownTaskProvider(this.app, this.vaultTools, () => this.settings.fallbackTaskFolder),
         () => this.effectiveExcludedPaths(),
-        () => this.settings.sensitiveTags
+        this.sensitiveGuard
       );
       this.expService = new ExpService(
         this.app,
@@ -98,6 +98,11 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.expService,
         this.openRouter,
         () => this.settings,
+        (modelId) => this.getModel(modelId),
+        async (paths) => {
+          this.settings.autoExpQueue = paths;
+          await this.saveSettings();
+        },
         (result) => new Notice(`Obsidian Brain scored ${result.title} at ${result.value} EXP.`),
         (path, error) => {
           const message = error instanceof Error ? error.message : String(error);
@@ -171,13 +176,16 @@ export default class ObsidianBrainPlugin extends Plugin {
         void this.retrievalIndex.initialize().catch((error) => this.reportError(error));
         void (async () => {
           await this.initializeCatalogCache();
+          this.expAutoScorer.resumeQueued();
           if (this.settings.openRouterSecretId) {
             await this.refreshOpenRouterModels(false).catch((error) =>
               console.warn("[Obsidian Brain] Automatic model refresh failed.", error)
             );
           }
           if (this.settings.openRouterSecretId && (this.settings.semanticSearchEnabled || this.settings.embeddingModel)) {
-            await this.refreshEmbeddingModels(false);
+            await this.refreshEmbeddingModels(false).catch((error) =>
+              console.warn("[Obsidian Brain] Automatic embedding catalog refresh failed.", error)
+            );
           }
           await this.semanticIndex.initialize();
         })().catch((error) => this.reportError(error));
@@ -201,9 +209,57 @@ export default class ObsidianBrainPlugin extends Plugin {
     await this.retrievalIndex.initialize();
   }
 
+  async setExcludedPaths(paths: string[]): Promise<void> {
+    this.settings.excludedPaths = [...new Set(paths.map((path) =>
+      normalizePath(path.trim()).replace(/^\/+|\/+$/g, "")
+    ).filter(Boolean))];
+    await this.saveSettings();
+    await this.rebuildPrivacyIndexes();
+  }
+
+  async setSensitiveTags(tags: string[]): Promise<void> {
+    this.settings.sensitiveTags = [...new Set(tags
+      .map((tag) => tag.trim().replace(/^#/, "").toLocaleLowerCase())
+      .filter(Boolean))];
+    await this.saveSettings();
+    await this.rebuildPrivacyIndexes();
+  }
+
+  async setBrainFolder(value: string): Promise<void> {
+    const next = normalizePath(value.trim() || "Brain").replace(/^\/+|\/+$/g, "");
+    if (!next || next === "." || next === ".obsidian" || next.startsWith(".obsidian/") || next.includes("../")) {
+      throw new Error("Brain folder must be a safe vault-relative folder outside .obsidian.");
+    }
+    const previous = normalizePath(this.settings.brainFolder).replace(/^\/+|\/+$/g, "");
+    if (next === previous) return;
+    if (next.startsWith(`${previous}/`)) {
+      throw new Error("Brain data cannot be moved inside its current folder.");
+    }
+    const source = this.app.vault.getAbstractFileByPath(previous);
+    const destination = this.app.vault.getAbstractFileByPath(next);
+    if (destination) throw new Error(`Cannot move Brain data: ${next} already exists.`);
+    if (source && !(source instanceof TFolder)) throw new Error(`Cannot move Brain data: ${previous} is not a folder.`);
+    if (source instanceof TFolder) {
+      const segments = next.split("/").slice(0, -1);
+      let parent = "";
+      for (const segment of segments) {
+        parent = parent ? `${parent}/${segment}` : segment;
+        const entry = this.app.vault.getAbstractFileByPath(parent);
+        if (entry instanceof TFile) throw new Error(`Cannot create Brain folder: ${parent} is a file.`);
+        if (!entry) await this.app.vault.createFolder(parent);
+      }
+      await this.app.fileManager.renameFile(source, next);
+    }
+    this.settings.brainFolder = next;
+    await this.saveSettings();
+    await this.ensureDataLayout();
+    await this.skillRegistry.refresh();
+    await this.rebuildPrivacyIndexes();
+  }
+
   onunload(): void {
     this.expAutoScorer?.dispose();
-    this.semanticIndex?.cancel();
+    this.semanticIndex?.dispose();
     void this.app.workspace.detachLeavesOfType(BRAIN_VIEW_TYPE);
   }
 
@@ -304,6 +360,16 @@ export default class ObsidianBrainPlugin extends Plugin {
     }
   }
 
+  private async rebuildPrivacyIndexes(): Promise<void> {
+    this.semanticIndex.cancel();
+    await this.retrievalIndex.rebuild();
+    if (this.settings.semanticSearchEnabled) {
+      await this.semanticIndex.reconfigure();
+    } else {
+      await this.semanticIndex.removeSensitive();
+    }
+  }
+
   getModel(modelId = this.settings.interactiveModel): OpenRouterModel | undefined {
     return this.modelCatalog.find((model) => model.id === modelId);
   }
@@ -373,6 +439,26 @@ export default class ObsidianBrainPlugin extends Plugin {
     this.legacyCatalogCache = _catalogCache ?? null;
     this.catalogCache = _catalogCache ?? {};
     this.settings = { ...DEFAULT_SETTINGS, ...storedSettings };
+    this.settings.autoExpQueue = Array.isArray(this.settings.autoExpQueue)
+      ? (this.settings.autoExpQueue as unknown[]).flatMap((value) => {
+          if (typeof value === "string") return [{ path: value, attempts: 0, readyAt: Date.now() }];
+          if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+          const entry = value as Record<string, unknown>;
+          if (typeof entry.path !== "string") return [];
+          return [{
+            path: entry.path,
+            attempts: typeof entry.attempts === "number" && Number.isFinite(entry.attempts)
+              ? Math.max(0, Math.floor(entry.attempts))
+              : 0,
+            readyAt: typeof entry.readyAt === "number" && Number.isFinite(entry.readyAt)
+              ? entry.readyAt
+              : Date.now()
+          }];
+        })
+      : [];
+    if (!Number.isFinite(this.settings.autoExpSpendCapUsd) || this.settings.autoExpSpendCapUsd < 0) {
+      this.settings.autoExpSpendCapUsd = DEFAULT_SETTINGS.autoExpSpendCapUsd;
+    }
     this.modelCatalog = this.catalogCache.models?.rows ?? [];
     this.embeddingModelCatalog = this.catalogCache.embeddings?.rows ?? [];
     let shouldSave = Boolean(_catalogCache);
@@ -405,9 +491,11 @@ export default class ObsidianBrainPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
       if (file instanceof TFile) this.semanticIndex.queueUpdate(file);
+      if (file instanceof TFile) this.expAutoScorer.touch(file.path);
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
+      this.expAutoScorer.forget(file.path);
       this.retrievalIndex.remove(file.path);
       void this.semanticIndex.remove(file.path).catch((error) => this.reportError(error));
       refreshSkillIfNeeded(file.path);
@@ -423,6 +511,7 @@ export default class ObsidianBrainPlugin extends Plugin {
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
       void this.retrievalIndex.update(file, true).catch((error) => this.reportError(error));
       this.semanticIndex.queueUpdate(file);
+      this.expAutoScorer.resolveCandidate(file.path);
     }));
   }
 

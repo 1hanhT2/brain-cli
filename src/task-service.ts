@@ -6,13 +6,14 @@ import type {
   TaskProviderStatus,
   TaskQuery
 } from "./task-provider";
+import type { SensitiveContentGuard } from "./sensitive-content";
 
 export class TaskService {
   constructor(
     private readonly taskNotes: TaskProvider,
     private readonly markdown: TaskProvider,
     private readonly getExcludedPaths: () => string[] = () => [],
-    private readonly getSensitiveTags: () => string[] = () => []
+    private readonly sensitiveGuard?: SensitiveContentGuard
   ) {}
 
   getStatus(): {
@@ -29,17 +30,27 @@ export class TaskService {
     };
   }
 
-  list(query?: TaskQuery): Promise<BrainTask[]> {
-    return this.active().list(query).then((tasks) => tasks.filter((task) =>
-      !this.isExcluded(task.path) && !this.isSensitive(task)
-    ));
+  async list(query?: TaskQuery): Promise<BrainTask[]> {
+    const tasks = (await this.active().list(query)).filter((task) => !this.isExcluded(task.path));
+    const sensitivity = await Promise.all(tasks.map(async (task) => {
+      try {
+        return (await this.inspectSensitivity(task.path)).sensitive;
+      } catch {
+        // Fail closed when a task cannot be inspected reliably.
+        return true;
+      }
+    }));
+    return tasks.filter((_, index) => !sensitivity[index]);
   }
 
   async get(path: string, allowSensitive = false): Promise<BrainTask | null> {
     this.requireAllowedPath(path);
     const task = await this.active().get(path);
-    if (task && this.isSensitive(task) && !allowSensitive) {
-      throw new Error(`Sensitive task approval required: ${task.tags.join(", ")}`);
+    if (task && !allowSensitive) {
+      const report = await this.inspectSensitivity(path);
+      if (report.sensitive) {
+        throw new Error(`Sensitive task approval required: ${report.reasons.join("; ")}`);
+      }
     }
     return task;
   }
@@ -83,20 +94,11 @@ export class TaskService {
     this.requireAllowedPath(path);
     const task = await this.active().get(path);
     if (!task) throw new Error(`Task not found: ${path}`);
-    const configured = new Set(this.getSensitiveTags().map((tag) => tag.replace(/^#/, "").toLocaleLowerCase()));
-    const matching = task.tags
-      .map((tag) => tag.replace(/^#/, ""))
-      .filter((tag) => configured.has(tag.toLocaleLowerCase()));
-    return { sensitive: matching.length > 0, reasons: matching.map((tag) => `#${tag}`) };
+    return this.sensitiveGuard?.inspectPath(path) ?? { sensitive: false, reasons: [] };
   }
 
   private active(): TaskProvider {
     return this.taskNotes.status().available ? this.taskNotes : this.markdown;
-  }
-
-  private isSensitive(task: BrainTask): boolean {
-    const configured = new Set(this.getSensitiveTags().map((tag) => tag.replace(/^#/, "").toLocaleLowerCase()));
-    return task.tags.some((tag) => configured.has(tag.replace(/^#/, "").toLocaleLowerCase()));
   }
 
   private isExcluded(path: string): boolean {

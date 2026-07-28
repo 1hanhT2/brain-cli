@@ -111,6 +111,17 @@ export class VaultTools {
     await this.app.fileManager.processFrontMatter(file, (frontmatter) => Object.assign(frontmatter, safeUpdates));
   }
 
+  async restoreFrontmatter(path: string, snapshot: Record<string, unknown>, keys: string[]): Promise<void> {
+    const file = this.requireFile(path);
+    const safeKeys = keys.filter((key) => !["__proto__", "prototype", "constructor"].includes(key));
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      for (const key of safeKeys) delete frontmatter[key];
+      for (const key of safeKeys) {
+        if (Object.prototype.hasOwnProperty.call(snapshot, key)) frontmatter[key] = snapshot[key];
+      }
+    });
+  }
+
   async replaceMarkdown(path: string, content: string): Promise<void> {
     const file = this.requireFile(path);
     await this.app.vault.modify(file, content);

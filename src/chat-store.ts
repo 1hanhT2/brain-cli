@@ -78,7 +78,7 @@ export class ChatStore {
   }
 
   async save(state: ChatState): Promise<ChatState> {
-    const file = this.requireChatFile(state.path);
+    const file = this.requireChatFile(state.path, state.id);
     const updated = {
       ...state,
       path: file.path,
@@ -92,27 +92,33 @@ export class ChatStore {
   async rename(state: ChatState, title: string): Promise<ChatState> {
     const cleanTitle = title.replace(/\s+/g, " ").trim();
     if (!cleanTitle) throw new Error("Chat title cannot be empty.");
-    const file = this.requireChatFile(state.path);
+    const file = this.requireChatFile(state.path, state.id);
     const target = await this.uniquePath(cleanTitle, state.id, file.path);
     if (target !== file.path) await this.app.fileManager.renameFile(file, target);
     return this.save({ ...state, title: cleanTitle, path: target });
   }
 
   async remove(state: ChatState): Promise<void> {
-    const file = this.requireChatFile(state.path);
+    const file = this.requireChatFile(state.path, state.id);
     this.summaryCache.delete(file.path);
     await this.app.vault.trash(file, false);
   }
 
-  private requireChatFile(path: string): TFile {
+  private requireChatFile(path: string, chatId?: string): TFile {
     const folder = brainPath(this.getSettings(), "Chats");
     const normalized = normalizePath(path);
-    if (!normalized.startsWith(`${folder}/`) || !normalized.endsWith(".md")) {
-      throw new Error("Chat path is outside the configured Brain/Chats folder.");
+    if (normalized.startsWith(`${folder}/`) && normalized.endsWith(".md")) {
+      const file = this.app.vault.getAbstractFileByPath(normalized);
+      if (file instanceof TFile) return file;
     }
-    const file = this.app.vault.getAbstractFileByPath(normalized);
-    if (!(file instanceof TFile)) throw new Error(`Chat file not found: ${normalized}`);
-    return file;
+    if (chatId) {
+      const moved = this.app.vault.getMarkdownFiles().find((file) =>
+        file.path.startsWith(`${folder}/`)
+        && this.app.metadataCache.getFileCache(file)?.frontmatter?.brain_chat_id === chatId
+      );
+      if (moved) return moved;
+    }
+    throw new Error("Chat file was not found inside the configured Brain/Chats folder.");
   }
 
   private async uniquePath(title: string, id: string, currentPath?: string): Promise<string> {
