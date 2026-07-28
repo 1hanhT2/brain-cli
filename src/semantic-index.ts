@@ -30,6 +30,8 @@ const emptyStatus = (): SemanticIndexStatus => ({
   folders: [],
   indexedNotes: 0,
   indexedChunks: 0,
+  totalNotes: 0,
+  totalChunks: 0,
   queuedNotes: 0,
   completedChunks: 0,
   failedChunks: 0,
@@ -48,6 +50,7 @@ export class SemanticIndexCoordinator {
   private activePromise: Promise<void> | null = null;
   private updateTimer: number | null = null;
   private readonly pendingPaths = new Set<string>();
+  private readonly pendingVersions = new Map<string, number>();
   private readonly removedPaths = new Set<string>();
   private readonly listeners = new Set<SemanticProgressListener>();
   private readonly queryCache = new Map<string, Float32Array>();
@@ -159,16 +162,25 @@ export class SemanticIndexCoordinator {
   queueUpdate(file: TFile): void {
     if (!this.getSettings().semanticSearchEnabled) return;
     const path = normalizeVaultPath(file.path);
+    if (!this.isInScope(path)) {
+      this.pendingPaths.delete(path);
+      this.pendingVersions.delete(path);
+      return;
+    }
     this.removedPaths.delete(path);
     this.pendingPaths.add(path);
-    this.patchStatus({ queuedNotes: this.pendingPaths.size });
-    this.scheduleQueuedUpdates(UPDATE_DEBOUNCE_MS);
+    this.pendingVersions.set(path, (this.pendingVersions.get(path) ?? 0) + 1);
+    if (!this.activePromise) {
+      this.patchStatus({ queuedNotes: this.pendingPaths.size });
+      this.scheduleQueuedUpdates(UPDATE_DEBOUNCE_MS);
+    }
   }
 
   async remove(path: string): Promise<void> {
     const normalized = normalizeVaultPath(path);
     this.removedPaths.add(normalized);
     this.pendingPaths.delete(normalized);
+    this.pendingVersions.delete(normalized);
     await this.store.removePath(normalized);
     await this.refreshStoredCounts();
     this.emit();
@@ -220,6 +232,8 @@ export class SemanticIndexCoordinator {
       reason,
       modelId: settings.embeddingModel,
       folders: [...settings.semanticFolders],
+      totalNotes: 0,
+      totalChunks: 0,
       completedChunks: 0,
       failedChunks: 0,
       skippedSensitiveNotes: 0,
@@ -240,22 +254,27 @@ export class SemanticIndexCoordinator {
       }
 
       const prepared = new Map<string, PreparedChunk[]>();
+      const preparedVersions = new Map<string, number>();
       let skippedSensitiveNotes = 0;
       for (const file of files) {
         if (signal.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+        const path = normalizeVaultPath(file.path);
+        const queuedVersion = this.pendingVersions.get(path) ?? 0;
         const content = await this.app.vault.cachedRead(file);
         const sensitive = this.sensitiveGuard.inspectFile(file, content).sensitive;
         if (sensitive && !settings.includeSensitiveSemantic) {
           skippedSensitiveNotes += 1;
           await this.store.removePath(file.path);
+          this.clearReconciledPending(path, queuedVersion);
           continue;
         }
-        prepared.set(file.path, prepareMarkdownChunks(
+        prepared.set(path, prepareMarkdownChunks(
           file,
           content,
           this.app.metadataCache.getFileCache(file)?.frontmatter,
           sensitive
         ));
+        preparedVersions.set(path, queuedVersion);
       }
 
       const pending = [...prepared.entries()].flatMap(([path, chunks]) => {
@@ -270,7 +289,12 @@ export class SemanticIndexCoordinator {
             || previous.metadataVersion !== METADATA_VERSION;
         });
       });
-      this.patchStatus({ queuedNotes: prepared.size, skippedSensitiveNotes });
+      this.patchStatus({
+        totalNotes: prepared.size,
+        totalChunks: [...prepared.values()].reduce((total, chunks) => total + chunks.length, 0),
+        queuedNotes: prepared.size,
+        skippedSensitiveNotes
+      });
       this.ensureWithinCostCap(pending, allowUnknownPricing);
 
       for (const [path, chunks] of prepared) {
@@ -291,9 +315,15 @@ export class SemanticIndexCoordinator {
           const previous = reusable.get(chunk.id);
           return previous?.contentHash === chunk.contentHash ? [previous] : [];
         });
+        if (retained.length === chunks.length && current.length === chunks.length) {
+          this.clearReconciledPending(path, preparedVersions.get(path) ?? 0);
+          this.patchStatus({ queuedNotes: Math.max(0, this.status.queuedNotes - 1) });
+          continue;
+        }
         // Commit the desired cached subset first. Each subsequent embedding
         // batch is upserted separately, making every completed batch resumable.
         await this.store.applyPath(path, retained);
+        await this.refreshStoredCounts();
         let cursor = 0;
         while (cursor < chunks.length) {
           const chunk = chunks[cursor];
@@ -324,11 +354,6 @@ export class SemanticIndexCoordinator {
             const usedTokens = embedded.promptTokens || Math.ceil(
               batch.reduce((total, candidate) => total + candidate.embeddingText.length, 0) / 4
             );
-            this.patchStatus({
-              promptTokens: this.status.promptTokens + usedTokens,
-              estimatedCostUsd: (this.status.promptTokens + usedTokens) * (price ?? 0),
-              completedChunks: this.status.completedChunks + batch.length
-            });
             const batchRecords: SemanticChunkRecord[] = [];
             batch.forEach((candidate, index) => {
               const vector = embedded.vectors[index];
@@ -344,11 +369,18 @@ export class SemanticIndexCoordinator {
               });
             });
             await this.store.putRecords(batchRecords);
+            await this.refreshStoredCounts();
+            this.patchStatus({
+              promptTokens: this.status.promptTokens + usedTokens,
+              estimatedCostUsd: (this.status.promptTokens + usedTokens) * (price ?? 0),
+              completedChunks: this.status.completedChunks + batch.length
+            });
           } catch (error) {
             this.patchStatus({ failedChunks: this.status.failedChunks + batch.length });
             throw error;
           }
         }
+        this.clearReconciledPending(path, preparedVersions.get(path) ?? 0);
         this.patchStatus({ queuedNotes: Math.max(0, this.status.queuedNotes - 1) });
       }
       await this.store.setMeta("index", {
@@ -362,6 +394,7 @@ export class SemanticIndexCoordinator {
       this.patchStatus({
         state: "idle",
         reason: null,
+        queuedNotes: this.pendingPaths.size,
         partial: false,
         elapsedMs: this.status.startedAt ? Date.now() - this.status.startedAt : 0,
         startedAt: null
@@ -427,6 +460,12 @@ export class SemanticIndexCoordinator {
     await this.start("vault-change").catch((error) => {
       console.error("[Obsidian Brain] Semantic incremental update failed.", error);
     });
+  }
+
+  private clearReconciledPending(path: string, version: number): void {
+    if ((this.pendingVersions.get(path) ?? 0) !== version) return;
+    this.pendingPaths.delete(path);
+    this.pendingVersions.delete(path);
   }
 
   private isInScope(path: string): boolean {

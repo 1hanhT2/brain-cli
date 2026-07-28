@@ -17,6 +17,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Optional mobile-safe Omnisearch integration for ranked lexical retrieval, with the built-in index retained as a fallback.
 - Hybrid semantic retrieval using OpenRouter embeddings, exact local cosine search, and reciprocal-rank fusion with Omnisearch or the built-in lexical index.
 - Disposable per-device IndexedDB vector storage with deterministic Markdown chunks, curated frontmatter metadata, resumable batch checkpoints, and automatic changed-note updates.
+- Scope-safe semantic update queues that ignore unselected folders, reuse unchanged vectors on reload, and report stored versus planned progress live.
 - Selected-folder semantic scope, dedicated paged embedding-model browser, configurable spend cap, live CLI indexing progress, and explicit sensitive-content consent.
 - Persistent incremental lexical indexing that restores unchanged notes without rereading their Markdown.
 - Fast startup paths that skip Brain's built-in lexical scan when Omnisearch is active and reuse compact 24-hour model catalogs from asynchronous IndexedDB storage.

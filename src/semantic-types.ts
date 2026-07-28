@@ -71,6 +71,8 @@ export interface SemanticIndexStatus {
   folders: string[];
   indexedNotes: number;
   indexedChunks: number;
+  totalNotes: number;
+  totalChunks: number;
   queuedNotes: number;
   completedChunks: number;
   failedChunks: number;

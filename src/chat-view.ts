@@ -1219,8 +1219,9 @@ export class BrainChatView extends ItemView {
       `state       ${status.enabled ? status.state : "disabled"}`,
       `model       ${status.modelId || "none"}`,
       `scope       ${status.folders.join(", ") || "none"}`,
-      `indexed     ${status.indexedNotes} notes · ${status.indexedChunks} chunks`,
-      `progress    ${status.completedChunks} complete · ${status.failedChunks} failed · ${status.queuedNotes} notes queued`,
+      `notes       ${Math.max(0, status.totalNotes - status.queuedNotes)} / ${status.totalNotes} reconciled · ${status.queuedNotes} remaining`,
+      `chunks      ${status.indexedChunks} / ${status.totalChunks} stored · ${status.completedChunks} embedded this run`,
+      `failures    ${status.failedChunks} chunks`,
       `sensitive   ${this.plugin.settings.includeSensitiveSemantic ? "included by global consent" : `${status.skippedSensitiveNotes} skipped`}`,
       `usage       ${this.formatNumber(status.promptTokens)} tokens · $${status.estimatedCostUsd.toFixed(4)} estimated`,
       `coverage    ${status.partial ? "partial" : "complete"}`,
@@ -1717,7 +1718,7 @@ export class BrainChatView extends ItemView {
   private renderSemanticStatus(status: SemanticIndexStatus): void {
     if (!this.statusEl) return;
     if (status.state === "running") {
-      this.statusEl.setText(`embedding ${status.completedChunks} · ${status.queuedNotes} notes`);
+      this.statusEl.setText(`semantic ${status.indexedChunks}/${status.totalChunks} · ${status.queuedNotes} notes`);
     } else if (status.state === "paused") {
       this.statusEl.setText("semantic paused");
     } else if (status.state === "error") {
@@ -1744,8 +1745,8 @@ export class BrainChatView extends ItemView {
       `semantic ${status.state}`,
       `model     ${status.modelId || "none"}`,
       `scope     ${status.folders.join(", ") || "none"}`,
-      `progress  ${status.completedChunks} chunks · ${status.failedChunks} failed · ${status.queuedNotes} notes queued`,
-      `stored    ${status.indexedNotes} notes · ${status.indexedChunks} chunks`,
+      `notes     ${Math.max(0, status.totalNotes - status.queuedNotes)} / ${status.totalNotes} reconciled · ${status.queuedNotes} remaining`,
+      `chunks    ${status.indexedChunks} / ${status.totalChunks} stored · ${status.completedChunks} embedded this run · ${status.failedChunks} failed`,
       `usage     ${this.formatNumber(status.promptTokens)} tokens · $${status.estimatedCostUsd.toFixed(4)}`,
       status.lastError ? `error     ${status.lastError}` : ""
     ].filter(Boolean).join("\n"));

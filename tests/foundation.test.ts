@@ -699,9 +699,15 @@ test("semantic coordinator checkpoints vectors and re-embeds only changed chunks
   assert.equal(embeddingCalls, 1);
   assert.equal((await store.getAll()).length, 1);
   assert.equal(coordinator.getStatus().partial, false);
+  assert.equal(coordinator.getStatus().totalNotes, 1);
+  assert.equal(coordinator.getStatus().totalChunks, 1);
+  assert.equal(coordinator.getStatus().indexedChunks, 1);
+  assert.equal(coordinator.getStatus().queuedNotes, 0);
 
   await coordinator.start("rebuild");
   assert.equal(embeddingCalls, 1);
+  coordinator.queueUpdate({ path: "Outside/not-selected.md" } as TFile);
+  assert.equal(coordinator.getStatus().queuedNotes, 0);
 
   content = "# Mechanics\nForce, acceleration, and momentum.";
   await coordinator.start("vault-change");
