@@ -40,6 +40,8 @@ import { cosineSimilarity, MemorySemanticStore } from "../src/semantic-store";
 import type { SemanticChunkRecord } from "../src/semantic-types";
 import { SemanticIndexCoordinator } from "../src/semantic-index";
 import type { BrainSettings } from "../src/settings";
+import { MemoryLexicalIndexStore } from "../src/retrieval-store";
+import { PerformanceTracer } from "../src/performance";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -289,6 +291,56 @@ test("local retrieval ranks relevant chunks and excludes sensitive notes", async
   assert.equal(result.results[0]?.path, "Study/Physics.md");
   assert.equal(result.results[0]?.citation, "[[Study/Physics#Mechanics]]");
   assert.equal(result.skippedSensitiveNotes, 1);
+});
+
+test("lexical retrieval restores unchanged notes without rereading their contents", async () => {
+  const file = {
+    path: "Study/Cached.md",
+    extension: "md",
+    basename: "Cached",
+    stat: { mtime: 123, ctime: 100, size: 32 }
+  } as TFile;
+  let reads = 0;
+  const app = {
+    vault: {
+      getMarkdownFiles: () => [file],
+      cachedRead: async () => {
+        reads += 1;
+        return "# Cached\nPersistent retrieval content.";
+      }
+    },
+    metadataCache: { getFileCache: () => ({ frontmatter: undefined }) }
+  } as unknown as App;
+  const guard = { inspectFile: () => ({ sensitive: false, reasons: [] }) } as unknown as SensitiveContentGuard;
+  const store = new MemoryLexicalIndexStore();
+
+  const first = new VaultRetrievalIndex(app, () => [], guard, undefined, undefined, store);
+  await first.initialize();
+  assert.equal(reads, 1);
+  assert.equal(first.getStatus().persistence.updatedNotes, 1);
+
+  reads = 0;
+  const restored = new VaultRetrievalIndex(app, () => [], guard, undefined, undefined, store);
+  await restored.initialize();
+  assert.equal(reads, 0);
+  assert.equal(restored.getStatus().persistence.restoredNotes, 1);
+  assert.equal((await restored.search("persistent", 3)).results[0]?.path, "Study/Cached.md");
+});
+
+test("performance tracer aggregates local timings and can reset them", () => {
+  const tracer = new PerformanceTracer();
+  tracer.record("vault.search", 4);
+  tracer.record("vault.search", 8);
+  assert.deepEqual(tracer.summaries(), [{
+    name: "vault.search",
+    count: 2,
+    lastMs: 8,
+    averageMs: 6,
+    maximumMs: 8
+  }]);
+  assert.match(tracer.report(), /vault\.search/);
+  tracer.reset();
+  assert.equal(tracer.summaries().length, 0);
 });
 
 test("semantic chunking is deterministic and embeds curated metadata without YAML noise", () => {

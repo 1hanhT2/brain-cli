@@ -8,27 +8,43 @@ import {
   type ChatState,
   type ChatSummary
 } from "./chat-format";
+import type { PerformanceTracer } from "./performance";
+
+interface CachedChatSummary {
+  modifiedAt: number;
+  summary: ChatSummary;
+}
 
 export class ChatStore {
+  private readonly summaryCache = new Map<string, CachedChatSummary>();
+
   constructor(
     private readonly app: App,
-    private readonly getSettings: () => BrainSettings
+    private readonly getSettings: () => BrainSettings,
+    private readonly performance?: PerformanceTracer
   ) {}
 
   async list(): Promise<ChatSummary[]> {
+    return this.performance?.measure("chats.list", () => this.listUnmeasured())
+      ?? this.listUnmeasured();
+  }
+
+  private async listUnmeasured(): Promise<ChatSummary[]> {
     const folder = brainPath(this.getSettings(), "Chats");
     const summaries: ChatSummary[] = [];
     for (const file of this.app.vault.getMarkdownFiles()) {
       if (!file.path.startsWith(`${folder}/`)) continue;
+      const cached = this.summaryCache.get(file.path);
+      if (cached && cached.modifiedAt === file.stat.mtime) {
+        summaries.push(cached.summary);
+        continue;
+      }
       try {
-        const state = decodeChatState(await this.app.vault.cachedRead(file));
-        summaries.push({
-          id: state.id,
-          title: state.title,
-          path: file.path,
-          updatedAt: state.updatedAt,
-          model: state.model
-        });
+        const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        const summary = this.summaryFromFrontmatter(file, frontmatter)
+          ?? this.summaryFromState(file, decodeChatState(await this.app.vault.cachedRead(file)));
+        this.summaryCache.set(file.path, { modifiedAt: file.stat.mtime, summary });
+        summaries.push(summary);
       } catch {
         // Non-chat Markdown in the Chats folder remains untouched.
       }
@@ -50,6 +66,7 @@ export class ChatStore {
       messages
     };
     await this.app.vault.create(path, renderChatMarkdown(state));
+    this.cacheState(state);
     return state;
   }
 
@@ -68,6 +85,7 @@ export class ChatStore {
       updatedAt: new Date().toISOString()
     };
     await this.app.vault.modify(file, renderChatMarkdown(updated));
+    this.cacheState(updated);
     return updated;
   }
 
@@ -82,6 +100,7 @@ export class ChatStore {
 
   async remove(state: ChatState): Promise<void> {
     const file = this.requireChatFile(state.path);
+    this.summaryCache.delete(file.path);
     await this.app.vault.trash(file, false);
   }
 
@@ -106,5 +125,43 @@ export class ChatStore {
       suffix += 1;
     }
     return path;
+  }
+
+  private summaryFromFrontmatter(file: TFile, frontmatter: Record<string, unknown> | undefined): ChatSummary | null {
+    if (
+      frontmatter?.type !== "brain-chat"
+      || typeof frontmatter.brain_chat_id !== "string"
+      || typeof frontmatter.title !== "string"
+      || typeof frontmatter.updated !== "string"
+      || typeof frontmatter.model !== "string"
+    ) return null;
+    return {
+      id: frontmatter.brain_chat_id,
+      title: frontmatter.title,
+      path: file.path,
+      updatedAt: frontmatter.updated,
+      model: frontmatter.model
+    };
+  }
+
+  private summaryFromState(file: TFile, state: ChatState): ChatSummary {
+    return {
+      id: state.id,
+      title: state.title,
+      path: file.path,
+      updatedAt: state.updatedAt,
+      model: state.model
+    };
+  }
+
+  private cacheState(state: ChatState): void {
+    const file = this.app.vault.getAbstractFileByPath(state.path);
+    this.summaryCache.set(state.path, {
+      modifiedAt: file instanceof TFile ? file.stat.mtime : 0,
+      summary: this.summaryFromState(
+        file instanceof TFile ? file : ({ path: state.path } as TFile),
+        state
+      )
+    });
   }
 }

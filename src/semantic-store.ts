@@ -34,6 +34,7 @@ export interface SemanticIndexStore {
 
 export class IndexedDbSemanticStore implements SemanticIndexStore {
   private database: IDBDatabase | null = null;
+  private recordsCache: SemanticChunkRecord[] | null = null;
 
   constructor(private readonly databaseName: string) {}
 
@@ -55,9 +56,13 @@ export class IndexedDbSemanticStore implements SemanticIndexStore {
   }
 
   async getAll(): Promise<SemanticChunkRecord[]> {
+    if (this.recordsCache) return this.recordsCache;
     const database = await this.getDatabase();
     const transaction = database.transaction(CHUNKS_STORE, "readonly");
-    return requestResult(transaction.objectStore(CHUNKS_STORE).getAll()) as Promise<SemanticChunkRecord[]>;
+    this.recordsCache = await requestResult(
+      transaction.objectStore(CHUNKS_STORE).getAll()
+    ) as SemanticChunkRecord[];
+    return this.recordsCache;
   }
 
   async getByPath(path: string): Promise<SemanticChunkRecord[]> {
@@ -74,6 +79,12 @@ export class IndexedDbSemanticStore implements SemanticIndexStore {
     for (const key of keys) store.delete(key);
     for (const record of records) store.put(record);
     await transactionDone(transaction);
+    if (this.recordsCache) {
+      this.recordsCache = [
+        ...this.recordsCache.filter((record) => record.path !== path),
+        ...records
+      ];
+    }
   }
 
   async putRecords(records: SemanticChunkRecord[]): Promise<void> {
@@ -83,6 +94,13 @@ export class IndexedDbSemanticStore implements SemanticIndexStore {
     const store = transaction.objectStore(CHUNKS_STORE);
     for (const record of records) store.put(record);
     await transactionDone(transaction);
+    if (this.recordsCache) {
+      const incomingIds = new Set(records.map((record) => record.id));
+      this.recordsCache = [
+        ...this.recordsCache.filter((record) => !incomingIds.has(record.id)),
+        ...records
+      ];
+    }
   }
 
   async removePath(path: string): Promise<void> {
@@ -101,6 +119,7 @@ export class IndexedDbSemanticStore implements SemanticIndexStore {
     transaction.objectStore(CHUNKS_STORE).clear();
     transaction.objectStore(META_STORE).clear();
     await transactionDone(transaction);
+    this.recordsCache = [];
   }
 
   async nearest(

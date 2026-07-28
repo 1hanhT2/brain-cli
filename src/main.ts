@@ -19,6 +19,17 @@ import { SkillRegistry } from "./skill-registry";
 import { IndexedDbSemanticStore } from "./semantic-store";
 import { SemanticIndexCoordinator } from "./semantic-index";
 import type { EmbeddingModel } from "./semantic-types";
+import { PerformanceTracer } from "./performance";
+import { IndexedDbLexicalIndexStore } from "./retrieval-store";
+
+interface CatalogCache {
+  models?: { fetchedAt: number; rows: OpenRouterModel[] };
+  embeddings?: { fetchedAt: number; rows: EmbeddingModel[] };
+}
+
+type StoredPluginData = Partial<BrainSettings> & { _catalogCache?: CatalogCache };
+
+const CATALOG_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 
 export default class ObsidianBrainPlugin extends Plugin {
   settings: BrainSettings = DEFAULT_SETTINGS;
@@ -33,13 +44,14 @@ export default class ObsidianBrainPlugin extends Plugin {
   embeddingModelCatalog: EmbeddingModel[] = [];
   openRouter!: OpenRouterClient;
   semanticIndex!: SemanticIndexCoordinator;
+  readonly performance = new PerformanceTracer();
+  private catalogCache: CatalogCache = {};
 
   async onload(): Promise<void> {
+    const finishOnload = this.performance.start("plugin.onload");
     let stage = "loading settings";
     try {
       await this.loadSettings();
-      stage = "ensuring Brain data layout";
-      await this.ensureDataLayout();
       stage = "initializing services";
       this.openRouter = new OpenRouterClient(this.app, () => this.settings.openRouterSecretId);
       this.sensitiveGuard = new SensitiveContentGuard(this.app, () => this.settings.sensitiveTags);
@@ -70,12 +82,13 @@ export default class ObsidianBrainPlugin extends Plugin {
         () => this.effectiveExcludedPaths(),
         this.sensitiveGuard,
         this.omnisearchProvider,
-        this.semanticIndex
+        this.semanticIndex,
+        new IndexedDbLexicalIndexStore(`obsidian-brain-lexical:${this.settings.semanticVaultId}`),
+        this.performance
       );
       this.skillRegistry = new SkillRegistry(this.app, () => this.settings);
-      await this.skillRegistry.initialize();
       this.agentTools = new AgentToolRegistry(this.vaultTools, this.retrievalIndex, this.skillRegistry);
-      this.chatStore = new ChatStore(this.app, () => this.settings);
+      this.chatStore = new ChatStore(this.app, () => this.settings, this.performance);
       stage = "registering chat view";
       this.registerView(BRAIN_VIEW_TYPE, (leaf) => new BrainChatView(leaf, this));
       stage = "registering commands";
@@ -83,12 +96,19 @@ export default class ObsidianBrainPlugin extends Plugin {
       this.addCommand({ id: "open-chat", name: "Open chat", callback: () => void this.activateChat() });
       this.addCommand({ id: "create-brain-layout", name: "Create or repair Brain data folders", callback: () => void this.ensureDataLayout() });
       this.addCommand({ id: "refresh-openrouter-models", name: "Refresh OpenRouter model catalog", callback: () => void this.refreshOpenRouterModels() });
+      this.addCommand({
+        id: "show-performance-diagnostics",
+        name: "Show performance diagnostics",
+        callback: () => new Notice(this.performance.report(), 0)
+      });
       stage = "registering settings";
       this.addSettingTab(new BrainSettingTab(this.app, this));
       stage = "scheduling vault layout";
       this.registerVaultIndexEvents();
       this.app.workspace.onLayoutReady(() => {
         void this.ensureDataLayout().catch((error) => this.reportError(error));
+        void this.performance.measure("skills.initialize", () => this.skillRegistry.initialize())
+          .catch((error) => this.reportError(error));
         void this.retrievalIndex.initialize().catch((error) => this.reportError(error));
         if (this.settings.openRouterSecretId) {
           void this.refreshOpenRouterModels(false).catch((error) =>
@@ -107,12 +127,18 @@ export default class ObsidianBrainPlugin extends Plugin {
       console.error(`[Obsidian Brain] Startup failed while ${stage}.`, error);
       new Notice(`Obsidian Brain startup failed while ${stage}: ${message}`, 0);
       throw error;
+    } finally {
+      finishOnload();
     }
   }
 
   async rebuildRetrievalIndex(): Promise<void> {
-    await this.retrievalIndex.initialize();
+    await this.retrievalIndex.rebuild();
     new Notice(`Obsidian Brain indexed ${this.retrievalIndex.getStatus().indexedNotes} notes.`);
+  }
+
+  async reconfigureLexicalProvider(): Promise<void> {
+    await this.retrievalIndex.initialize();
   }
 
   onunload(): void {
@@ -132,8 +158,14 @@ export default class ObsidianBrainPlugin extends Plugin {
   }
 
   async refreshOpenRouterModels(showNotice = true): Promise<void> {
+    if (!showNotice && this.isCatalogFresh(this.catalogCache.models)) {
+      this.modelCatalog = this.catalogCache.models!.rows;
+      return;
+    }
     if (showNotice) this.openRouter.clearModelRankingCache();
-    this.modelCatalog = await this.openRouter.listModels();
+    this.modelCatalog = await this.performance.measure("catalog.models.fetch", () => this.openRouter.listModels());
+    this.catalogCache.models = { fetchedAt: Date.now(), rows: this.modelCatalog };
+    await this.saveSettings();
     if (showNotice) new Notice(`Obsidian Brain loaded ${this.modelCatalog.length} OpenRouter models.`);
     for (const leaf of this.app.workspace.getLeavesOfType(BRAIN_VIEW_TYPE)) {
       const view = leaf.view;
@@ -142,7 +174,16 @@ export default class ObsidianBrainPlugin extends Plugin {
   }
 
   async refreshEmbeddingModels(showNotice = true): Promise<void> {
-    this.embeddingModelCatalog = await this.openRouter.listEmbeddingModels();
+    if (!showNotice && this.isCatalogFresh(this.catalogCache.embeddings)) {
+      this.embeddingModelCatalog = this.catalogCache.embeddings!.rows;
+      return;
+    }
+    this.embeddingModelCatalog = await this.performance.measure(
+      "catalog.embeddings.fetch",
+      () => this.openRouter.listEmbeddingModels()
+    );
+    this.catalogCache.embeddings = { fetchedAt: Date.now(), rows: this.embeddingModelCatalog };
+    await this.saveSettings();
     if (showNotice) new Notice(`Obsidian Brain loaded ${this.embeddingModelCatalog.length} embedding models.`);
   }
 
@@ -243,17 +284,22 @@ export default class ObsidianBrainPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = { ...DEFAULT_SETTINGS, ...(await this.loadData() as Partial<BrainSettings> ?? {}) };
+    const stored = (await this.loadData() ?? {}) as StoredPluginData;
+    const { _catalogCache, ...storedSettings } = stored;
+    this.catalogCache = _catalogCache ?? {};
+    this.settings = { ...DEFAULT_SETTINGS, ...storedSettings };
+    this.modelCatalog = this.catalogCache.models?.rows ?? [];
+    this.embeddingModelCatalog = this.catalogCache.embeddings?.rows ?? [];
     if (!this.settings.semanticVaultId) {
       this.settings.semanticVaultId = typeof crypto?.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      await this.saveData(this.settings);
+      await this.saveSettings();
     }
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    await this.saveData({ ...this.settings, _catalogCache: this.catalogCache });
   }
 
   private registerVaultIndexEvents(): void {
@@ -287,9 +333,13 @@ export default class ObsidianBrainPlugin extends Plugin {
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.metadataCache.on("changed", (file) => {
-      void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
+      void this.retrievalIndex.update(file, true).catch((error) => this.reportError(error));
       this.semanticIndex.queueUpdate(file);
     }));
+  }
+
+  private isCatalogFresh(cache: { fetchedAt: number } | undefined): boolean {
+    return Boolean(cache && Date.now() - cache.fetchedAt < CATALOG_CACHE_TTL_MS);
   }
 
   private effectiveExcludedPaths(): string[] {

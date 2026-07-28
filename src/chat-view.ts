@@ -44,6 +44,8 @@ interface ConfigMenuItem {
 
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
+const TRANSCRIPT_INITIAL_MESSAGES = 40;
+const TRANSCRIPT_PAGE_MESSAGES = 40;
 
 const commandTokens = (value: string): string[] =>
   [...value.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)]
@@ -53,6 +55,7 @@ const commandTokens = (value: string): string[] =>
 const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "help", usage: "/help [page]", description: "Show the paged command reference" },
   { name: "status", usage: "/status", description: "Show the active vault, chat, model, retrieval, and skills" },
+  { name: "perf", usage: "/perf [reset]", description: "Show local plugin performance measurements" },
   { name: "new", usage: "/new", description: "Start a new chat" },
   { name: "chats", usage: "/chats [page] [query]", description: "List saved chats" },
   { name: "open", usage: "/open <number|title>", description: "Open a saved chat from /chats" },
@@ -228,6 +231,7 @@ export class BrainChatView extends ItemView {
   private folderPickerEnableAfterConfirm = false;
   private unsubscribeSemantic: (() => void) | null = null;
   private semanticProgressEl: HTMLElement | null = null;
+  private transcriptVisibleStart: number | null = null;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: ObsidianBrainPlugin) {
     super(leaf);
@@ -244,14 +248,19 @@ export class BrainChatView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
-    this.containerEl.empty();
-    this.containerEl.addClass("obsidian-brain-view");
-    this.renderHeader();
-    this.transcriptEl = this.containerEl.createDiv({ cls: "obsidian-brain-transcript" });
-    this.renderEmptyState();
-    this.renderComposer();
-    await this.refreshChatSummaries();
-    this.unsubscribeSemantic = this.plugin.semanticIndex.subscribe((status) => this.renderSemanticStatus(status));
+    const finish = this.plugin.performance.start("view.open");
+    try {
+      this.containerEl.empty();
+      this.containerEl.addClass("obsidian-brain-view");
+      this.renderHeader();
+      this.transcriptEl = this.containerEl.createDiv({ cls: "obsidian-brain-transcript" });
+      this.renderEmptyState();
+      this.renderComposer();
+      await this.refreshChatSummaries();
+      this.unsubscribeSemantic = this.plugin.semanticIndex.subscribe((status) => this.renderSemanticStatus(status));
+    } finally {
+      finish();
+    }
   }
 
   async onClose(): Promise<void> {
@@ -468,6 +477,7 @@ export class BrainChatView extends ItemView {
     await this.ensureCurrentChat(text);
     await this.persistCurrentChat();
 
+    await this.plugin.skillRegistry.initialize();
     await this.prepareSkillContext(text);
     this.turnCitations.clear();
     this.abortController = new AbortController();
@@ -538,6 +548,7 @@ export class BrainChatView extends ItemView {
             `model      ${this.plugin.settings.interactiveModel}`,
             `retrieval  ${retrieval.ready ? "ready" : "building"} · ${retrieval.indexedNotes} notes · ${retrieval.chunks} chunks`,
             `lexical    ${retrieval.lexicalProvider}${retrieval.omnisearch.enabled && !retrieval.omnisearch.available ? " · Omnisearch unavailable, fallback active" : ""}`,
+            `index load ${retrieval.persistence.skippedForOmnisearch ? "skipped · Omnisearch active" : `${retrieval.persistence.restoredNotes} cached · ${retrieval.persistence.updatedNotes} updated · ${retrieval.persistence.removedNotes} removed`}`,
             `semantic   ${semantic?.enabled ? `${semantic.state} · ${semantic.indexedNotes} notes · ${semantic.indexedChunks} chunks · ${semantic.modelId || "no model"}` : "disabled"}`,
             `scope      ${semantic?.folders.join(", ") || "none"}`,
             `index cost $${(semantic?.estimatedCostUsd ?? 0).toFixed(4)} / $${this.plugin.settings.semanticSpendCapUsd.toFixed(2)} cap`,
@@ -549,6 +560,14 @@ export class BrainChatView extends ItemView {
           ].join("\n"));
           return;
         }
+        case "perf":
+          if (parts[0]?.toLocaleLowerCase() === "reset") {
+            this.plugin.performance.reset();
+            await this.addTerminalOutput("performance measurements reset");
+          } else {
+            await this.addTerminalOutput(`\`\`\`text\n${this.plugin.performance.report()}\n\`\`\``);
+          }
+          return;
         case "new":
           this.startNewChat();
           await this.addTerminalOutput("new chat ready");
@@ -1199,6 +1218,7 @@ export class BrainChatView extends ItemView {
           this.plugin.settings.useOmnisearch = !previous;
           try {
             await this.plugin.saveSettings();
+            await this.plugin.reconfigureLexicalProvider();
           } catch (error) {
             this.plugin.settings.useOmnisearch = previous;
             throw error;
@@ -1820,7 +1840,7 @@ export class BrainChatView extends ItemView {
   }
 
   private async handleSkillCommand(name: string, listParts: string[] = []): Promise<void> {
-    await this.plugin.skillRegistry.refresh();
+    await this.plugin.skillRegistry.initialize();
     if (!name) {
       const { page, remaining } = readLeadingPage(listParts);
       if (remaining.length > 0) {
@@ -1926,6 +1946,7 @@ export class BrainChatView extends ItemView {
     try {
       this.currentChat = await this.plugin.chatStore.load(path);
       this.messages = this.currentChat.messages;
+      this.transcriptVisibleStart = null;
       this.refreshBaseSystemMessage();
       this.plugin.settings.interactiveModel = this.currentChat.model;
       await this.plugin.saveSettings();
@@ -1947,6 +1968,7 @@ export class BrainChatView extends ItemView {
     if (this.abortController) return;
     this.currentChat = null;
     this.messages = [createSystemMessage()];
+    this.transcriptVisibleStart = null;
     this.disposeMarkdownComponents();
     this.transcriptEl.empty();
     this.renderEmptyState();
@@ -2003,11 +2025,39 @@ export class BrainChatView extends ItemView {
     }
   }
 
-  private async renderTranscript(): Promise<void> {
+  private async renderTranscript(scrollToEnd = true): Promise<void> {
     this.disposeMarkdownComponents();
     this.transcriptEl.empty();
+    const visibleIndexes = this.messages
+      .map((message, index) => ({ message, index }))
+      .filter(({ message }) =>
+        ((message.role === "user" || message.role === "assistant") && Boolean(message.content))
+        || (message.role === "assistant" && Boolean(message.tool_calls?.length))
+      )
+      .map(({ index }) => index);
+    if (this.transcriptVisibleStart === null) {
+      this.transcriptVisibleStart = Math.max(0, visibleIndexes.length - TRANSCRIPT_INITIAL_MESSAGES);
+    } else {
+      this.transcriptVisibleStart = Math.min(this.transcriptVisibleStart, visibleIndexes.length);
+    }
+    const firstMessageIndex = visibleIndexes[this.transcriptVisibleStart] ?? this.messages.length;
+    if (this.transcriptVisibleStart > 0) {
+      const earlierCount = this.transcriptVisibleStart;
+      const loadEarlier = this.transcriptEl.createEl("button", {
+        cls: "obsidian-brain-load-earlier",
+        text: `↑ load ${Math.min(TRANSCRIPT_PAGE_MESSAGES, earlierCount)} earlier · ${earlierCount} hidden`
+      });
+      loadEarlier.addEventListener("click", () => {
+        const oldHeight = this.transcriptEl.scrollHeight;
+        this.transcriptVisibleStart = Math.max(0, (this.transcriptVisibleStart ?? 0) - TRANSCRIPT_PAGE_MESSAGES);
+        void this.renderTranscript(false).then(() => {
+          this.transcriptEl.scrollTop = Math.max(0, this.transcriptEl.scrollHeight - oldHeight);
+        });
+      });
+    }
     let visible = false;
-    for (const message of this.messages) {
+    for (const [index, message] of this.messages.entries()) {
+      if (index < firstMessageIndex) continue;
       if ((message.role === "user" || message.role === "assistant") && message.content) {
         const body = this.addMessage(message.role, message.content);
         if (message.role === "assistant") await this.renderAssistantMarkdown(body, message.content);
@@ -2022,7 +2072,7 @@ export class BrainChatView extends ItemView {
       }
     }
     if (!visible) this.renderEmptyState();
-    else this.transcriptEl.lastElementChild?.scrollIntoView({ block: "end" });
+    else if (scrollToEnd) this.transcriptEl.lastElementChild?.scrollIntoView({ block: "end" });
   }
 
   private renderEmptyState(): void {

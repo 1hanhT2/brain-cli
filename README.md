@@ -18,6 +18,9 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Hybrid semantic retrieval using OpenRouter embeddings, exact local cosine search, and reciprocal-rank fusion with Omnisearch or the built-in lexical index.
 - Disposable per-device IndexedDB vector storage with deterministic Markdown chunks, curated frontmatter metadata, resumable batch checkpoints, and automatic changed-note updates.
 - Selected-folder semantic scope, dedicated paged embedding-model browser, configurable spend cap, live CLI indexing progress, and explicit sensitive-content consent.
+- Persistent incremental lexical indexing that restores unchanged notes without rereading their Markdown.
+- Fast startup paths that skip Brain's built-in lexical scan when Omnisearch is active and reuse 24-hour model catalogs.
+- Lightweight frontmatter chat summaries, semantic-vector hot caching, progressive transcript history, and local `/perf` diagnostics.
 - Optional OpenRouter server-side web search alongside Brain's local vault tools.
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
@@ -54,6 +57,7 @@ suggestions or input history, `Enter` to run, `Shift+Enter` for a newline, and
 ```text
 /help [page]
 /status
+/perf [reset]
 /new
 /chats [page] [query]
 /open <number|title>
@@ -97,8 +101,10 @@ the arrow keys to select an item, `Space` to toggle its checkbox, and `Enter`
 to leave. `/settings native` opens Obsidian's regular plugin settings tab.
 When Omnisearch is enabled and available, Brain uses its public in-process API
 for lexical `search_notes` and `retrieve_context` calls. Brain rechecks every
-result against its own exclusions and sensitive-content policy. If Omnisearch
-is disabled, unavailable, or errors, the built-in local index remains active.
+result against its own exclusions and sensitive-content policy and skips its
+complete-vault lexical scan at startup. If Omnisearch is disabled, unavailable,
+or errors, the persistent built-in index loads cached notes and rereads only
+new or changed Markdown.
 The neighboring OpenRouter web-search checkbox adds
 `openrouter:web_search` to chat requests. The model can then search current
 internet sources while retaining access to Brain's local tools; web search is

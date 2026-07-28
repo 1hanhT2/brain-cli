@@ -140,6 +140,26 @@
   scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-bg);
 }
 
+.obsidian-brain-load-earlier {
+  display: block;
+  width: min(100%, var(--brain-content-width));
+  margin: 0 auto var(--brain-lg);
+  padding: var(--brain-xs) var(--brain-sm);
+  border: 1px dashed var(--brain-border);
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--brain-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  text-align: center;
+}
+
+.obsidian-brain-load-earlier:hover {
+  border-color: var(--brain-accent);
+  background: var(--background-modifier-hover);
+  color: var(--brain-accent);
+}
+
 .obsidian-brain-message,
 .obsidian-brain-empty,
 .obsidian-brain-tool,

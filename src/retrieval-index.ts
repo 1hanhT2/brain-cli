@@ -2,6 +2,12 @@ import type { App, TFile } from "obsidian";
 import type { SensitiveContentGuard } from "./sensitive-content";
 import type { OmnisearchProvider } from "./omnisearch-provider";
 import type { SemanticIndexCoordinator } from "./semantic-index";
+import type { PerformanceTracer } from "./performance";
+import {
+  MemoryLexicalIndexStore,
+  type LexicalIndexRecord,
+  type LexicalIndexStore
+} from "./retrieval-store";
 import { chunkMatchesFilters, normalizeVaultPath, prepareMarkdownChunks, stableHash } from "./markdown-chunks";
 import type {
   PreparedChunk,
@@ -32,6 +38,8 @@ interface IndexedChunk extends PreparedChunk {
   score: number;
   tokens: string[];
 }
+
+const LEXICAL_INDEX_VERSION = 1;
 
 export interface RankedChunk {
   id: string;
@@ -91,43 +99,96 @@ export const reciprocalRankFusion = (
 
 export class VaultRetrievalIndex {
   private readonly chunksByPath = new Map<string, IndexedChunk[]>();
+  private readonly recordsByPath = new Map<string, LexicalIndexRecord>();
   private readonly sensitivePaths = new Set<string>();
   private ready = false;
+  private builtinReady = false;
+  private initialization: Promise<void> | null = null;
+  private initializationStats = { restoredNotes: 0, updatedNotes: 0, removedNotes: 0, skippedForOmnisearch: false };
 
   constructor(
     private readonly app: App,
     private readonly getExcludedPaths: () => string[],
     private readonly sensitiveGuard: SensitiveContentGuard,
     private readonly omnisearchProvider?: OmnisearchProvider,
-    private readonly semanticIndex?: SemanticIndexCoordinator
+    private readonly semanticIndex?: SemanticIndexCoordinator,
+    private readonly store: LexicalIndexStore = new MemoryLexicalIndexStore(),
+    private readonly performance?: PerformanceTracer
   ) {}
 
   async initialize(): Promise<void> {
-    this.chunksByPath.clear();
-    this.sensitivePaths.clear();
-    for (const file of this.app.vault.getMarkdownFiles()) await this.update(file);
-    this.ready = true;
-  }
-
-  async update(file: TFile): Promise<void> {
-    this.remove(file.path);
-    if (file.extension !== "md" || this.isExcluded(file.path)) return;
-    const content = await this.app.vault.cachedRead(file);
-    if (this.sensitiveGuard.inspectFile(file, content).sensitive) {
-      this.sensitivePaths.add(file.path);
+    if (this.omnisearchProvider?.getStatus().active) {
+      this.chunksByPath.clear();
+      this.recordsByPath.clear();
+      this.sensitivePaths.clear();
+      this.ready = true;
+      this.builtinReady = false;
+      this.initializationStats = {
+        restoredNotes: 0,
+        updatedNotes: 0,
+        removedNotes: 0,
+        skippedForOmnisearch: true
+      };
       return;
     }
+    await this.ensureBuiltinIndex();
+  }
+
+  async rebuild(): Promise<void> {
+    await this.store.clear();
+    this.chunksByPath.clear();
+    this.recordsByPath.clear();
+    this.sensitivePaths.clear();
+    this.ready = false;
+    this.builtinReady = false;
+    await this.ensureBuiltinIndex();
+  }
+
+  async update(file: TFile, force = false): Promise<void> {
+    const path = normalizeVaultPath(file.path);
+    const current = this.recordsByPath.get(path);
+    this.chunksByPath.delete(path);
+    this.recordsByPath.delete(path);
+    this.sensitivePaths.delete(path);
+    if (file.extension !== "md" || this.isExcluded(path)) {
+      await this.store.remove(path);
+      return;
+    }
+    if (this.omnisearchProvider?.getStatus().active && !this.builtinReady) return;
+    if (!force && current && this.matchesFile(current, file)) {
+      this.restoreRecord(current);
+      return;
+    }
+    const content = await this.app.vault.cachedRead(file);
+    const sensitive = this.sensitiveGuard.inspectFile(file, content).sensitive;
     const frontmatter = this.app.metadataCache?.getFileCache?.(file)?.frontmatter;
-    this.chunksByPath.set(file.path, prepareMarkdownChunks(file, content, frontmatter, false).map((chunk) => ({
+    const chunks = sensitive ? [] : prepareMarkdownChunks(file, content, frontmatter, false).map((chunk) => ({
       ...chunk,
       score: 0,
       tokens: tokenize(chunk.embeddingText)
-    })));
+    }));
+    const record: LexicalIndexRecord = {
+      path,
+      indexVersion: LEXICAL_INDEX_VERSION,
+      modifiedAt: file.stat?.mtime ?? 0,
+      size: file.stat?.size ?? content.length,
+      sensitive,
+      chunks: chunks.map(({ score: _score, ...chunk }) => chunk)
+    };
+    this.recordsByPath.set(path, record);
+    if (sensitive) this.sensitivePaths.add(path);
+    else this.chunksByPath.set(path, chunks);
+    await this.store.put(record);
   }
 
   remove(path: string): void {
-    this.chunksByPath.delete(normalizeVaultPath(path));
-    this.sensitivePaths.delete(normalizeVaultPath(path));
+    const normalized = normalizeVaultPath(path);
+    this.chunksByPath.delete(normalized);
+    this.recordsByPath.delete(normalized);
+    this.sensitivePaths.delete(normalized);
+    void this.store.remove(normalized).catch((error) =>
+      console.warn("[Obsidian Brain] Could not remove a persisted lexical index record.", error)
+    );
   }
 
   async search(
@@ -195,6 +256,12 @@ export class VaultRetrievalIndex {
     lexicalProvider: "omnisearch" | "builtin";
     omnisearch: { enabled: boolean; available: boolean; active: boolean };
     semantic?: ReturnType<SemanticIndexCoordinator["getStatus"]>;
+    persistence: {
+      restoredNotes: number;
+      updatedNotes: number;
+      removedNotes: number;
+      skippedForOmnisearch: boolean;
+    };
   } {
     const omnisearch = this.omnisearchProvider?.getStatus()
       ?? { enabled: false, available: false, active: false };
@@ -205,7 +272,8 @@ export class VaultRetrievalIndex {
       sensitiveNotes: this.sensitivePaths.size,
       lexicalProvider: omnisearch.active ? "omnisearch" : "builtin",
       omnisearch,
-      semantic: this.semanticIndex?.getStatus()
+      semantic: this.semanticIndex?.getStatus(),
+      persistence: { ...this.initializationStats }
     };
   }
 
@@ -216,33 +284,37 @@ export class VaultRetrievalIndex {
   ): Promise<{ rows: RankedChunk[]; skippedSensitiveNotes: number }> {
     const omnisearch = await this.omnisearchProvider?.search(query, limit);
     if (omnisearch) {
-      return {
-        skippedSensitiveNotes: omnisearch.skippedSensitiveNotes,
-        rows: omnisearch.results.flatMap((result, index): RankedChunk[] => {
+      const rows: RankedChunk[] = [];
+      for (const [index, result] of omnisearch.results.entries()) {
+        await this.loadOmnisearchResult(result.path);
         const chunk = this.findChunk(result.path, result.lineStart);
         if (!chunk) {
-          if (filters.folders?.length || filters.tags?.length || Object.keys(filters.properties ?? {}).length) return [];
-          return [{
+          if (filters.folders?.length || filters.tags?.length || Object.keys(filters.properties ?? {}).length) continue;
+          rows.push({
             id: stableHash(`${result.path}|${result.lineStart}`),
             result,
             rank: index + 1,
-            engine: "lexical" as const,
+            engine: "lexical",
             rawScore: result.score
-          }];
+          });
+          continue;
         }
-        if (!chunkMatchesFilters(chunk, filters)) return [];
-        return [{
+        if (!chunkMatchesFilters(chunk, filters)) continue;
+        rows.push({
           id: chunk.id,
-          result: this.resultFromChunk(chunk, result.score),
+          result: { ...result, chunkId: chunk.id },
           rank: index + 1,
-          engine: "lexical" as const,
+          engine: "lexical",
           rawScore: result.score
-        }];
-        })
+        });
+      }
+      return {
+        skippedSensitiveNotes: omnisearch.skippedSensitiveNotes,
+        rows
       };
     }
 
-    if (!this.ready) await this.initialize();
+    if (!this.builtinReady) await this.ensureBuiltinIndex();
     const queryTokens = [...new Set(tokenize(query))];
     if (queryTokens.length === 0) return { rows: [], skippedSensitiveNotes: this.sensitivePaths.size };
     const chunks = [...this.chunksByPath.values()].flat().filter((chunk) =>
@@ -335,6 +407,88 @@ export class VaultRetrievalIndex {
         if (!closest) return chunk;
         return Math.abs(chunk.lineStart - line) < Math.abs(closest.lineStart - line) ? chunk : closest;
       }, undefined);
+  }
+
+  private async ensureBuiltinIndex(): Promise<void> {
+    if (this.builtinReady) return;
+    if (this.initialization) return this.initialization;
+    const build = () => this.buildBuiltinIndex();
+    this.initialization = this.performance?.measure("lexical.initialize", build) ?? build();
+    try {
+      await this.initialization;
+    } finally {
+      this.initialization = null;
+    }
+  }
+
+  private async buildBuiltinIndex(): Promise<void> {
+    await this.store.initialize();
+    const storedRecords = await this.store.getAll();
+    const storedByPath = new Map(storedRecords.map((record) => [normalizeVaultPath(record.path), record]));
+    const currentFiles = new Map(this.app.vault.getMarkdownFiles()
+      .filter((file) => !this.isExcluded(file.path))
+      .map((file) => [normalizeVaultPath(file.path), file]));
+    this.chunksByPath.clear();
+    this.recordsByPath.clear();
+    this.sensitivePaths.clear();
+    let restoredNotes = 0;
+    let updatedNotes = 0;
+    let removedNotes = 0;
+    for (const [path, record] of storedByPath) {
+      const file = currentFiles.get(path);
+      if (!file) {
+        await this.store.remove(path);
+        removedNotes += 1;
+        continue;
+      }
+      if (this.matchesFile(record, file)) {
+        this.restoreRecord(record);
+        restoredNotes += 1;
+        currentFiles.delete(path);
+      }
+    }
+    for (const file of currentFiles.values()) {
+      await this.update(file, true);
+      updatedNotes += 1;
+    }
+    this.ready = true;
+    this.builtinReady = true;
+    this.initializationStats = { restoredNotes, updatedNotes, removedNotes, skippedForOmnisearch: false };
+  }
+
+  private restoreRecord(record: LexicalIndexRecord): void {
+    const path = normalizeVaultPath(record.path);
+    this.recordsByPath.set(path, record);
+    if (record.sensitive) {
+      this.sensitivePaths.add(path);
+      return;
+    }
+    this.chunksByPath.set(path, record.chunks.map((chunk) => ({ ...chunk, score: 0 })));
+  }
+
+  private matchesFile(record: LexicalIndexRecord, file: TFile): boolean {
+    return record.indexVersion === LEXICAL_INDEX_VERSION
+      && record.modifiedAt === (file.stat?.mtime ?? 0)
+      && record.size === (file.stat?.size ?? record.size);
+  }
+
+  private async loadOmnisearchResult(path: string): Promise<void> {
+    const normalized = normalizeVaultPath(path);
+    if (this.chunksByPath.has(normalized) || this.sensitivePaths.has(normalized) || this.isExcluded(normalized)) return;
+    const file = this.app.vault.getAbstractFileByPath(normalized);
+    if (!file || !("extension" in file) || file.extension !== "md") return;
+    const markdownFile = file as TFile;
+    const content = await this.app.vault.cachedRead(markdownFile);
+    if (this.sensitiveGuard.inspectFile(markdownFile, content).sensitive) {
+      this.sensitivePaths.add(normalized);
+      return;
+    }
+    const frontmatter = this.app.metadataCache?.getFileCache?.(markdownFile)?.frontmatter;
+    this.chunksByPath.set(normalized, prepareMarkdownChunks(markdownFile, content, frontmatter, false).map((chunk) => ({
+      ...chunk,
+      score: 0,
+      tokens: tokenize(chunk.embeddingText)
+    })));
   }
 
   private isExcluded(path: string): boolean {

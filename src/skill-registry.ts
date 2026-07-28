@@ -15,6 +15,8 @@ const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
 export class SkillRegistry {
   private skills = new Map<string, SkillMetadata>();
+  private initialized = false;
+  private initialization: Promise<void> | null = null;
 
   constructor(
     private readonly app: App,
@@ -22,8 +24,18 @@ export class SkillRegistry {
   ) {}
 
   async initialize(): Promise<void> {
-    await this.ensureBundledExpSkill();
-    await this.refresh();
+    if (this.initialized) return;
+    if (this.initialization) return this.initialization;
+    this.initialization = (async () => {
+      await this.ensureBundledExpSkill();
+      await this.refresh();
+      this.initialized = true;
+    })();
+    try {
+      await this.initialization;
+    } finally {
+      this.initialization = null;
+    }
   }
 
   async refresh(): Promise<SkillMetadata[]> {

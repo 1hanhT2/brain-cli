@@ -119,6 +119,7 @@ export class BrainSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.useOmnisearch = value;
           await this.plugin.saveSettings();
+          await this.plugin.reconfigureLexicalProvider();
         }));
 
     new Setting(containerEl)
