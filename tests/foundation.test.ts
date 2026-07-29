@@ -52,6 +52,7 @@ import { calculateExpStreaks, validateExpInput, validateExpTransition } from "..
 import type { ExpService } from "../src/exp-service";
 import { parseSkillInvocation } from "../src/skill-invocation";
 import { parseExpScoringResponse } from "../src/exp-auto-scorer";
+import { extractFileMentions, fileMention, findAtQuery } from "../src/file-mentions";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -139,6 +140,19 @@ test("@ skill invocations support toggles and inline prompts", () => {
   });
   assert.equal(parseSkillInvocation("@"), null);
   assert.equal(parseSkillInvocation("@bad/name prompt"), null);
+});
+
+test("@ file mentions identify the active token and preserve canonical vault paths", () => {
+  assert.deepEqual(findAtQuery("@2026", 5), { query: "2026", start: 0, end: 5 });
+  assert.deepEqual(findAtQuery("compare @daily", 14), { query: "daily", start: 8, end: 14 });
+  assert.equal(findAtQuery("compare @[[Dailies/2026-07-20.md]]", 37), null);
+  assert.equal(fileMention("Dailies\\2026-07-20.md"), "@[[Dailies/2026-07-20.md]]");
+  assert.deepEqual(
+    extractFileMentions(
+      "compare @[[Dailies/2026-07-20.md|Monday]] with @[[Notes/example.md#Section]] and @[[Dailies/2026-07-20.md]]"
+    ),
+    ["Dailies/2026-07-20.md", "Notes/example.md"]
+  );
 });
 
 test("Brain layout creation is idempotent while the Vault index is stale", async () => {

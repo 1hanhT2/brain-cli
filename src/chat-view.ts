@@ -5,7 +5,9 @@ import {
   Modal,
   Notice,
   Setting,
+  TFile,
   TFolder,
+  normalizePath,
   setIcon,
   type App,
   type WorkspaceLeaf
@@ -25,6 +27,7 @@ import {
   type ModelUsageRanking
 } from "./model-rankings";
 import { parseSkillInvocation } from "./skill-invocation";
+import { extractFileMentions, fileMention, findAtQuery } from "./file-mentions";
 
 export const BRAIN_VIEW_TYPE = "obsidian-brain-chat";
 
@@ -35,11 +38,13 @@ interface BrainCommand {
 }
 
 interface InputSuggestion {
-  kind: "command" | "skill";
+  kind: "command" | "skill" | "file";
   name: string;
   usage: string;
   description: string;
   completion?: string;
+  replaceStart?: number;
+  replaceEnd?: number;
 }
 
 interface ConfigMenuItem {
@@ -486,6 +491,10 @@ export class BrainChatView extends ItemView {
       }
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
+        if (this.visibleSuggestions.length > 0) {
+          this.completeSuggestion();
+          return;
+        }
         void submit();
       }
     });
@@ -498,8 +507,28 @@ export class BrainChatView extends ItemView {
       await this.executeCommand(text);
       return;
     }
+    const mentionedPaths = extractFileMentions(text);
+    const mentionedFiles: TFile[] = [];
+    for (const path of mentionedPaths) {
+      const normalizedPath = normalizePath(path);
+      const direct = this.app.vault.getAbstractFileByPath(normalizedPath)
+        ?? (!normalizedPath.toLocaleLowerCase().endsWith(".md")
+          ? this.app.vault.getAbstractFileByPath(`${normalizedPath}.md`)
+          : null);
+      const linked = direct instanceof TFile
+        ? direct
+        : this.app.metadataCache.getFirstLinkpathDest(
+          path,
+          this.app.workspace.getActiveFile()?.path ?? ""
+        );
+      if (!(linked instanceof TFile) || linked.extension.toLocaleLowerCase() !== "md") {
+        await this.addTerminalOutput(`mentioned Markdown file not found: \`${path}\``, "error");
+        return;
+      }
+      if (!mentionedFiles.some((file) => file.path === linked.path)) mentionedFiles.push(linked);
+    }
     let prompt = text;
-    if (text.startsWith("@")) {
+    if (text.startsWith("@") && !text.startsWith("@[[")) {
       const invocation = parseSkillInvocation(text);
       if (!invocation) {
         await this.addTerminalOutput("invalid skill invocation · use `@<skill> [request]`", "error");
@@ -527,6 +556,17 @@ export class BrainChatView extends ItemView {
       prompt = invocation.prompt;
     }
     this.addMessage("user", text);
+    if (mentionedFiles.length > 0) {
+      this.messages.push({
+        role: "system",
+        content: [
+          "[Mentioned vault files]",
+          "The user explicitly attached the following vault Markdown files to this request.",
+          "Use read_note on each relevant path before relying on its contents. Normal sensitive-note approval and access rules still apply.",
+          ...mentionedFiles.map((file) => `- ${file.path}`)
+        ].join("\n")
+      });
+    }
     this.messages.push({ role: "user", content: text });
     await this.ensureCurrentChat(text);
     await this.persistCurrentChat();
@@ -2448,7 +2488,7 @@ export class BrainChatView extends ItemView {
     const empty = this.transcriptEl.createDiv({ cls: "obsidian-brain-empty" });
     empty.createDiv({ cls: "obsidian-brain-empty-mark", text: "OBSIDIAN_BRAIN" });
     empty.createDiv({ text: "vault agent online" });
-    empty.createDiv({ cls: "obsidian-brain-empty-hint", text: "type / for commands · @ for skills · plain text starts a conversation" });
+    empty.createDiv({ cls: "obsidian-brain-empty-hint", text: "type / for commands · @ for skills or files · plain text starts a conversation" });
   }
 
   private renderPromptContext(): void {
@@ -2510,6 +2550,72 @@ export class BrainChatView extends ItemView {
       this.renderCommandSuggestions();
       return;
     }
+    const atQuery = findAtQuery(value, this.inputEl.selectionStart ?? value.length);
+    if (atQuery && !value.includes("\n")) {
+      const query = atQuery.query.toLocaleLowerCase().replace(/\\/g, "/");
+      const skills = atQuery.start === 0
+        ? this.plugin.skillRegistry.list()
+          .filter((skill) => skill.name.startsWith(query))
+          .map((skill): InputSuggestion => ({
+            kind: "skill",
+            name: skill.name,
+            usage: `@${skill.name}`,
+            description: `${skill.description} · Skill`,
+            replaceStart: atQuery.start,
+            replaceEnd: atQuery.end
+          }))
+        : [];
+      const files = this.app.vault.getMarkdownFiles()
+        .map((file) => {
+          const name = file.name.toLocaleLowerCase();
+          const basename = file.basename.toLocaleLowerCase();
+          const path = file.path.toLocaleLowerCase();
+          const score = !query
+            ? 5
+            : basename === query || name === query
+              ? 0
+              : basename.startsWith(query) || name.startsWith(query)
+                ? 1
+                : basename.includes(query) || name.includes(query)
+                  ? 2
+                  : path.includes(query)
+                    ? 3
+                    : Number.POSITIVE_INFINITY;
+          return { file, score };
+        })
+        .filter(({ score }) => Number.isFinite(score))
+        .sort((left, right) =>
+          left.score - right.score
+          || left.file.name.localeCompare(right.file.name)
+          || left.file.path.localeCompare(right.file.path)
+        )
+        .map(({ file }): InputSuggestion => ({
+          kind: "file",
+          name: file.basename,
+          usage: file.name,
+          description: `${file.parent?.path ?? "/"} · File`,
+          completion: fileMention(file.path),
+          replaceStart: atQuery.start,
+          replaceEnd: atQuery.end
+        }));
+      this.visibleSuggestions = [...skills, ...files].slice(0, 30);
+      this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
+      this.renderCommandSuggestions();
+      if (atQuery.start === 0 && skills.length === 0 && !this.skillSuggestionsLoading) {
+        this.skillSuggestionsLoading = true;
+        void this.plugin.skillRegistry.initialize()
+          .then(() => {
+            const currentQuery = findAtQuery(
+              this.inputEl.value,
+              this.inputEl.selectionStart ?? this.inputEl.value.length
+            );
+            if (currentQuery?.start === 0) this.updateCommandSuggestions();
+          })
+          .catch((error) => this.plugin.reportError(error))
+          .finally(() => { this.skillSuggestionsLoading = false; });
+      }
+      return;
+    }
     if (value.startsWith("@") && !value.includes("\n") && value.includes(" ")) {
       const match = value.match(/^@([a-z0-9-]{1,63})\s+(.*)$/i);
       const skill = match ? this.plugin.skillRegistry.get(match[1].toLocaleLowerCase()) : undefined;
@@ -2544,30 +2650,6 @@ export class BrainChatView extends ItemView {
           .finally(() => { this.skillSuggestionsLoading = false; });
       }
     }
-    if (value.startsWith("@") && !value.includes("\n") && !value.includes(" ")) {
-      const query = value.slice(1).toLocaleLowerCase();
-      const skills = this.plugin.skillRegistry.list();
-      this.visibleSuggestions = skills
-        .filter((skill) => skill.name.startsWith(query))
-        .map((skill) => ({
-          kind: "skill" as const,
-          name: skill.name,
-          usage: `@${skill.name}`,
-          description: skill.description
-        }));
-      this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
-      this.renderCommandSuggestions();
-      if (skills.length === 0 && !this.skillSuggestionsLoading) {
-        this.skillSuggestionsLoading = true;
-        void this.plugin.skillRegistry.initialize()
-          .then(() => {
-            if (this.inputEl.value.startsWith("@")) this.updateCommandSuggestions();
-          })
-          .catch((error) => this.plugin.reportError(error))
-          .finally(() => { this.skillSuggestionsLoading = false; });
-      }
-      return;
-    }
     this.hideCommandSuggestions();
   }
 
@@ -2578,6 +2660,9 @@ export class BrainChatView extends ItemView {
       return;
     }
     this.commandSuggestionsEl.addClass("is-visible");
+    if (!this.pendingApproval && !this.configMenuEl && !this.folderPickerEl) {
+      this.commandHintEl.setText("enter insert  ·  esc close  ·  ↑/↓ navigate  ·  tab insert");
+    }
     this.visibleSuggestions.forEach((command, index) => {
       const item = this.commandSuggestionsEl.createDiv({
         cls: `obsidian-brain-command-suggestion${index === this.suggestionIndex ? " is-selected" : ""}`
@@ -2601,6 +2686,9 @@ export class BrainChatView extends ItemView {
     if (!this.commandSuggestionsEl) return;
     this.commandSuggestionsEl.empty();
     this.commandSuggestionsEl.removeClass("is-visible");
+    if (!this.pendingApproval && !this.configMenuEl && !this.folderPickerEl) {
+      this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
+    }
   }
 
   private moveSuggestion(direction: number): void {
@@ -2615,11 +2703,25 @@ export class BrainChatView extends ItemView {
     const suggestion = this.visibleSuggestions[this.suggestionIndex];
     if (!suggestion) return;
     const expandSkillCompletions = suggestion.kind === "skill" && !suggestion.completion;
-    this.inputEl.value = suggestion.completion ?? (suggestion.kind === "skill"
+    let completion = suggestion.completion ?? (suggestion.kind === "skill"
       ? `@${suggestion.name} `
       : `/${suggestion.name}${suggestion.usage.includes(" ") ? " " : ""}`);
-    this.inputEl.focus();
-    this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
+    if (
+      suggestion.replaceStart !== undefined
+      && suggestion.replaceEnd !== undefined
+    ) {
+      const before = this.inputEl.value.slice(0, suggestion.replaceStart);
+      const after = this.inputEl.value.slice(suggestion.replaceEnd);
+      if (!completion.endsWith(" ") && !after.startsWith(" ")) completion += " ";
+      this.inputEl.value = `${before}${completion}${after}`;
+      const cursor = before.length + completion.length;
+      this.inputEl.focus();
+      this.inputEl.setSelectionRange(cursor, cursor);
+    } else {
+      this.inputEl.value = completion;
+      this.inputEl.focus();
+      this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
+    }
     if (expandSkillCompletions) this.updateCommandSuggestions();
     else this.hideCommandSuggestions();
     this.resizeInput();

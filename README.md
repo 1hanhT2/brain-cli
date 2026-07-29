@@ -5,7 +5,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 ## First foundation
 
 - Obsidian chat `ItemView` with a command-first terminal interface.
-- Slash-command completion, keyboard history, and command-operated chats, models, skills, memory, indexing, and approvals.
+- Slash-command completion, combined `@` skill/file completion, keyboard history, and command-operated chats, models, skills, memory, indexing, and approvals.
 - Real multi-turn OpenRouter chat completions with incremental SSE rendering.
 - Stop-generation control backed by request cancellation.
 - Native OpenRouter tool calling with iterative tool-result feedback.
@@ -57,9 +57,12 @@ there is no separate browser preview to keep in sync.
 Type `/` to open the complete command list. Use `Tab` to complete, `↑` and
 `↓` to move through the list (it scrolls as needed) or input history, `Enter`
 to run, `Shift+Enter` for a newline, and `Ctrl+C` to stop generation.
-Type `@` to open the installed-skill list with the same arrow and Tab controls.
-After selecting a skill, typing a space shows every completion declared by that
-skill's `SKILL.md` frontmatter.
+Type `@` anywhere in a prompt to search installed skills and vault Markdown
+files. Use `↑`/`↓` to select and `Enter` or `Tab` to insert; `Escape` closes the
+picker. Files are inserted as `@[[full/vault/path.md]]`, so the model can call
+the normal approval-aware note tools for their contents. Skills are offered
+when `@` begins the prompt. After selecting a skill, typing a space shows every
+completion declared by that skill's `SKILL.md` frontmatter.
 `@exp` toggles EXP for the current conversation. EXP view requests such as
 `@exp history` run locally; other forms such as `@exp score this task` enable
 the skill and send the remaining request. `/skill <name>` remains available
