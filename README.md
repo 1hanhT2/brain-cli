@@ -141,6 +141,9 @@ explicit forms are `/skill cwc check`, `/skill cwc status`, and `/skill cwc
 stop`. All coach controls remain within the skill invocation. Session state and
 feedback remain readable under `Brain/Coaching/writing-session.md`; sensitive
 or excluded notes cannot be enrolled in automatic coaching.
+When a draft contains only a heading, fragment, or opening sentence, the coach
+prioritizes momentum: it tells the writer to continue and offers one small
+pillar-relevant hint instead of critiquing unfinished structure.
 
 Tool-capable models can query, inspect, create, update, and complete tasks;
 manage blocking dependencies; and start or stop TaskNotes time tracking.

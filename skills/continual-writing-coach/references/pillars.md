@@ -31,3 +31,5 @@ Return plain Markdown containing:
 3. One next action the writer can apply without stopping their flow.
 
 Stay below 90 words. Do not provide a full rewrite.
+
+For a barely started draft—empty apart from headings, a fragment, or roughly one opening sentence—explicitly tell the writer to continue writing and provide one small pillar-relevant hint or question. Encourage momentum instead of judging unfinished structure.

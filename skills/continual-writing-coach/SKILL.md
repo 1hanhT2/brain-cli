@@ -30,6 +30,7 @@ Accept the draft, interval, and goal in natural language. The interval may be fi
 - Do not rewrite the document automatically.
 - Avoid repeating a point already logged unless it remains the clearest blocker.
 - Treat grammar as one pillar, not the default priority.
+- When the draft appears barely started—empty apart from headings, a fragment, or roughly one opening sentence—prioritize momentum: explicitly tell the writer to continue writing, offer one small pillar-relevant hint or question, and avoid judging unfinished structure.
 
 Use `check_writing_coach` when the user asks for feedback now. Use
 `get_writing_coach` for status and `stop_writing_coach` when the session ends.

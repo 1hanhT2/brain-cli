@@ -41,7 +41,7 @@ const EXP_COMPLETIONS_YAML = EXP_COMPLETIONS
   .join("\n");
 const LEGACY_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created. This remains a separate approval. Tasks created directly in TaskNotes are not sent to a model automatically; score them when the user invokes this skill or asks for unscored tasks.";
 const CURRENT_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.";
-const BUNDLED_SKILLS_VERSION = 5;
+const BUNDLED_SKILLS_VERSION = 6;
 const WRITING_COACH_COMPLETIONS: SkillCompletion[] = [
   { value: "Coach ", description: "Add a draft file, interval, and writing goal" },
   { value: "status", description: "Show the current coaching session" },
@@ -209,6 +209,8 @@ export class SkillRegistry {
             migrated = this.migrateExpSkill(migrated);
           } else if (entry.path === `${coachRoot}/SKILL.md`) {
             migrated = this.migrateWritingCoachSkill(migrated);
+          } else if (entry.path === `${coachRoot}/references/pillars.md`) {
+            migrated = this.migrateWritingCoachPillars(migrated);
           } else if (
             entry.path === `${expRoot}/references/schema.md`
             && !migrated.includes('title: "[EXP] Task title"')
@@ -320,7 +322,21 @@ export class SkillRegistry {
       "Obtain the writing goal, target Markdown file, and preferred fixed interval or interval range.",
       "Obtain the writing goal, target Markdown file from the current invocation, and preferred fixed interval or interval range."
     );
+    if (!migrated.includes("When the draft appears barely started")) {
+      migrated = migrated.replace(
+        "- Treat grammar as one pillar, not the default priority.",
+        "- Treat grammar as one pillar, not the default priority.\n- When the draft appears barely started—empty apart from headings, a fragment, or roughly one opening sentence—prioritize momentum: explicitly tell the writer to continue writing, offer one small pillar-relevant hint or question, and avoid judging unfinished structure."
+      );
+    }
     return migrated;
+  }
+
+  private migrateWritingCoachPillars(content: string): string {
+    if (content.includes("For a barely started draft")) return content;
+    return content.replace(
+      "Stay below 90 words. Do not provide a full rewrite.",
+      "Stay below 90 words. Do not provide a full rewrite.\n\nFor a barely started draft—empty apart from headings, a fragment, or roughly one opening sentence—explicitly tell the writer to continue writing and provide one small pillar-relevant hint or question. Encourage momentum instead of judging unfinished structure."
+    );
   }
 
   private async ensureFolder(path: string): Promise<void> {
