@@ -121,6 +121,13 @@ const makeRegistry = (vaultTools: VaultTools): AgentToolRegistry =>
       search: async () => [],
       setStatus: async () => { throw new Error("not configured"); }
     } as never
+    ,
+    {
+      status: () => null,
+      start: async () => { throw new Error("not configured"); },
+      checkNow: async () => { throw new Error("not configured"); },
+      stop: async () => { throw new Error("not configured"); }
+    } as never
   );
 
 test("vault path policy rejects hidden config, traversal, absolute paths, and URLs", () => {
@@ -178,6 +185,7 @@ test("Brain layout creation is idempotent while the Vault index is stale", async
     "Brain/Chats",
     "Brain/Memory",
     "Brain/Calibration",
+    "Brain/Coaching",
     "Brain/EXP",
     "Brain/EXP/Ledger",
     "Brain/Settings",
@@ -191,6 +199,7 @@ test("Brain layout creation is idempotent while the Vault index is stale", async
   assert.deepEqual(createCalls, [
     "Brain/Memory",
     "Brain/Calibration",
+    "Brain/Coaching",
     "Brain/EXP",
     "Brain/EXP/Ledger",
     "Brain/Settings",
@@ -214,13 +223,14 @@ test("Brain layout tolerates a concurrent folder creation race", async () => {
     "Brain/Chats",
     "Brain/Memory",
     "Brain/Calibration",
+    "Brain/Coaching",
     "Brain/EXP",
     "Brain/EXP/Ledger",
     "Brain/Settings",
     "Brain/Queue",
     "Brain/Skills"
   ]);
-  assert.equal(folders.size, 9);
+  assert.equal(folders.size, 10);
 });
 
 test("registry exposes the complete foundational tool surface", () => {
@@ -228,6 +238,10 @@ test("registry exposes the complete foundational tool surface", () => {
   assert.deepEqual(
     registry.definitions().map((tool) => tool.function.name),
     [
+      "get_writing_coach",
+      "start_writing_coach",
+      "check_writing_coach",
+      "stop_writing_coach",
       "search_memory",
       "record_memory",
       "update_memory_status",
@@ -266,6 +280,10 @@ test("registry exposes the complete foundational tool surface", () => {
   );
   assert.equal(registry.riskFor("read_note"), "read");
   assert.equal(registry.riskFor("get_exp_progress"), "read");
+  assert.equal(registry.riskFor("get_writing_coach"), "read");
+  assert.equal(registry.riskFor("start_writing_coach"), "high-write");
+  assert.equal(registry.riskFor("check_writing_coach"), "low-write");
+  assert.equal(registry.riskFor("stop_writing_coach"), "low-write");
   assert.equal(registry.riskFor("record_memory"), "low-write");
   assert.equal(registry.riskFor("create_exp_goal"), "low-write");
   assert.equal(registry.riskFor("record_task_exp"), "high-write");

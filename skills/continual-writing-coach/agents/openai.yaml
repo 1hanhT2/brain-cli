@@ -1,0 +1,4 @@
+interface:
+  display_name: "Continual Writing Coach"
+  short_description: "Timed, focused feedback while you write"
+  default_prompt: "Use $continual-writing-coach to coach me while I work on an Obsidian note."

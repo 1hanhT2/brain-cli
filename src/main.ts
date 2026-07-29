@@ -31,6 +31,7 @@ import { ExpCompletionQueueStore } from "./exp-completion-queue";
 import { ExpCompletionCoordinator } from "./exp-completion";
 import { PortableSettingsStore } from "./portable-settings";
 import { MemoryService } from "./memory-service";
+import { WritingCoachService } from "./writing-coach";
 
 interface CatalogCache {
   models?: { fetchedAt: number; rows: OpenRouterModel[] };
@@ -61,10 +62,12 @@ export default class ObsidianBrainPlugin extends Plugin {
   expCompletion!: ExpCompletionCoordinator;
   portableSettings!: PortableSettingsStore;
   memoryService!: MemoryService;
+  writingCoach!: WritingCoachService;
   readonly performance = new PerformanceTracer();
   private catalogCache: CatalogCache = {};
   private legacyCatalogCache: CatalogCache | null = null;
   private catalogStore!: CatalogStore;
+  private skillRefreshTimer: number | null = null;
 
   async onload(): Promise<void> {
     const finishOnload = this.performance.start("plugin.onload");
@@ -107,6 +110,19 @@ export default class ObsidianBrainPlugin extends Plugin {
         () => this.settings.expTitleMaxLength
       );
       this.memoryService = new MemoryService(this.app, () => brainPath(this.settings, ""));
+      this.writingCoach = new WritingCoachService(
+        this.app,
+        this.openRouter,
+        () => brainPath(this.settings, ""),
+        () => this.settings.backgroundModel || this.settings.interactiveModel,
+        (pillar, feedback, status) => {
+          new Notice(`Writing coach · ${pillar}: ${feedback.replace(/[#*_`]/g, "").slice(0, 180)}`, 10_000);
+          for (const leaf of this.app.workspace.getLeavesOfType(BRAIN_VIEW_TYPE)) {
+            if (leaf.view instanceof BrainChatView) leaf.view.showWritingCoachNudge(pillar, feedback, status);
+          }
+        },
+        (error) => this.reportError(error)
+      );
       this.expAutoScorer = new ExpAutoScorer(
         this.app,
         this.taskService,
@@ -161,7 +177,14 @@ export default class ObsidianBrainPlugin extends Plugin {
         new IndexedDbLexicalIndexStore(`obsidian-brain-lexical:${this.settings.semanticVaultId}`),
         this.performance
       );
-      this.skillRegistry = new SkillRegistry(this.app, () => this.settings);
+      this.skillRegistry = new SkillRegistry(
+        this.app,
+        () => this.settings,
+        async (version) => {
+          this.settings.bundledSkillsVersion = version;
+          await this.saveLocalSettings();
+        }
+      );
       this.agentTools = new AgentToolRegistry(
         this.vaultTools,
         this.retrievalIndex,
@@ -169,6 +192,7 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.taskService,
         this.expService,
         this.memoryService,
+        this.writingCoach,
         () => this.settings.autoScoreTaskExp,
         () => this.settings.interactiveModel,
         () => ({
@@ -207,15 +231,14 @@ export default class ObsidianBrainPlugin extends Plugin {
       stage = "scheduling vault layout";
       this.registerVaultIndexEvents();
       this.app.workspace.onLayoutReady(() => {
-        void this.performance.measure("skills.initialize", () => this.skillRegistry.initialize())
-          .catch((error) => this.reportError(error));
-        void this.retrievalIndex.initialize().catch((error) => this.reportError(error));
-        void (async () => {
+        this.deferStartup(100, async () => {
           await this.ensureDataLayout();
           await this.portableSettings.save(this.settings);
+          await this.performance.measure("skills.initialize", () => this.skillRegistry.initialize());
+          await this.writingCoach.initialize();
+        });
+        this.deferStartup(350, async () => {
           await this.initializeCatalogCache();
-          this.expAutoScorer.resumeQueued();
-          await this.expCompletion.initialize();
           if (this.settings.openRouterSecretId) {
             await this.refreshOpenRouterModels(false).catch((error) =>
               console.warn("[Obsidian Brain] Automatic model refresh failed.", error)
@@ -226,8 +249,17 @@ export default class ObsidianBrainPlugin extends Plugin {
               console.warn("[Obsidian Brain] Automatic embedding catalog refresh failed.", error)
             );
           }
+        });
+        this.deferStartup(500, async () => {
+          await this.retrievalIndex.initialize();
+        });
+        this.deferStartup(700, async () => {
+          this.expAutoScorer.resumeQueued();
+          await this.expCompletion.initialize();
+        });
+        this.deferStartup(900, async () => {
           await this.semanticIndex.initialize();
-        })().catch((error) => this.reportError(error));
+        });
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -237,6 +269,11 @@ export default class ObsidianBrainPlugin extends Plugin {
     } finally {
       finishOnload();
     }
+  }
+
+  private deferStartup(delay: number, task: () => Promise<void>): void {
+    const timer = window.setTimeout(() => void task().catch((error) => this.reportError(error)), delay);
+    this.register(() => window.clearTimeout(timer));
   }
 
   async rebuildRetrievalIndex(): Promise<void> {
@@ -297,6 +334,9 @@ export default class ObsidianBrainPlugin extends Plugin {
   }
 
   onunload(): void {
+    if (this.skillRefreshTimer !== null) window.clearTimeout(this.skillRefreshTimer);
+    this.skillRefreshTimer = null;
+    this.writingCoach?.dispose();
     this.expCompletion?.dispose();
     this.expAutoScorer?.dispose();
     this.semanticIndex?.dispose();
@@ -597,7 +637,7 @@ export default class ObsidianBrainPlugin extends Plugin {
     const refreshSkillIfNeeded = (path: string) => {
       const skillRoot = brainPath(this.settings, "Skills");
       if (path === skillRoot || path.startsWith(`${skillRoot}/`)) {
-        void this.skillRegistry.refresh().catch((error) => this.reportError(error));
+        this.scheduleSkillRefresh();
       }
     };
     this.registerEvent(this.app.vault.on("create", (file) => {
@@ -615,12 +655,14 @@ export default class ObsidianBrainPlugin extends Plugin {
       if (file instanceof TFile) this.semanticIndex.queueUpdate(file);
       if (file instanceof TFile) this.expAutoScorer.touch(file.path);
       if (file instanceof TFile) this.expCompletion.observe(file.path);
+      if (file instanceof TFile) this.writingCoach.touch(file.path);
       if (this.portableSettings.isConfigPath(file.path)) {
         void this.reloadPortableSettings().catch((error) => this.reportError(error));
       }
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
+      void this.writingCoach.removeTarget(file.path).catch((error) => this.reportError(error));
       this.expAutoScorer.forget(file.path);
       void this.expCompletion.forget(file.path);
       this.retrievalIndex.remove(file.path);
@@ -628,6 +670,9 @@ export default class ObsidianBrainPlugin extends Plugin {
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (file instanceof TFile) {
+        void this.writingCoach.renameTarget(oldPath, file.path).catch((error) => this.reportError(error));
+      }
       this.retrievalIndex.remove(oldPath);
       void this.semanticIndex.remove(oldPath).catch((error) => this.reportError(error));
       if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
@@ -646,6 +691,14 @@ export default class ObsidianBrainPlugin extends Plugin {
       this.expAutoScorer.resolveCandidate(file.path);
       this.expCompletion.observe(file.path);
     }));
+  }
+
+  private scheduleSkillRefresh(): void {
+    if (this.skillRefreshTimer !== null) window.clearTimeout(this.skillRefreshTimer);
+    this.skillRefreshTimer = window.setTimeout(() => {
+      this.skillRefreshTimer = null;
+      void this.skillRegistry.refresh().catch((error) => this.reportError(error));
+    }, 250);
   }
 
   private isCatalogFresh(cache: { fetchedAt: number } | undefined): boolean {
@@ -692,7 +745,8 @@ export default class ObsidianBrainPlugin extends Plugin {
     return [...new Set([
       ...this.settings.excludedPaths,
       brainPath(this.settings, "Chats"),
-      brainPath(this.settings, "Skills")
+      brainPath(this.settings, "Skills"),
+      brainPath(this.settings, "Coaching")
     ])];
   }
 }

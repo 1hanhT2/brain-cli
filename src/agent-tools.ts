@@ -14,6 +14,7 @@ import {
 } from "./task-provider";
 import type { ExpService } from "./exp-service";
 import type { MemoryService } from "./memory-service";
+import type { WritingCoachService } from "./writing-coach";
 import type { ExpAction, ExpFactors, ExpRecordInput, TaskExpState } from "./exp-core";
 
 export interface ToolExecutionResult {
@@ -168,6 +169,10 @@ const TOOL_LABELS: Record<string, string> = {
   search_memory: "Search memory",
   record_memory: "Save memory",
   update_memory_status: "Update memory",
+  get_writing_coach: "Inspect writing coach",
+  start_writing_coach: "Start writing coach",
+  check_writing_coach: "Check writing now",
+  stop_writing_coach: "Stop writing coach",
   record_task_exp: "Record task EXP",
   create_task: "Create task",
   update_task: "Update task",
@@ -287,6 +292,7 @@ export class AgentToolRegistry {
     private readonly taskService: TaskService,
     private readonly expService: ExpService,
     private readonly memoryService: MemoryService,
+    private readonly writingCoach: WritingCoachService,
     private readonly isAutoExpScoringEnabled: () => boolean = () => false,
     private readonly getInteractiveModel: () => string = () => "",
     private readonly getCompletionExpSettings: () => {
@@ -296,6 +302,70 @@ export class AgentToolRegistry {
     } = () => ({ enabled: false, automaticAwards: false, automaticScoring: false })
   ) {
     const registered: RegisteredTool[] = [
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "get_writing_coach",
+            description: "Inspect the current continual-writing-coach session, target file, goals, interval, and last pillar.",
+            parameters: { type: "object", properties: {}, additionalProperties: false }
+          }
+        },
+        risk: "read",
+        execute: async () => ({ session: this.writingCoach.status() })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "start_writing_coach",
+            description: "Start persistent interval coaching for one Obsidian Markdown draft. Automatic checks use the configured background OpenRouter model and require approval.",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Vault-relative Markdown draft path." },
+                goals: { type: "string", description: "Purpose, audience, deliverable, and writing priorities." },
+                interval_minutes: { type: "integer", minimum: 1, maximum: 120, description: "Defaults to 10." }
+              },
+              required: ["path", "goals"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "high-write",
+        execute: async (input) => ({
+          session: await this.writingCoach.start(
+            stringArg(input, "path"),
+            stringArg(input, "goals"),
+            numberArg(input, "interval_minutes", 10)
+          ),
+          verified: true
+        })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "check_writing_coach",
+            description: "Run one immediate, single-pillar writing-coach check and log its feedback. Requires approval because it calls OpenRouter.",
+            parameters: { type: "object", properties: {}, additionalProperties: false }
+          }
+        },
+        risk: "low-write",
+        execute: async () => ({ ...await this.writingCoach.checkNow(), verified: true })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "stop_writing_coach",
+            description: "Stop the active continual-writing-coach session while retaining its Markdown feedback log.",
+            parameters: { type: "object", properties: {}, additionalProperties: false }
+          }
+        },
+        risk: "low-write",
+        execute: async () => ({ session: await this.writingCoach.stop(), verified: true })
+      },
       {
         definition: {
           type: "function",
@@ -400,6 +470,7 @@ export class AgentToolRegistry {
             "create, append, patch, replace, rename, move, trash, and update frontmatter after approval",
             "discover and load traditional SKILL.md skills",
             "search and propose approval-gated durable memory fragments",
+            "run opt-in continual writing coaching on one changing Markdown draft",
             "query, inspect, create, update, and complete TaskNotes tasks",
             "score, award, review, and track accomplishment-first task EXP",
             "analyze EXP by task tag or project and track immutable-ledger EXP goals",
@@ -411,7 +482,8 @@ export class AgentToolRegistry {
             "no access to excluded paths",
             "direct sensitive note reads require approval; semantic retrieval follows the user's global semantic consent",
             "chat-requested writes require explicit approval; automatic task EXP writes occur only under the user's global opt-in",
-            "completion detection, automatic completion scoring, and automatic award writes are separately configurable"
+            "completion detection, automatic completion scoring, and automatic award writes are separately configurable",
+            "continual writing checks run only after explicit session approval, while the target draft is active, and after it changes"
           ]
         })
       },
@@ -1244,7 +1316,38 @@ export class AgentToolRegistry {
     let sensitive = false;
     let sensitivityReasons: string[] = [];
     let preview: ToolPreview | undefined;
-    if (call.function.name === "query_tasks") {
+    if (call.function.name === "get_writing_coach") {
+      preview = { title: "Inspect writing coach", details: "Current target, goals, interval, and feedback cycle" };
+    } else if (call.function.name === "start_writing_coach") {
+      const report = await this.vaultTools.inspectSensitivity(stringArg(input, "path"));
+      if (report.sensitive) {
+        throw new Error(`Continual automatic coaching is unavailable for sensitive notes: ${report.reasons.join("; ")}`);
+      }
+      preview = {
+        title: "Start continual writing coach",
+        before: "No new coaching session will start without approval.",
+        after: [
+          `Draft: ${stringArg(input, "path")}`,
+          `Goals: ${stringArg(input, "goals")}`,
+          `Interval: ${numberArg(input, "interval_minutes", 10)} minutes`,
+          "Feedback: one randomly cycled pillar per changed-draft check",
+          "Model: configured background model"
+        ].join("\n"),
+        beforeLabel: "Current state",
+        afterLabel: "Proposed session",
+        details: "Automatic interval checks may incur OpenRouter charges. Feedback is logged under Brain/Coaching."
+      };
+    } else if (call.function.name === "check_writing_coach") {
+      preview = {
+        title: "Check writing now",
+        details: "Run one OpenRouter check on the next pillar and append the nudge to the coaching log."
+      };
+    } else if (call.function.name === "stop_writing_coach") {
+      preview = {
+        title: "Stop continual writing coach",
+        details: "Cancel future checks and retain the existing Markdown feedback log."
+      };
+    } else if (call.function.name === "query_tasks") {
       preview = {
         title: "Find tasks",
         details: taskQueryPreview(input)
@@ -1444,6 +1547,35 @@ export class AgentToolRegistry {
 
   resultPreview(call: ToolCall, value: unknown): ToolPreview | undefined {
     const name = call.function.name;
+    if (["get_writing_coach", "start_writing_coach", "stop_writing_coach"].includes(name)) {
+      const session = recordValue(recordValue(value).session);
+      const exists = Object.keys(session).length > 0;
+      return {
+        title: exists
+          ? `Writing coach ${session.active === true ? "active" : "stopped"}`
+          : "No writing-coach session",
+        after: exists ? [
+          `Draft: ${typeof session.targetPath === "string" ? session.targetPath : ""}`,
+          `Goals: ${typeof session.goals === "string" ? session.goals : ""}`,
+          `Interval: ${typeof session.intervalMinutes === "number" ? session.intervalMinutes : 10} minutes`,
+          `Checks: ${typeof session.checks === "number" ? session.checks : 0}`,
+          `Last pillar: ${typeof session.lastPillar === "string" && session.lastPillar ? session.lastPillar : "none"}`
+        ].join("\n") : "Start a session by supplying a draft, writing goals, and an interval.",
+        afterLabel: "Session",
+        details: typeof session.citation === "string" ? session.citation : undefined
+      };
+    }
+    if (name === "check_writing_coach") {
+      const result = recordValue(value);
+      return {
+        title: "Writing nudge ready",
+        after: typeof result.feedback === "string" ? result.feedback : "Feedback was logged.",
+        afterLabel: typeof result.pillar === "string" ? result.pillar : "Feedback",
+        details: typeof recordValue(result.status).citation === "string"
+          ? String(recordValue(result.status).citation)
+          : undefined
+      };
+    }
     if (name === "query_tasks") {
       const result = recordValue(value);
       const tasks = Array.isArray(result.tasks) ? result.tasks : [];

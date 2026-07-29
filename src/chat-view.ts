@@ -29,6 +29,7 @@ import {
 import { parseSkillInvocation } from "./skill-invocation";
 import { extractFileMentions, fileMention, findAtQuery } from "./file-mentions";
 import type { ExpCompletionProposal } from "./exp-completion-core";
+import type { WritingCoachStatus, WritingPillar } from "./writing-coach";
 
 export const BRAIN_VIEW_TYPE = "obsidian-brain-chat";
 
@@ -93,6 +94,7 @@ const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "skills", usage: "/skills [page]", description: "List installed SKILL.md skills" },
   { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
   { name: "memory", usage: "/memory <text>|list|search|review|forget", description: "Manage durable, reviewable Brain memory" },
+  { name: "coach", usage: "/coach status|check|stop", description: "Inspect or control continual writing feedback" },
   { name: "search", usage: "/search <query> [--mode hybrid|semantic|lexical]", description: "Search the vault and show cited excerpts" },
   { name: "index", usage: "/index status|rebuild|pause|resume|cancel|clear", description: "Inspect and control retrieval indexing" },
   { name: "semantic", usage: "/semantic folders|cap <usd|unlimited>", description: "Configure semantic indexing" },
@@ -114,6 +116,7 @@ const createSystemMessage = (): ChatMessage => ({
     "You can query, inspect, create, update, and complete TaskNotes tasks through the active task provider.",
     "You can use the EXP tools to plan, award, review, and persist accomplishment-first task EXP. Use record_task_exp instead of generic frontmatter writes for EXP.",
     "You can search durable memory and propose concise memory fragments only when the user explicitly confirms a lasting preference, habit, goal, ability, or workflow. Memory writes always require approval.",
+    "You can start an opt-in continual writing coach for a specific Markdown draft. Obtain the user's goals and file first, then use start_writing_coach; never simulate a background session without the tool.",
     "When EXP is recorded, the task's actual title is stored as [EXP] Task title. Use displayTitle and do not add a second prefix.",
     "Before proposing EXP after task creation, call get_environment. If automaticTaskExp is enabled, the background queue owns that write and you must not propose a duplicate score.",
     "Completed-task EXP detection and automatic award behavior are separately configured. Use @exp check for reconciliation and @exp pending for approval-ready completion proposals.",
@@ -790,6 +793,9 @@ export class BrainChatView extends ItemView {
           return;
         case "memory":
           await this.memoryCommand(parts, argument);
+          return;
+        case "coach":
+          await this.coachCommand(parts);
           return;
         case "search":
           await this.searchCommand(parts);
@@ -1698,6 +1704,50 @@ export class BrainChatView extends ItemView {
     }
     const file = await this.plugin.saveLowRiskMemory(raw, "chat command");
     await this.addTerminalOutput(`saved memory fragment · [[${file.path.replace(/\.md$/, "")}]]`);
+  }
+
+  private async coachCommand(parts: string[]): Promise<void> {
+    const action = parts[0]?.toLocaleLowerCase() ?? "status";
+    if (action === "status" && parts.length <= 1) {
+      const status = this.plugin.writingCoach.status();
+      await this.addTerminalOutput(status ? [
+        "## Continual writing coach",
+        "",
+        `Status: **${status.active ? "active" : "stopped"}**`,
+        `Draft: [[${status.targetPath.replace(/\.md$/i, "")}]]`,
+        `Goals: ${status.goals}`,
+        `Interval: ${status.intervalMinutes} minutes`,
+        `Checks: ${status.checks} · last pillar: ${status.lastPillar ?? "none"}`,
+        `Next check: ${status.active ? this.formatDate(status.nextCheckAt) : "none"}`,
+        "",
+        status.citation
+      ].join("\n\n") : "no writing-coach session · activate `@continual-writing-coach` and provide your goals and draft file.");
+      return;
+    }
+    if (action === "check" && parts.length === 1) {
+      await this.plugin.writingCoach.checkNow();
+      return;
+    }
+    if (action === "stop" && parts.length === 1) {
+      const status = await this.plugin.writingCoach.stop();
+      await this.addTerminalOutput(`writing coach stopped after **${status.checks}** check${status.checks === 1 ? "" : "s"} · ${status.citation}`);
+      return;
+    }
+    await this.addTerminalOutput("usage: `/coach status|check|stop`", "error");
+  }
+
+  async showWritingCoachNudge(
+    pillar: WritingPillar,
+    feedback: string,
+    status: WritingCoachStatus
+  ): Promise<void> {
+    await this.addTerminalOutput([
+      `## Writing nudge · ${pillar}`,
+      "",
+      feedback,
+      "",
+      `${status.checks} check${status.checks === 1 ? "" : "s"} · next in ${status.intervalMinutes} minutes · ${status.citation}`
+    ].join("\n"));
   }
 
   private addCommandEcho(command: string): void {

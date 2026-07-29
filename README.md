@@ -29,6 +29,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Optional OpenRouter server-side web search alongside Brain's local vault tools.
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
+- Continual writing-coach sessions with approval-gated timed checks, a randomized balanced five-pillar cycle, and a readable Markdown feedback log.
 - Bundled EXP skill with a calibrated 25-1000 accomplishment-first rubric, approval-gated task scoring, and repeat-award protection.
 - Flat TaskNotes-compatible EXP frontmatter plus an immutable Markdown event ledger for totals, recurring-task history, streaks, levels, and calibration reviews.
 - Event-driven task-completion detection with idempotent recurring awards, `@exp check` reconciliation, and an approval-ready Markdown queue.
@@ -100,6 +101,7 @@ for explicit activation, and `/skill exp history` is an EXP-view alias.
 /skills [page]
 /skill <name>
 /memory <text>|list|review|search <words>|forget <path> --confirm
+/coach status|check|stop
 /search <query> [--mode hybrid|semantic|lexical] [--folder path] [--tag tag] [--property key=value] [--limit n]
 /index status
 /index rebuild
@@ -122,6 +124,18 @@ for explicit activation, and `/skill exp history` is an EXP-view alias.
 Plain text still starts or continues a model conversation. Read tools execute
 automatically. Write and sensitive-read previews pause the agent and accept
 `/approve` or `/deny` directly from the terminal prompt.
+
+`@continual-writing-coach` starts an ongoing coaching workflow. Give Brain a
+writing goal, an `@[[path/to/draft.md]]` file mention, and optionally an
+interval (10 minutes by default). After one explicit approval, Brain checks
+only while that draft is the active note and only after its contents change.
+Each check chooses one pillar from a shuffled cycle—cohesion, grammar, task
+achievement, content, or organisation—and returns one brief observation plus
+one next action. The configured background OpenRouter model performs the
+checks, so they may incur model charges. `/coach check` requests a nudge now,
+`/coach status` shows the session, and `/coach stop` ends it. Session state and
+feedback remain readable under `Brain/Coaching/writing-session.md`; sensitive
+or excluded notes cannot be enrolled in automatic coaching.
 
 Tool-capable models can query, inspect, create, update, and complete tasks;
 manage blocking dependencies; and start or stop TaskNotes time tracking.
@@ -210,6 +224,10 @@ result against its own exclusions and sensitive-content policy and skips its
 complete-vault lexical scan at startup. If Omnisearch is disabled, unavailable,
 or errors, the persistent built-in index loads cached notes and rereads only
 new or changed Markdown.
+Bundled skills are installed only when their bundle version changes, and
+vault-triggered skill rescans are debounced. Catalog, lexical, EXP, and
+semantic initialization are scheduled in separate post-layout phases to reduce
+plugin `onload` work and startup contention.
 Changing excluded paths or sensitive tags immediately cancels active indexing,
 purges stale eligibility, and rebuilds both lexical and enabled semantic
 coverage. Task privacy checks inspect the actual Markdown body and frontmatter,

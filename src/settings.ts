@@ -34,6 +34,7 @@ export interface BrainSettings {
   semanticVaultId: string;
   excludedPaths: string[];
   sensitiveTags: string[];
+  bundledSkillsVersion: number;
 }
 
 export const DEFAULT_SETTINGS: BrainSettings = {
@@ -62,7 +63,8 @@ export const DEFAULT_SETTINGS: BrainSettings = {
   semanticSpendCapUsd: 0.25,
   semanticVaultId: "",
   excludedPaths: [".obsidian", "Brain/Chats", "Brain/Skills"],
-  sensitiveTags: ["private", "sensitive", "secret", "confidential"]
+  sensitiveTags: ["private", "sensitive", "secret", "confidential"],
+  bundledSkillsVersion: 0
 };
 
 export class BrainSettingTab extends PluginSettingTab {

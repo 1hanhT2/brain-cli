@@ -3,6 +3,9 @@ import { brainPath } from "./data-layout";
 import type { BrainSettings } from "./settings";
 import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SCHEMA, EXP_SKILL } from "./bundled-exp-skill";
 import { ensureFolders, type LayoutPathKind } from "./folder-layout";
+import WRITING_COACH_SKILL from "../skills/continual-writing-coach/SKILL.md";
+import WRITING_COACH_PILLARS from "../skills/continual-writing-coach/references/pillars.md";
+import WRITING_COACH_AGENT_METADATA from "../skills/continual-writing-coach/agents/openai.yaml";
 
 export interface SkillMetadata {
   name: string;
@@ -22,6 +25,7 @@ const EXP_COMPLETIONS: SkillCompletion[] = [
   { value: "status", description: "Show EXP totals, level, and streaks" },
   { value: "check", description: "Reconcile newly completed tasks and process their EXP" },
   { value: "pending", description: "Review pending completion awards" },
+  { value: "score-completed", description: "Batch-score completed tasks that need EXP" },
   { value: "history", description: "Browse the EXP ledger" },
   { value: "review", description: "Review scoring consistency" },
   { value: "analytics", description: "Show EXP by tag and project" },
@@ -35,6 +39,13 @@ const EXP_COMPLETIONS_YAML = EXP_COMPLETIONS
   .join("\n");
 const LEGACY_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created. This remains a separate approval. Tasks created directly in TaskNotes are not sent to a model automatically; score them when the user invokes this skill or asks for unscored tasks.";
 const CURRENT_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.";
+const BUNDLED_SKILLS_VERSION = 2;
+const WRITING_COACH_COMPLETIONS: SkillCompletion[] = [
+  { value: "start", description: "Start timed coaching for a writing note" },
+  { value: "status", description: "Show the current coaching session" },
+  { value: "check", description: "Request one focused writing nudge now" },
+  { value: "stop", description: "Stop the current coaching session" }
+];
 
 export class SkillRegistry {
   private skills = new Map<string, SkillMetadata>();
@@ -43,14 +54,19 @@ export class SkillRegistry {
 
   constructor(
     private readonly app: App,
-    private readonly getSettings: () => BrainSettings
+    private readonly getSettings: () => BrainSettings,
+    private readonly persistBundledVersion: (version: number) => Promise<void> = async () => undefined
   ) {}
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
     if (this.initialization) return this.initialization;
     this.initialization = (async () => {
-      await this.ensureBundledExpSkill();
+      if (this.getSettings().bundledSkillsVersion < BUNDLED_SKILLS_VERSION) {
+        await this.ensureBundledSkills();
+        this.getSettings().bundledSkillsVersion = BUNDLED_SKILLS_VERSION;
+        await this.persistBundledVersion(BUNDLED_SKILLS_VERSION);
+      }
       await this.refresh();
       this.initialized = true;
     })();
@@ -159,18 +175,24 @@ export class SkillRegistry {
       folder: file.parent?.path ?? "",
       completions: completions.length > 0
         ? completions
-        : name === "exp" ? EXP_COMPLETIONS : []
+        : name === "exp" ? EXP_COMPLETIONS
+          : name === "continual-writing-coach" ? WRITING_COACH_COMPLETIONS
+            : []
     };
   }
 
-  private async ensureBundledExpSkill(): Promise<void> {
-    const root = brainPath(this.getSettings(), "Skills/exp");
+  private async ensureBundledSkills(): Promise<void> {
+    const expRoot = brainPath(this.getSettings(), "Skills/exp");
+    const coachRoot = brainPath(this.getSettings(), "Skills/continual-writing-coach");
     const files = [
-      { path: `${root}/SKILL.md`, content: EXP_SKILL },
-      { path: `${root}/agents/openai.yaml`, content: EXP_AGENT_METADATA },
-      { path: `${root}/references/rubric.md`, content: EXP_RUBRIC },
-      { path: `${root}/references/examples.md`, content: EXP_EXAMPLES },
-      { path: `${root}/references/schema.md`, content: EXP_SCHEMA }
+      { path: `${expRoot}/SKILL.md`, content: EXP_SKILL },
+      { path: `${expRoot}/agents/openai.yaml`, content: EXP_AGENT_METADATA },
+      { path: `${expRoot}/references/rubric.md`, content: EXP_RUBRIC },
+      { path: `${expRoot}/references/examples.md`, content: EXP_EXAMPLES },
+      { path: `${expRoot}/references/schema.md`, content: EXP_SCHEMA },
+      { path: `${coachRoot}/SKILL.md`, content: WRITING_COACH_SKILL },
+      { path: `${coachRoot}/agents/openai.yaml`, content: WRITING_COACH_AGENT_METADATA },
+      { path: `${coachRoot}/references/pillars.md`, content: WRITING_COACH_PILLARS }
     ];
     for (const entry of files) {
       const existing = await this.getPathKind(entry.path);
@@ -179,10 +201,10 @@ export class SkillRegistry {
         if (file instanceof TFile) {
           const content = await this.app.vault.cachedRead(file);
           let migrated = content;
-          if (entry.path === `${root}/SKILL.md`) {
+          if (entry.path === `${expRoot}/SKILL.md`) {
             migrated = this.migrateExpSkill(migrated);
           } else if (
-            entry.path === `${root}/references/schema.md`
+            entry.path === `${expRoot}/references/schema.md`
             && !migrated.includes('title: "[EXP] Task title"')
           ) {
             migrated = migrated.replace(
@@ -190,7 +212,7 @@ export class SkillRegistry {
               'The task note stores its current EXP state in flat frontmatter:\n\n- `title: "[EXP] Task title"` (existing numeric prefixes are replaced)\n'
             );
           }
-          if (entry.path === `${root}/references/schema.md`) {
+          if (entry.path === `${expRoot}/references/schema.md`) {
             migrated = migrated.replace("- `exp_schema: 1`", "- `exp_schema: 2`");
             if (!migrated.includes("exp_task_id")) {
               migrated = migrated.replace(
@@ -250,6 +272,15 @@ export class SkillRegistry {
       ].join("\n");
       const expanded = currentFrontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
       migrated = `${expanded}${migrated.slice(currentFrontmatter.length)}`;
+    }
+    const latestFrontmatter = migrated.match(FRONTMATTER_PATTERN)?.[0] ?? "";
+    if (latestFrontmatter && !latestFrontmatter.includes("value: score-completed")) {
+      const additions = [
+        "  - value: score-completed",
+        "    description: Batch-score completed tasks that need EXP"
+      ].join("\n");
+      const expanded = latestFrontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
+      migrated = `${expanded}${migrated.slice(latestFrontmatter.length)}`;
     }
     return migrated;
   }

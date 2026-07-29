@@ -7,7 +7,7 @@ export const brainPath = (settings: BrainSettings, child = "") =>
 
 export async function ensureBrainLayout(vault: Vault, settings: BrainSettings): Promise<void> {
   const folders = [
-    "", "Chats", "Memory", "Calibration", "EXP", "EXP/Ledger", "Settings",
+    "", "Chats", "Memory", "Calibration", "Coaching", "EXP", "EXP/Ledger", "Settings",
     "Queue", "Queue/EXP", "Queue/EXP/Pending", "Skills"
   ];
   const paths = folders.map((folder) => brainPath(settings, folder));
