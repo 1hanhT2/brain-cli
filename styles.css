@@ -140,6 +140,37 @@
   scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-bg);
 }
 
+/*
+ * Obsidian treats much of its application chrome as non-selectable UI.
+ * Brain's transcript is document content, so restore native text selection
+ * explicitly instead of relying on theme-specific inheritance.
+ */
+.brain-cli-transcript,
+.brain-cli-message-body,
+.brain-cli-terminal-output-body,
+.brain-cli-tool-preview,
+.brain-cli-tool-result,
+.brain-cli-tool-error,
+.brain-cli-tool-sources,
+.brain-cli-tool-details pre,
+.brain-cli-diff pre,
+.brain-cli-skill-event {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.brain-cli-message-body,
+.brain-cli-terminal-output-body,
+.brain-cli-tool-preview,
+.brain-cli-tool-result,
+.brain-cli-tool-error,
+.brain-cli-tool-sources,
+.brain-cli-tool-details pre,
+.brain-cli-diff pre,
+.brain-cli-skill-event {
+  cursor: text;
+}
+
 .brain-cli-load-earlier {
   display: block;
   width: min(100%, var(--brain-content-width));

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { AgentToolRegistry } from "../src/agent-tools";
 import { isVaultPathSafe, requiresApproval } from "../src/permissions";
@@ -62,6 +63,29 @@ const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
   type: "function" as const,
   function: { name, arguments: JSON.stringify(input) }
+});
+
+test("release metadata versions stay aligned", () => {
+  const manifest = JSON.parse(readFileSync("manifest.json", "utf8")) as { id: string; version: string };
+  const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { name: string; version: string };
+  const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8")) as {
+    name: string;
+    version: string;
+    packages: Record<string, { name?: string; version?: string }>;
+  };
+
+  assert.equal(manifest.id, "brain-cli");
+  assert.equal(packageJson.name, manifest.id);
+  assert.equal(packageLock.name, manifest.id);
+  assert.equal(packageJson.version, manifest.version);
+  assert.equal(packageLock.version, manifest.version);
+  assert.equal(packageLock.packages[""]?.version, manifest.version);
+});
+
+test("transcript content explicitly restores native text selection", () => {
+  const styles = readFileSync("styles.css", "utf8");
+  assert.match(styles, /\.brain-cli-transcript,[\s\S]*?-webkit-user-select:\s*text;/);
+  assert.match(styles, /\.brain-cli-message-body,[\s\S]*?cursor:\s*text;/);
 });
 
 const makeRegistry = (vaultTools: VaultTools): AgentToolRegistry =>
