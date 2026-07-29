@@ -158,6 +158,20 @@ const previewText = (value: string): string =>
 const recordValue = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
+const writingCoachInputInterval = (input: Record<string, unknown>): string => {
+  const minimum = numberArg(input, "interval_min_minutes", numberArg(input, "interval_minutes", 10));
+  const maximum = numberArg(input, "interval_max_minutes", minimum);
+  return minimum === maximum
+    ? `${minimum} minutes`
+    : `${minimum}–${maximum} minutes, randomized after each check`;
+};
+
+const writingCoachSessionInterval = (session: Record<string, unknown>): string => {
+  const minimum = typeof session.intervalMinutes === "number" ? session.intervalMinutes : 10;
+  const maximum = typeof session.intervalMaxMinutes === "number" ? session.intervalMaxMinutes : minimum;
+  return minimum === maximum ? `${minimum} minutes` : `${minimum}–${maximum} minutes`;
+};
+
 const TOOL_LABELS: Record<string, string> = {
   query_tasks: "Find tasks",
   get_task: "Inspect task",
@@ -325,7 +339,9 @@ export class AgentToolRegistry {
               properties: {
                 path: { type: "string", description: "Vault-relative Markdown draft path." },
                 goals: { type: "string", description: "Purpose, audience, deliverable, and writing priorities." },
-                interval_minutes: { type: "integer", minimum: 1, maximum: 120, description: "Defaults to 10." }
+                interval_minutes: { type: "integer", minimum: 1, maximum: 120, description: "Fixed interval. Defaults to 10 when no range is supplied." },
+                interval_min_minutes: { type: "integer", minimum: 1, maximum: 120, description: "Minimum delay for a randomized interval range." },
+                interval_max_minutes: { type: "integer", minimum: 1, maximum: 120, description: "Maximum delay for a randomized interval range." }
               },
               required: ["path", "goals"],
               additionalProperties: false
@@ -337,7 +353,12 @@ export class AgentToolRegistry {
           session: await this.writingCoach.start(
             stringArg(input, "path"),
             stringArg(input, "goals"),
-            numberArg(input, "interval_minutes", 10)
+            numberArg(input, "interval_min_minutes", numberArg(input, "interval_minutes", 10)),
+            numberArg(
+              input,
+              "interval_max_minutes",
+              numberArg(input, "interval_min_minutes", numberArg(input, "interval_minutes", 10))
+            )
           ),
           verified: true
         })
@@ -1329,7 +1350,7 @@ export class AgentToolRegistry {
         after: [
           `Draft: ${stringArg(input, "path")}`,
           `Goals: ${stringArg(input, "goals")}`,
-          `Interval: ${numberArg(input, "interval_minutes", 10)} minutes`,
+          `Interval: ${writingCoachInputInterval(input)}`,
           "Feedback: one randomly cycled pillar per changed-draft check",
           "Model: configured background model"
         ].join("\n"),
@@ -1557,7 +1578,8 @@ export class AgentToolRegistry {
         after: exists ? [
           `Draft: ${typeof session.targetPath === "string" ? session.targetPath : ""}`,
           `Goals: ${typeof session.goals === "string" ? session.goals : ""}`,
-          `Interval: ${typeof session.intervalMinutes === "number" ? session.intervalMinutes : 10} minutes`,
+          `Interval: ${writingCoachSessionInterval(session)}`,
+          `Next interval: ${typeof session.scheduledIntervalMinutes === "number" ? session.scheduledIntervalMinutes : 10} minutes`,
           `Checks: ${typeof session.checks === "number" ? session.checks : 0}`,
           `Last pillar: ${typeof session.lastPillar === "string" && session.lastPillar ? session.lastPillar : "none"}`
         ].join("\n") : "Start a session by supplying a draft, writing goals, and an interval.",

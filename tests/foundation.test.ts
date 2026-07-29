@@ -13,6 +13,7 @@ import {
 import { compactConversation, estimateMessageTokens } from "../src/context-manager";
 import { reciprocalRankFusion, VaultRetrievalIndex, type RankedChunk } from "../src/retrieval-index";
 import type { SkillRegistry } from "../src/skill-registry";
+import { canonicalSkillName, skillAliases } from "../src/skill-aliases";
 import type { App, TFile } from "obsidian";
 import type { SensitiveContentGuard } from "../src/sensitive-content";
 import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SCHEMA, EXP_SKILL } from "../src/bundled-exp-skill";
@@ -55,6 +56,7 @@ import { parseExpScoringResponse, type ExpAutoScorer } from "../src/exp-auto-sco
 import { extractFileMentions, fileMention, findAtQuery } from "../src/file-mentions";
 import { ExpCompletionCoordinator } from "../src/exp-completion";
 import { completionProposalId, type ExpCompletionProposal } from "../src/exp-completion-core";
+import { chooseWritingCoachInterval } from "../src/writing-coach-core";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -155,6 +157,15 @@ test("@ skill invocations support toggles and inline prompts", () => {
   });
   assert.equal(parseSkillInvocation("@"), null);
   assert.equal(parseSkillInvocation("@bad/name prompt"), null);
+  assert.equal(canonicalSkillName("cwc"), "continual-writing-coach");
+  assert.equal(canonicalSkillName("CONTINUAL-WRITING-COACH"), "continual-writing-coach");
+  assert.deepEqual(skillAliases("continual-writing-coach"), ["cwc"]);
+});
+
+test("writing-coach ranges choose inclusive delays and preserve fixed intervals", () => {
+  assert.equal(chooseWritingCoachInterval(5, 10, () => 0), 5);
+  assert.equal(chooseWritingCoachInterval(5, 10, () => 0.999999), 10);
+  assert.equal(chooseWritingCoachInterval(7, 7, () => 0.5), 7);
 });
 
 test("@ file mentions identify the active token and preserve canonical vault paths", () => {

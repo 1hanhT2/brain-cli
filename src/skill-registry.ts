@@ -6,9 +6,11 @@ import { ensureFolders, type LayoutPathKind } from "./folder-layout";
 import WRITING_COACH_SKILL from "../skills/continual-writing-coach/SKILL.md";
 import WRITING_COACH_PILLARS from "../skills/continual-writing-coach/references/pillars.md";
 import WRITING_COACH_AGENT_METADATA from "../skills/continual-writing-coach/agents/openai.yaml";
+import { canonicalSkillName, skillAliases } from "./skill-aliases";
 
 export interface SkillMetadata {
   name: string;
+  aliases: string[];
   description: string;
   path: string;
   folder: string;
@@ -39,14 +41,13 @@ const EXP_COMPLETIONS_YAML = EXP_COMPLETIONS
   .join("\n");
 const LEGACY_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created. This remains a separate approval. Tasks created directly in TaskNotes are not sent to a model automatically; score them when the user invokes this skill or asks for unscored tasks.";
 const CURRENT_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.";
-const BUNDLED_SKILLS_VERSION = 2;
+const BUNDLED_SKILLS_VERSION = 4;
 const WRITING_COACH_COMPLETIONS: SkillCompletion[] = [
-  { value: "start", description: "Start timed coaching for a writing note" },
+  { value: "Coach ", description: "Add a draft file, interval, and writing goal" },
   { value: "status", description: "Show the current coaching session" },
   { value: "check", description: "Request one focused writing nudge now" },
   { value: "stop", description: "Stop the current coaching session" }
 ];
-
 export class SkillRegistry {
   private skills = new Map<string, SkillMetadata>();
   private initialized = false;
@@ -99,7 +100,7 @@ export class SkillRegistry {
   }
 
   get(name: string): SkillMetadata | undefined {
-    return this.skills.get(name.trim().toLocaleLowerCase());
+    return this.skills.get(canonicalSkillName(name));
   }
 
   async load(name: string): Promise<{ metadata: SkillMetadata; instructions: string }> {
@@ -145,7 +146,9 @@ export class SkillRegistry {
 
   catalogPrompt(): string {
     if (this.skills.size === 0) return "No skills are installed.";
-    return this.list().map((skill) => `- ${skill.name}: ${skill.description}`).join("\n");
+    return this.list().map((skill) =>
+      `- ${skill.name}${skill.aliases.length ? ` (aliases: ${skill.aliases.join(", ")})` : ""}: ${skill.description}`
+    ).join("\n");
   }
 
   private parseMetadata(file: TFile, content: string): SkillMetadata {
@@ -170,6 +173,7 @@ export class SkillRegistry {
     if (!description) throw new Error("Skill description is required.");
     return {
       name,
+      aliases: skillAliases(name),
       description,
       path: file.path,
       folder: file.parent?.path ?? "",
@@ -203,6 +207,8 @@ export class SkillRegistry {
           let migrated = content;
           if (entry.path === `${expRoot}/SKILL.md`) {
             migrated = this.migrateExpSkill(migrated);
+          } else if (entry.path === `${coachRoot}/SKILL.md`) {
+            migrated = this.migrateWritingCoachSkill(migrated);
           } else if (
             entry.path === `${expRoot}/references/schema.md`
             && !migrated.includes('title: "[EXP] Task title"')
@@ -281,6 +287,28 @@ export class SkillRegistry {
       ].join("\n");
       const expanded = latestFrontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
       migrated = `${expanded}${migrated.slice(latestFrontmatter.length)}`;
+    }
+    return migrated;
+  }
+
+  private migrateWritingCoachSkill(content: string): string {
+    let migrated = content;
+    if (!migrated.includes("## Invocations")) {
+      const section = [
+        "## Invocations",
+        "",
+        "Use `@continual-writing-coach` or its short alias `@cwc`. The explicit CLI form is `/skill continual-writing-coach` or `/skill cwc`. Keep all controls inside the skill invocation.",
+        "",
+        "Accept the draft, interval, and goal in natural language. For example: `@cwc Coach @[[Writing/IELTS Essay.md]] every 1 minute. Goal: write an IELTS essay.` When all three are present, start directly without asking the writer to repeat them. Use `status`, `check`, and `stop` as skill actions.",
+        ""
+      ].join("\n");
+      migrated = migrated.replace("# Continual Writing Coach\n\n", `# Continual Writing Coach\n\n${section}`);
+    }
+    if (!migrated.includes("A range chooses a fresh random delay")) {
+      migrated = migrated.replace(
+        "Accept the draft, interval, and goal in natural language.",
+        "Accept the draft, interval, and goal in natural language. The interval may be fixed (`every 10 minutes`) or a range (`every 5–10 minutes`). A range chooses a fresh random delay within its bounds for every next check."
+      );
     }
     return migrated;
   }

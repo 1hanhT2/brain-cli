@@ -99,9 +99,8 @@ for explicit activation, and `/skill exp history` is an EXP-view alias.
 /embedding pause|resume|cancel
 /embedding-favorite [number|id]
 /skills [page]
-/skill <name>
+/skill <name> [request]
 /memory <text>|list|review|search <words>|forget <path> --confirm
-/coach status|check|stop
 /search <query> [--mode hybrid|semantic|lexical] [--folder path] [--tag tag] [--property key=value] [--limit n]
 /index status
 /index rebuild
@@ -125,15 +124,18 @@ Plain text still starts or continues a model conversation. Read tools execute
 automatically. Write and sensitive-read previews pause the agent and accept
 `/approve` or `/deny` directly from the terminal prompt.
 
-`@continual-writing-coach` starts an ongoing coaching workflow. Give Brain a
-writing goal, an `@[[path/to/draft.md]]` file mention, and optionally an
-interval (10 minutes by default). After one explicit approval, Brain checks
+`@continual-writing-coach` or its short alias `@cwc` starts an ongoing coaching workflow. Give Brain a
+writing goal, an `@[[path/to/draft.md]]` file mention, and optionally a fixed
+interval or range (10 minutes by default). For example, `every 5–10 minutes`
+chooses a new random delay inside that range before each next check. After one explicit approval, Brain checks
 only while that draft is the active note and only after its contents change.
 Each check chooses one pillar from a shuffled cycle—cohesion, grammar, task
 achievement, content, or organisation—and returns one brief observation plus
 one next action. The configured background OpenRouter model performs the
-checks, so they may incur model charges. `/coach check` requests a nudge now,
-`/coach status` shows the session, and `/coach stop` ends it. Session state and
+checks, so they may incur model charges. `@cwc check` requests a nudge now,
+`@cwc status` shows the session, and `@cwc stop` ends it. The corresponding
+explicit forms are `/skill cwc check`, `/skill cwc status`, and `/skill cwc
+stop`. All coach controls remain within the skill invocation. Session state and
 feedback remain readable under `Brain/Coaching/writing-session.md`; sensitive
 or excluded notes cannot be enrolled in automatic coaching.
 

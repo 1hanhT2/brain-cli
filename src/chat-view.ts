@@ -66,6 +66,7 @@ interface HandledToolCall {
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
 const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate", "check", "pending", "score-completed", "analytics", "goals"]);
+const WRITING_COACH_LOCAL_ACTIONS = new Set(["status", "check", "stop"]);
 const EMBEDDING_MANAGEMENT_ACTIONS = new Set(["status", "refresh", "delete", "pause", "resume", "cancel"]);
 const TRANSCRIPT_INITIAL_MESSAGES = 40;
 const TRANSCRIPT_PAGE_MESSAGES = 40;
@@ -92,9 +93,8 @@ const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "embedding", usage: "/embedding <model|status|refresh|delete|pause|resume>", description: "Select a model or manage the embedding database" },
   { name: "embedding-favorite", usage: "/embedding-favorite [number|id]", description: "Toggle an embedding model favorite" },
   { name: "skills", usage: "/skills [page]", description: "List installed SKILL.md skills" },
-  { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
+  { name: "skill", usage: "/skill <name> [request]", description: "Activate or invoke a skill" },
   { name: "memory", usage: "/memory <text>|list|search|review|forget", description: "Manage durable, reviewable Brain memory" },
-  { name: "coach", usage: "/coach status|check|stop", description: "Inspect or control continual writing feedback" },
   { name: "search", usage: "/search <query> [--mode hybrid|semantic|lexical]", description: "Search the vault and show cited excerpts" },
   { name: "index", usage: "/index status|rebuild|pause|resume|cancel|clear", description: "Inspect and control retrieval indexing" },
   { name: "semantic", usage: "/semantic folders|cap <usd|unlimited>", description: "Configure semantic indexing" },
@@ -116,7 +116,6 @@ const createSystemMessage = (): ChatMessage => ({
     "You can query, inspect, create, update, and complete TaskNotes tasks through the active task provider.",
     "You can use the EXP tools to plan, award, review, and persist accomplishment-first task EXP. Use record_task_exp instead of generic frontmatter writes for EXP.",
     "You can search durable memory and propose concise memory fragments only when the user explicitly confirms a lasting preference, habit, goal, ability, or workflow. Memory writes always require approval.",
-    "You can start an opt-in continual writing coach for a specific Markdown draft. Obtain the user's goals and file first, then use start_writing_coach; never simulate a background session without the tool.",
     "When EXP is recorded, the task's actual title is stored as [EXP] Task title. Use displayTitle and do not add a second prefix.",
     "Before proposing EXP after task creation, call get_environment. If automaticTaskExp is enabled, the background queue owns that write and you must not propose a duplicate score.",
     "Completed-task EXP detection and automatic award behavior are separately configured. Use @exp check for reconciliation and @exp pending for approval-ready completion proposals.",
@@ -589,7 +588,8 @@ export class BrainChatView extends ItemView {
       }
       await this.plugin.skillRegistry.initialize();
       await this.plugin.skillRegistry.refresh();
-      if (!this.plugin.skillRegistry.get(invocation.name)) {
+      const invokedSkill = this.plugin.skillRegistry.get(invocation.name);
+      if (!invokedSkill) {
         await this.addTerminalOutput(`skill not found: \`@${invocation.name}\` · type \`@\` to list skills`, "error");
         return;
       }
@@ -603,6 +603,17 @@ export class BrainChatView extends ItemView {
         this.addCommandEcho(text);
         await this.activateSkill(invocation.name, false);
         await this.expCommand(skillParts);
+        return;
+      }
+      if (
+        invokedSkill.name === "continual-writing-coach"
+        && WRITING_COACH_LOCAL_ACTIONS.has(skillParts[0]?.toLocaleLowerCase() ?? "")
+        && skillParts.length === 1
+      ) {
+        this.addCommandEcho(text);
+        await this.activateSkill(invokedSkill.name, false);
+        await this.persistCurrentChat();
+        await this.writingCoachSkillCommand(skillParts);
         return;
       }
       await this.activateSkill(invocation.name, false);
@@ -781,21 +792,34 @@ export class BrainChatView extends ItemView {
           await this.handleSkillCommand("", parts);
           return;
         case "skill":
+          await this.plugin.skillRegistry.initialize();
           if (
             parts[0]?.toLocaleLowerCase() === "exp"
             && EXP_LOCAL_ACTIONS.has(parts[1]?.toLocaleLowerCase() ?? "")
           ) {
             await this.handleSkillCommand("exp");
             await this.expCommand(parts.slice(1));
+          } else if (parts.length > 1) {
+            const requestedName = parts[0] ?? "";
+            const skill = this.plugin.skillRegistry.get(requestedName);
+            const request = argument.slice(requestedName.length).trim();
+            if (
+              skill?.name === "continual-writing-coach"
+              && WRITING_COACH_LOCAL_ACTIONS.has(parts[1]?.toLocaleLowerCase() ?? "")
+              && parts.length === 2
+            ) {
+              await this.activateSkill(skill.name, false);
+              await this.persistCurrentChat();
+              await this.writingCoachSkillCommand(parts.slice(1));
+            } else {
+              await this.handleInput(`@${requestedName} ${request}`);
+            }
           } else {
             await this.handleSkillCommand(argument);
           }
           return;
         case "memory":
           await this.memoryCommand(parts, argument);
-          return;
-        case "coach":
-          await this.coachCommand(parts);
           return;
         case "search":
           await this.searchCommand(parts);
@@ -1706,7 +1730,7 @@ export class BrainChatView extends ItemView {
     await this.addTerminalOutput(`saved memory fragment · [[${file.path.replace(/\.md$/, "")}]]`);
   }
 
-  private async coachCommand(parts: string[]): Promise<void> {
+  private async writingCoachSkillCommand(parts: string[]): Promise<void> {
     const action = parts[0]?.toLocaleLowerCase() ?? "status";
     if (action === "status" && parts.length <= 1) {
       const status = this.plugin.writingCoach.status();
@@ -1716,7 +1740,8 @@ export class BrainChatView extends ItemView {
         `Status: **${status.active ? "active" : "stopped"}**`,
         `Draft: [[${status.targetPath.replace(/\.md$/i, "")}]]`,
         `Goals: ${status.goals}`,
-        `Interval: ${status.intervalMinutes} minutes`,
+        `Interval: ${this.writingCoachInterval(status)}`,
+        `Next interval: ${status.scheduledIntervalMinutes} minutes`,
         `Checks: ${status.checks} · last pillar: ${status.lastPillar ?? "none"}`,
         `Next check: ${status.active ? this.formatDate(status.nextCheckAt) : "none"}`,
         "",
@@ -1733,7 +1758,7 @@ export class BrainChatView extends ItemView {
       await this.addTerminalOutput(`writing coach stopped after **${status.checks}** check${status.checks === 1 ? "" : "s"} · ${status.citation}`);
       return;
     }
-    await this.addTerminalOutput("usage: `/coach status|check|stop`", "error");
+    await this.addTerminalOutput("usage: `@cwc status|check|stop` or `/skill cwc status|check|stop`", "error");
   }
 
   async showWritingCoachNudge(
@@ -1746,8 +1771,14 @@ export class BrainChatView extends ItemView {
       "",
       feedback,
       "",
-      `${status.checks} check${status.checks === 1 ? "" : "s"} · next in ${status.intervalMinutes} minutes · ${status.citation}`
+      `${status.checks} check${status.checks === 1 ? "" : "s"} · next in ${status.scheduledIntervalMinutes} minutes · ${status.citation}`
     ].join("\n"));
+  }
+
+  private writingCoachInterval(status: WritingCoachStatus): string {
+    return status.intervalMinutes === status.intervalMaxMinutes
+      ? `${status.intervalMinutes} minutes`
+      : `${status.intervalMinutes}–${status.intervalMaxMinutes} minutes, randomized`;
   }
 
   private addCommandEcho(command: string): void {
@@ -2773,7 +2804,9 @@ export class BrainChatView extends ItemView {
         ? [
             "## Installed skills",
             "",
-            ...paged.items.map((skill) => `- **${skill.name}** — ${skill.description}`),
+            ...paged.items.map((skill) =>
+              `- **${skill.name}**${skill.aliases.length ? ` (alias: ${skill.aliases.map((alias) => `@${alias}`).join(", ")})` : ""} — ${skill.description}`
+            ),
             "",
             this.paginationLine(paged, "skills", (target) => `/skills ${target}`)
           ].join("\n")
@@ -2795,14 +2828,15 @@ export class BrainChatView extends ItemView {
   }
 
   private async toggleSkill(name: string): Promise<void> {
-    const marker = `[Active skill: ${name.toLocaleLowerCase()}]`;
+    const canonical = this.plugin.skillRegistry.get(name)?.name ?? name.toLocaleLowerCase();
+    const marker = `[Active skill: ${canonical}]`;
     const activeIndex = this.messages.findIndex((message) =>
       message.role === "system" && message.content.startsWith(marker)
     );
     if (activeIndex >= 0) {
       this.messages.splice(activeIndex, 1);
       await this.persistCurrentChat();
-      await this.addTerminalOutput(`disabled **${name}** for this conversation`);
+      await this.addTerminalOutput(`disabled **${canonical}** for this conversation`);
       return;
     }
     await this.activateSkill(name, false);
@@ -2827,8 +2861,8 @@ export class BrainChatView extends ItemView {
   }
 
   private async activateSkill(name: string, automatic: boolean): Promise<boolean> {
-    const marker = `[Active skill: ${name.toLocaleLowerCase()}]`;
     const skill = await this.plugin.skillRegistry.load(name);
+    const marker = `[Active skill: ${skill.metadata.name}]`;
     const content = `${marker}\n${skill.instructions}`;
     const activeIndex = this.messages.findIndex((message) =>
       message.role === "system" && message.content.startsWith(marker)
@@ -3164,15 +3198,16 @@ export class BrainChatView extends ItemView {
       const query = atQuery.query.toLocaleLowerCase().replace(/\\/g, "/");
       const skills = atQuery.start === 0
         ? this.plugin.skillRegistry.list()
-          .filter((skill) => skill.name.startsWith(query))
-          .map((skill): InputSuggestion => ({
-            kind: "skill",
-            name: skill.name,
-            usage: `@${skill.name}`,
-            description: `${skill.description} · Skill`,
-            replaceStart: atQuery.start,
-            replaceEnd: atQuery.end
-          }))
+          .flatMap((skill) => [skill.name, ...skill.aliases].map((invocationName) => ({ skill, invocationName })))
+          .filter(({ invocationName }) => invocationName.startsWith(query))
+          .map(({ skill, invocationName }): InputSuggestion => ({
+              kind: "skill",
+              name: invocationName,
+              usage: `@${invocationName}`,
+              description: `${skill.description}${invocationName !== skill.name ? ` · Alias for ${skill.name}` : ""} · Skill`,
+              replaceStart: atQuery.start,
+              replaceEnd: atQuery.end
+            }))
         : [];
       const files = this.app.vault.getMarkdownFiles()
         .map((file) => {
@@ -3229,6 +3264,7 @@ export class BrainChatView extends ItemView {
       const match = value.match(/^@([a-z0-9-]{1,63})\s+(.*)$/i);
       const skill = match ? this.plugin.skillRegistry.get(match[1].toLocaleLowerCase()) : undefined;
       if (skill) {
+        const invocationName = match?.[1]?.toLocaleLowerCase() ?? skill.name;
         const query = match?.[2]?.toLocaleLowerCase() ?? "";
         const completions = skill.completions.length > 0
           ? skill.completions
@@ -3237,10 +3273,10 @@ export class BrainChatView extends ItemView {
           .filter((completion) => completion.value.toLocaleLowerCase().startsWith(query))
           .map((completion) => ({
             kind: "skill" as const,
-            name: skill.name,
-            usage: `@${skill.name} ${completion.value}`,
+            name: invocationName,
+            usage: `@${invocationName} ${completion.value}`,
             description: completion.description,
-            completion: `@${skill.name} ${completion.value === "<request>" ? "" : completion.value}`
+            completion: `@${invocationName} ${completion.value === "<request>" ? "" : completion.value}`
           }));
         this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
         this.renderCommandSuggestions();

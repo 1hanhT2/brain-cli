@@ -1,5 +1,6 @@
 import { normalizePath, parseYaml, TFile, type App } from "obsidian";
 import type { OpenRouterClient } from "./openrouter";
+import { chooseWritingCoachInterval } from "./writing-coach-core";
 
 export type WritingPillar = "cohesion" | "grammar" | "task achievement" | "content" | "organisation";
 
@@ -8,6 +9,8 @@ export interface WritingCoachStatus {
   targetPath: string;
   goals: string;
   intervalMinutes: number;
+  intervalMaxMinutes: number;
+  scheduledIntervalMinutes: number;
   nextCheckAt: string;
   checks: number;
   lastPillar: WritingPillar | null;
@@ -79,23 +82,39 @@ export class WritingCoachService {
     return this.session ? this.publicStatus(this.session) : null;
   }
 
-  async start(targetPath: string, goals: string, intervalMinutes = 10): Promise<WritingCoachStatus> {
+  async start(
+    targetPath: string,
+    goals: string,
+    intervalMinutes = 10,
+    intervalMaxMinutes = intervalMinutes
+  ): Promise<WritingCoachStatus> {
     if (this.running) throw new Error("Wait for the current writing-coach check to finish before starting a new session.");
     const path = normalizePath(targetPath);
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile) || file.extension !== "md") throw new Error(`Writing note not found: ${path}`);
     if (!goals.trim()) throw new Error("Writing goals cannot be empty.");
-    if (!Number.isFinite(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 120) {
-      throw new Error("Writing-coach interval must be between 1 and 120 minutes.");
+    if (
+      !Number.isFinite(intervalMinutes)
+      || !Number.isFinite(intervalMaxMinutes)
+      || intervalMinutes < 1
+      || intervalMaxMinutes > 120
+      || intervalMaxMinutes < intervalMinutes
+    ) {
+      throw new Error("Writing-coach intervals must form a 1–120 minute range whose maximum is not below its minimum.");
     }
     const content = await this.app.vault.cachedRead(file);
     const now = Date.now();
+    const minimum = Math.round(intervalMinutes);
+    const maximum = Math.round(intervalMaxMinutes);
+    const scheduledIntervalMinutes = chooseWritingCoachInterval(minimum, maximum);
     this.session = {
       active: true,
       targetPath: file.path,
       goals: goals.trim(),
-      intervalMinutes: Math.round(intervalMinutes),
-      nextCheckAt: new Date(now + Math.round(intervalMinutes) * 60_000).toISOString(),
+      intervalMinutes: minimum,
+      intervalMaxMinutes: maximum,
+      scheduledIntervalMinutes,
+      nextCheckAt: new Date(now + scheduledIntervalMinutes * 60_000).toISOString(),
       checks: 0,
       lastPillar: null,
       pillarBag: shuffledPillars(),
@@ -229,7 +248,13 @@ export class WritingCoachService {
 
   private async reschedule(): Promise<void> {
     if (!this.session) return;
-    this.session.nextCheckAt = new Date(Date.now() + this.session.intervalMinutes * 60_000).toISOString();
+    this.session.scheduledIntervalMinutes = chooseWritingCoachInterval(
+      this.session.intervalMinutes,
+      this.session.intervalMaxMinutes
+    );
+    this.session.nextCheckAt = new Date(
+      Date.now() + this.session.scheduledIntervalMinutes * 60_000
+    ).toISOString();
     await this.persist();
     this.schedule();
   }
@@ -245,6 +270,8 @@ export class WritingCoachService {
       `target: ${JSON.stringify(this.session.targetPath)}`,
       `goals: ${JSON.stringify(this.session.goals)}`,
       `interval_minutes: ${this.session.intervalMinutes}`,
+      `interval_max_minutes: ${this.session.intervalMaxMinutes}`,
+      `scheduled_interval_minutes: ${this.session.scheduledIntervalMinutes}`,
       `next_check_at: ${JSON.stringify(this.session.nextCheckAt)}`,
       `checks: ${this.session.checks}`,
       `last_pillar: ${JSON.stringify(this.session.lastPillar ?? "")}`,
@@ -256,7 +283,8 @@ export class WritingCoachService {
       "",
       `- Draft: [[${this.session.targetPath.replace(/\.md$/i, "")}]]`,
       `- Goals: ${this.session.goals}`,
-      `- Interval: ${this.session.intervalMinutes} minutes`,
+      `- Interval: ${this.intervalLabel(this.session)}`,
+      `- Next interval: ${this.session.scheduledIntervalMinutes} minutes`,
       "",
       "## Feedback log",
       "",
@@ -279,11 +307,22 @@ export class WritingCoachService {
     const rawBag = Array.isArray(row.pillar_bag)
       ? row.pillar_bag.filter((value): value is WritingPillar => PILLARS.includes(value as WritingPillar))
       : [];
+    const intervalMinutes = Math.min(120, Math.max(1, Math.round(number(row.interval_minutes, 10))));
+    const intervalMaxMinutes = Math.min(120, Math.max(
+      intervalMinutes,
+      Math.round(number(row.interval_max_minutes, intervalMinutes))
+    ));
+    const scheduledIntervalMinutes = Math.min(intervalMaxMinutes, Math.max(
+      intervalMinutes,
+      Math.round(number(row.scheduled_interval_minutes, intervalMinutes))
+    ));
     return {
       active: row.active === true,
       targetPath: string(row.target),
       goals: string(row.goals),
-      intervalMinutes: Math.min(120, Math.max(1, number(row.interval_minutes, 10))),
+      intervalMinutes,
+      intervalMaxMinutes,
+      scheduledIntervalMinutes,
       nextCheckAt: string(row.next_check_at) || new Date(Date.now() + 10 * 60_000).toISOString(),
       checks: Math.max(0, Math.floor(number(row.checks, 0))),
       lastPillar: PILLARS.includes(row.last_pillar as WritingPillar) ? row.last_pillar as WritingPillar : null,
@@ -300,6 +339,8 @@ export class WritingCoachService {
       targetPath: session.targetPath,
       goals: session.goals,
       intervalMinutes: session.intervalMinutes,
+      intervalMaxMinutes: session.intervalMaxMinutes,
+      scheduledIntervalMinutes: session.scheduledIntervalMinutes,
       nextCheckAt: session.nextCheckAt,
       checks: session.checks,
       lastPillar: session.lastPillar,
@@ -313,6 +354,12 @@ export class WritingCoachService {
 
   private citation(): string {
     return `[[${this.sessionPath().replace(/\.md$/i, "")}]]`;
+  }
+
+  private intervalLabel(session: WritingCoachSession): string {
+    return session.intervalMinutes === session.intervalMaxMinutes
+      ? `${session.intervalMinutes} minutes`
+      : `${session.intervalMinutes}–${session.intervalMaxMinutes} minutes`;
   }
 
   private clearTimer(): void {

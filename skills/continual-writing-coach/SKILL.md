@@ -7,9 +7,15 @@ description: Coach an ongoing writing session in an Obsidian Markdown note with 
 
 Keep the writer moving. Give one small intervention at a time instead of reviewing the whole draft.
 
+## Invocations
+
+Use `@continual-writing-coach` or its short alias `@cwc`. The explicit CLI form is `/skill continual-writing-coach` or `/skill cwc`. Keep all controls inside the skill invocation.
+
+Accept the draft, interval, and goal in natural language. The interval may be fixed (`every 10 minutes`) or a range (`every 5–10 minutes`). A range chooses a fresh random delay within its bounds for every next check. For example: `@cwc Coach @[[Writing/IELTS Essay.md]] every 1 minute. Goal: write an IELTS essay.` When all three are present, start directly without asking the writer to repeat them. Use `status`, `check`, and `stop` as skill actions.
+
 ## Start a session
 
-1. Obtain the writing goal, target Markdown file, and preferred interval. Default to 10 minutes when the user does not care.
+1. Obtain the writing goal, target Markdown file, and preferred fixed interval or interval range. Default to 10 minutes when the user does not care.
 2. Call `start_writing_coach`. Let its approval preview confirm the file, goal, interval, and automatic OpenRouter checks.
 3. Tell the writer they can continue editing normally. Do not read or critique the whole draft before the first scheduled check unless the user asks.
 
