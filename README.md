@@ -129,6 +129,9 @@ writing goal, an `@[[path/to/draft.md]]` file mention, and optionally a fixed
 interval or range (10 minutes by default). For example, `every 5–10 minutes`
 chooses a new random delay inside that range before each next check. After one explicit approval, Brain checks
 only while that draft is the active note and only after its contents change.
+The file mention is session-specific rather than a global destination: any
+Markdown note can be supplied, and starting the skill with a different file
+replaces the previous coaching session after approval.
 Each check chooses one pillar from a shuffled cycle—cohesion, grammar, task
 achievement, content, or organisation—and returns one brief observation plus
 one next action. The configured background OpenRouter model performs the

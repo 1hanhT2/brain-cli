@@ -1344,9 +1344,16 @@ export class AgentToolRegistry {
       if (report.sensitive) {
         throw new Error(`Continual automatic coaching is unavailable for sensitive notes: ${report.reasons.join("; ")}`);
       }
+      const current = this.writingCoach.status();
       preview = {
-        title: "Start continual writing coach",
-        before: "No new coaching session will start without approval.",
+        title: current ? "Replace continual writing-coach session" : "Start continual writing coach",
+        before: current
+          ? [
+              `Draft: ${current.targetPath}`,
+              `Status: ${current.active ? "active" : "stopped"}`,
+              `Goals: ${current.goals}`
+            ].join("\n")
+          : "No writing-coach session exists.",
         after: [
           `Draft: ${stringArg(input, "path")}`,
           `Goals: ${stringArg(input, "goals")}`,
@@ -1354,9 +1361,9 @@ export class AgentToolRegistry {
           "Feedback: one randomly cycled pillar per changed-draft check",
           "Model: configured background model"
         ].join("\n"),
-        beforeLabel: "Current state",
+        beforeLabel: "Current session",
         afterLabel: "Proposed session",
-        details: "Automatic interval checks may incur OpenRouter charges. Feedback is logged under Brain/Coaching."
+        details: "The attached file is used only for this session. Automatic interval checks may incur OpenRouter charges. Feedback is logged under Brain/Coaching."
       };
     } else if (call.function.name === "check_writing_coach") {
       preview = {
