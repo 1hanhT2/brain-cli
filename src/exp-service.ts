@@ -168,7 +168,7 @@ export class ExpService {
       };
     } catch (error) {
       await this.vaultTools.restoreFrontmatter(task.path, before, EXP_FRONTMATTER_KEYS).catch((rollbackError) => {
-        console.error(`[Obsidian Brain] Failed to roll back EXP metadata for ${task.path}.`, rollbackError);
+        console.error(`[Brain CLI] Failed to roll back EXP metadata for ${task.path}.`, rollbackError);
       });
       throw error;
     }

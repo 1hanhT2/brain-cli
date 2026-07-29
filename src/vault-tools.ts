@@ -52,7 +52,7 @@ export class VaultTools {
       throw new Error(`Sensitive note approval required: ${sensitivity.reasons.join("; ")}`);
     }
     if (content.length > 100_000) {
-      return `${content.slice(0, 100_000)}\n\n[Obsidian Brain truncated this note at 100,000 characters.]`;
+      return `${content.slice(0, 100_000)}\n\n[Brain CLI truncated this note at 100,000 characters.]`;
     }
     return content;
   }

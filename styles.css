@@ -2,7 +2,7 @@
  * Command-first terminal UI. Every color maps to Obsidian semantic variables
  * so community themes can restyle the view without plugin-specific overrides.
  */
-.obsidian-brain-view {
+.brain-cli-view {
   --brain-bg: var(--background-primary);
   --brain-surface: var(--background-secondary);
   --brain-surface-alt: var(--background-secondary-alt, var(--background-secondary));
@@ -32,35 +32,35 @@
   font-family: var(--font-monospace);
 }
 
-.obsidian-brain-header {
+.brain-cli-header {
   flex: 0 0 auto;
   padding: var(--brain-sm) var(--brain-md);
   border-bottom: var(--border-width, 1px) solid var(--brain-border);
   background: var(--brain-bg);
 }
 
-.obsidian-brain-title-row,
-.obsidian-brain-identity,
-.obsidian-brain-context-row {
+.brain-cli-title-row,
+.brain-cli-identity,
+.brain-cli-context-row {
   display: flex;
   min-width: 0;
   align-items: center;
 }
 
-.obsidian-brain-title-row {
+.brain-cli-title-row {
   gap: var(--brain-sm);
 }
 
-.obsidian-brain-identity {
+.brain-cli-identity {
   gap: 0.35rem;
 }
 
-.obsidian-brain-terminal-mark {
+.brain-cli-terminal-mark {
   color: var(--brain-success);
   font-size: 0.65em;
 }
 
-.obsidian-brain-title-row h3 {
+.brain-cli-title-row h3 {
   margin: 0;
   color: var(--brain-text);
   font-family: var(--font-monospace);
@@ -69,67 +69,67 @@
   line-height: 1;
 }
 
-.obsidian-brain-vault,
-.obsidian-brain-status,
-.obsidian-brain-context-row {
+.brain-cli-vault,
+.brain-cli-status,
+.brain-cli-context-row {
   color: var(--brain-muted);
   font-size: var(--font-ui-smaller);
 }
 
-.obsidian-brain-status {
+.brain-cli-status {
   margin-left: auto;
   white-space: nowrap;
 }
 
-.obsidian-brain-status::before {
+.brain-cli-status::before {
   content: "[";
   color: var(--brain-faint);
 }
 
-.obsidian-brain-status::after {
+.brain-cli-status::after {
   content: "]";
   color: var(--brain-faint);
 }
 
-.obsidian-brain-context-row {
+.brain-cli-context-row {
   gap: 0.4rem;
   margin-top: 0.35rem;
   overflow: hidden;
   white-space: nowrap;
 }
 
-.obsidian-brain-context-prefix,
-.obsidian-brain-context-model {
+.brain-cli-context-prefix,
+.brain-cli-context-model {
   color: var(--brain-accent);
 }
 
-.obsidian-brain-context-chat {
+.brain-cli-context-chat {
   min-width: 0;
   overflow: hidden;
   color: var(--brain-text);
   text-overflow: ellipsis;
 }
 
-.obsidian-brain-context-divider {
+.brain-cli-context-divider {
   color: var(--brain-faint);
 }
 
-.obsidian-brain-model-details {
+.brain-cli-model-details {
   min-width: 0;
   overflow: hidden;
   color: var(--brain-faint);
   text-overflow: ellipsis;
 }
 
-.obsidian-brain-model-details.is-tool-incompatible {
+.brain-cli-model-details.is-tool-incompatible {
   color: var(--brain-warning);
 }
 
-.obsidian-brain-internal-controls {
+.brain-cli-internal-controls {
   display: none;
 }
 
-.obsidian-brain-transcript {
+.brain-cli-transcript {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -140,7 +140,7 @@
   scrollbar-color: var(--scrollbar-thumb-bg) var(--scrollbar-bg);
 }
 
-.obsidian-brain-load-earlier {
+.brain-cli-load-earlier {
   display: block;
   width: min(100%, var(--brain-content-width));
   margin: 0 auto var(--brain-lg);
@@ -154,24 +154,24 @@
   text-align: center;
 }
 
-.obsidian-brain-load-earlier:hover {
+.brain-cli-load-earlier:hover {
   border-color: var(--brain-accent);
   background: var(--background-modifier-hover);
   color: var(--brain-accent);
 }
 
-.obsidian-brain-message,
-.obsidian-brain-empty,
-.obsidian-brain-tool,
-.obsidian-brain-skill-event,
-.obsidian-brain-command-echo,
-.obsidian-brain-terminal-output {
+.brain-cli-message,
+.brain-cli-empty,
+.brain-cli-tool,
+.brain-cli-skill-event,
+.brain-cli-command-echo,
+.brain-cli-terminal-output {
   width: min(100%, var(--brain-content-width));
   box-sizing: border-box;
   margin-inline: auto;
 }
 
-.obsidian-brain-message {
+.brain-cli-message {
   position: relative;
   display: grid;
   grid-template-columns: 4.5rem minmax(0, 1fr);
@@ -182,7 +182,7 @@
   line-height: var(--line-height-normal);
 }
 
-.obsidian-brain-message-label {
+.brain-cli-message-label {
   padding-top: 0.08rem;
   color: var(--brain-muted);
   font-size: var(--font-ui-smaller);
@@ -191,42 +191,42 @@
   text-transform: lowercase;
 }
 
-.obsidian-brain-message[data-role="user"] .obsidian-brain-message-label {
+.brain-cli-message[data-role="user"] .brain-cli-message-label {
   color: var(--brain-accent);
 }
 
-.obsidian-brain-message[data-role="assistant"] .obsidian-brain-message-label {
+.brain-cli-message[data-role="assistant"] .brain-cli-message-label {
   color: var(--brain-success);
 }
 
-.obsidian-brain-message-body {
+.brain-cli-message-body {
   min-width: 0;
 }
 
-.obsidian-brain-message[data-role="user"] .obsidian-brain-message-body,
-.obsidian-brain-message-body:not(.markdown-rendered) {
+.brain-cli-message[data-role="user"] .brain-cli-message-body,
+.brain-cli-message-body:not(.markdown-rendered) {
   white-space: pre-wrap;
 }
 
-.obsidian-brain-message[data-role="user"] .obsidian-brain-message-body {
+.brain-cli-message[data-role="user"] .brain-cli-message-body {
   color: var(--brain-text);
 }
 
-.obsidian-brain-markdown {
+.brain-cli-markdown {
   max-width: 100%;
   overflow-x: auto;
   white-space: normal;
 }
 
-.obsidian-brain-markdown > :first-child {
+.brain-cli-markdown > :first-child {
   margin-top: 0;
 }
 
-.obsidian-brain-markdown > :last-child {
+.brain-cli-markdown > :last-child {
   margin-bottom: 0;
 }
 
-.obsidian-brain-markdown table {
+.brain-cli-markdown table {
   width: max-content;
   min-width: min(100%, 34rem);
   max-width: none;
@@ -234,7 +234,7 @@
   font-size: var(--font-ui-small);
 }
 
-.obsidian-brain-markdown pre {
+.brain-cli-markdown pre {
   max-width: 100%;
   overflow-x: auto;
   border: var(--border-width, 1px) solid var(--brain-border);
@@ -242,31 +242,31 @@
   background: var(--brain-surface);
 }
 
-.obsidian-brain-markdown code {
+.brain-cli-markdown code {
   font-family: var(--font-monospace);
 }
 
-.obsidian-brain-empty {
+.brain-cli-empty {
   padding: 10vh 0;
   color: var(--brain-muted);
   text-align: center;
   line-height: 1.7;
 }
 
-.obsidian-brain-empty-mark {
+.brain-cli-empty-mark {
   color: var(--brain-text);
   font-weight: var(--font-semibold, 600);
   letter-spacing: 0.16em;
 }
 
-.obsidian-brain-empty-hint {
+.brain-cli-empty-hint {
   margin-top: var(--brain-sm);
   color: var(--brain-faint);
   font-size: var(--font-ui-smaller);
 }
 
-.obsidian-brain-command-echo,
-.obsidian-brain-terminal-output {
+.brain-cli-command-echo,
+.brain-cli-terminal-output {
   display: grid;
   grid-template-columns: 1.4rem minmax(0, 1fr);
   gap: var(--brain-sm);
@@ -274,32 +274,32 @@
   line-height: var(--line-height-normal);
 }
 
-.obsidian-brain-command-echo {
+.brain-cli-command-echo {
   color: var(--brain-accent);
 }
 
-.obsidian-brain-line-prefix {
+.brain-cli-line-prefix {
   color: var(--brain-faint);
   text-align: center;
   user-select: none;
 }
 
-.obsidian-brain-terminal-output-body {
+.brain-cli-terminal-output-body {
   min-width: 0;
   color: var(--brain-muted);
 }
 
-.obsidian-brain-terminal-output.is-warning .obsidian-brain-line-prefix,
-.obsidian-brain-terminal-output.is-warning .obsidian-brain-terminal-output-body {
+.brain-cli-terminal-output.is-warning .brain-cli-line-prefix,
+.brain-cli-terminal-output.is-warning .brain-cli-terminal-output-body {
   color: var(--brain-warning);
 }
 
-.obsidian-brain-terminal-output.is-error .obsidian-brain-line-prefix,
-.obsidian-brain-terminal-output.is-error .obsidian-brain-terminal-output-body {
+.brain-cli-terminal-output.is-error .brain-cli-line-prefix,
+.brain-cli-terminal-output.is-error .brain-cli-terminal-output-body {
   color: var(--brain-error);
 }
 
-.obsidian-brain-progress-body {
+.brain-cli-progress-body {
   margin: 0;
   padding: var(--brain-sm) var(--brain-md);
   overflow-x: auto;
@@ -312,7 +312,7 @@
   white-space: pre;
 }
 
-.obsidian-brain-config-menu {
+.brain-cli-config-menu {
   overflow: hidden;
   border: var(--border-width, 1px) solid var(--brain-border);
   border-radius: var(--brain-radius);
@@ -321,19 +321,19 @@
   font-family: var(--font-monospace);
 }
 
-.obsidian-brain-config-title,
-.obsidian-brain-config-section,
-.obsidian-brain-config-footer,
-.obsidian-brain-config-closed {
+.brain-cli-config-title,
+.brain-cli-config-section,
+.brain-cli-config-footer,
+.brain-cli-config-closed {
   padding: var(--brain-sm) var(--brain-md);
 }
 
-.obsidian-brain-config-title {
+.brain-cli-config-title {
   color: var(--brain-accent);
   font-weight: var(--font-semibold, 600);
 }
 
-.obsidian-brain-config-section {
+.brain-cli-config-section {
   border-top: var(--border-width, 1px) solid var(--brain-border);
   border-bottom: var(--border-width, 1px) solid var(--brain-border);
   color: var(--brain-faint);
@@ -342,7 +342,7 @@
   letter-spacing: 0.08em;
 }
 
-.obsidian-brain-config-item {
+.brain-cli-config-item {
   display: grid;
   grid-template-columns: 1rem 2.3rem minmax(0, 1fr) auto;
   gap: var(--brain-xs);
@@ -351,49 +351,49 @@
   cursor: pointer;
 }
 
-.obsidian-brain-config-item.is-selected {
+.brain-cli-config-item.is-selected {
   background: var(--background-modifier-hover);
 }
 
-.obsidian-brain-config-cursor,
-.obsidian-brain-config-checkbox {
+.brain-cli-config-cursor,
+.brain-cli-config-checkbox {
   color: var(--brain-accent);
   user-select: none;
 }
 
-.obsidian-brain-config-copy {
+.brain-cli-config-copy {
   min-width: 0;
 }
 
-.obsidian-brain-config-label {
+.brain-cli-config-label {
   color: var(--brain-text);
 }
 
-.obsidian-brain-config-description,
-.obsidian-brain-config-detail,
-.obsidian-brain-config-footer,
-.obsidian-brain-config-closed {
+.brain-cli-config-description,
+.brain-cli-config-detail,
+.brain-cli-config-footer,
+.brain-cli-config-closed {
   color: var(--brain-muted);
   font-size: var(--font-ui-smaller);
 }
 
-.obsidian-brain-config-description {
+.brain-cli-config-description {
   margin-top: var(--brain-xs);
   white-space: normal;
 }
 
-.obsidian-brain-config-detail {
+.brain-cli-config-detail {
   padding-left: var(--brain-sm);
   text-align: right;
 }
 
-.obsidian-brain-config-footer {
+.brain-cli-config-footer {
   border-top: var(--border-width, 1px) solid var(--brain-border);
   color: var(--brain-faint);
   text-align: right;
 }
 
-.obsidian-brain-tool {
+.brain-cli-tool {
   margin-bottom: var(--brain-lg);
   overflow: hidden;
   border: var(--border-width, 1px) solid var(--brain-border);
@@ -402,7 +402,7 @@
   background: transparent;
 }
 
-.obsidian-brain-tool-header {
+.brain-cli-tool-header {
   display: flex;
   min-width: 0;
   gap: var(--brain-sm);
@@ -411,13 +411,13 @@
   background: var(--brain-surface);
 }
 
-.obsidian-brain-tool-header::before {
+.brain-cli-tool-header::before {
   content: "tool";
   color: var(--brain-faint);
   font-size: var(--font-ui-smaller);
 }
 
-.obsidian-brain-tool-name {
+.brain-cli-tool-name {
   min-width: 0;
   overflow: hidden;
   color: var(--brain-accent);
@@ -426,53 +426,53 @@
   white-space: nowrap;
 }
 
-.obsidian-brain-tool-risk,
-.obsidian-brain-tool-status {
+.brain-cli-tool-risk,
+.brain-cli-tool-status {
   color: var(--brain-muted);
   font-size: var(--font-ui-smaller);
 }
 
-.obsidian-brain-tool-risk::before {
+.brain-cli-tool-risk::before {
   content: "[";
 }
 
-.obsidian-brain-tool-risk::after {
+.brain-cli-tool-risk::after {
   content: "]";
 }
 
-.obsidian-brain-tool-status {
+.brain-cli-tool-status {
   margin-left: auto;
   text-align: end;
 }
 
-.obsidian-brain-tool-status[data-state="success"] {
+.brain-cli-tool-status[data-state="success"] {
   color: var(--brain-success);
 }
 
-.obsidian-brain-tool-status[data-state="error"] {
+.brain-cli-tool-status[data-state="error"] {
   color: var(--brain-error);
 }
 
-.obsidian-brain-tool-details,
-.obsidian-brain-tool-preview,
-.obsidian-brain-tool-result,
-.obsidian-brain-tool-error,
-.obsidian-brain-tool-sources {
+.brain-cli-tool-details,
+.brain-cli-tool-preview,
+.brain-cli-tool-result,
+.brain-cli-tool-error,
+.brain-cli-tool-sources {
   padding: var(--brain-sm) var(--brain-md);
   border-top: var(--border-width, 1px) solid var(--brain-border);
   color: var(--brain-muted);
   font-size: var(--font-ui-small);
 }
 
-.obsidian-brain-tool-details summary {
+.brain-cli-tool-details summary {
   cursor: pointer;
   user-select: none;
 }
 
-.obsidian-brain-tool-details pre,
-.obsidian-brain-tool-preview > pre,
-.obsidian-brain-tool-result > pre,
-.obsidian-brain-diff pre {
+.brain-cli-tool-details pre,
+.brain-cli-tool-preview > pre,
+.brain-cli-tool-result > pre,
+.brain-cli-diff pre {
   max-height: 14rem;
   margin: var(--brain-sm) 0 0;
   padding: var(--brain-sm);
@@ -485,72 +485,72 @@
   white-space: pre-wrap;
 }
 
-.obsidian-brain-tool-preview:empty,
-.obsidian-brain-tool-result:empty,
-.obsidian-brain-tool-error:empty,
-.obsidian-brain-tool-sources:empty {
+.brain-cli-tool-preview:empty,
+.brain-cli-tool-result:empty,
+.brain-cli-tool-error:empty,
+.brain-cli-tool-sources:empty {
   display: none;
 }
 
-.obsidian-brain-tool-preview-title {
+.brain-cli-tool-preview-title {
   margin-bottom: var(--brain-xs);
   color: var(--brain-text);
   font-weight: var(--font-medium, 500);
 }
 
-.obsidian-brain-tool-preview-details {
+.brain-cli-tool-preview-details {
   border-left: 2px solid var(--brain-faint);
 }
 
-.obsidian-brain-tool-result {
+.brain-cli-tool-result {
   color: var(--brain-text);
 }
 
-.obsidian-brain-tool-result .obsidian-brain-tool-preview-title {
+.brain-cli-tool-result .brain-cli-tool-preview-title {
   color: var(--brain-success);
 }
 
-.obsidian-brain-tool-error {
+.brain-cli-tool-error {
   border-left: 2px solid var(--brain-error);
   background: var(--background-modifier-error);
   color: var(--brain-error);
   overflow-wrap: anywhere;
 }
 
-.obsidian-brain-diff {
+.brain-cli-diff {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--brain-sm);
 }
 
-.obsidian-brain-diff.is-single {
+.brain-cli-diff.is-single {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.obsidian-brain-diff-pane {
+.brain-cli-diff-pane {
   min-width: 0;
 }
 
-.obsidian-brain-diff-pane.is-before pre {
+.brain-cli-diff-pane.is-before pre {
   border: var(--border-width, 1px) solid var(--text-error);
   background: var(--brain-surface);
   color: var(--brain-text);
 }
 
-.obsidian-brain-diff-pane.is-after pre {
+.brain-cli-diff-pane.is-after pre {
   border: var(--border-width, 1px) solid var(--text-success);
   background: var(--brain-surface);
   color: var(--brain-text);
 }
 
-.obsidian-brain-diff-label {
+.brain-cli-diff-label {
   margin-bottom: var(--brain-xs);
   color: var(--brain-faint);
   font-size: var(--font-ui-smaller);
   text-transform: lowercase;
 }
 
-.obsidian-brain-sensitive-warning {
+.brain-cli-sensitive-warning {
   margin-bottom: var(--brain-sm);
   padding: var(--brain-sm);
   border-left: 2px solid var(--brain-error);
@@ -558,16 +558,16 @@
   color: var(--brain-error);
 }
 
-.obsidian-brain-tool.is-sensitive {
+.brain-cli-tool.is-sensitive {
   border-color: var(--brain-error);
 }
 
-.obsidian-brain-tool-sources p {
+.brain-cli-tool-sources p {
   display: inline;
   margin: 0;
 }
 
-.obsidian-brain-tool-actions {
+.brain-cli-tool-actions {
   display: flex;
   justify-content: flex-end;
   gap: var(--brain-sm);
@@ -576,25 +576,25 @@
   border-top: var(--border-width, 1px) solid var(--brain-border);
 }
 
-.obsidian-brain-tool-action-hint {
+.brain-cli-tool-action-hint {
   margin-right: auto;
   color: var(--brain-muted);
   font-size: var(--font-ui-smaller);
 }
 
-.obsidian-brain-tool-actions button {
+.brain-cli-tool-actions button {
   min-height: var(--input-height);
   font-family: var(--font-monospace);
 }
 
-.obsidian-brain-view button:focus-visible,
-.obsidian-brain-view summary:focus-visible,
-.obsidian-brain-command-suggestion:focus-visible {
+.brain-cli-view button:focus-visible,
+.brain-cli-view summary:focus-visible,
+.brain-cli-command-suggestion:focus-visible {
   outline: 2px solid var(--brain-accent);
   outline-offset: 2px;
 }
 
-.obsidian-brain-skill-event {
+.brain-cli-skill-event {
   margin-bottom: var(--brain-md);
   padding: var(--brain-xs) var(--brain-sm);
   border-left: 2px solid var(--brain-accent);
@@ -602,7 +602,7 @@
   font-size: var(--font-ui-smaller);
 }
 
-.obsidian-brain-composer {
+.brain-cli-composer {
   position: relative;
   flex: 0 0 auto;
   padding: var(--brain-sm) var(--brain-md);
@@ -610,7 +610,7 @@
   background: var(--brain-bg);
 }
 
-.obsidian-brain-composer-row {
+.brain-cli-composer-row {
   display: flex;
   width: min(100%, var(--brain-content-width));
   min-width: 0;
@@ -619,7 +619,7 @@
   align-items: flex-start;
 }
 
-.obsidian-brain-shell-prompt {
+.brain-cli-shell-prompt {
   flex: 0 0 auto;
   padding-top: calc((var(--input-height) - 1.4em) / 2);
   color: var(--brain-success);
@@ -627,7 +627,7 @@
   user-select: none;
 }
 
-.obsidian-brain-composer textarea {
+.brain-cli-composer textarea {
   flex: 1 1 auto;
   width: 100%;
   min-width: 0;
@@ -645,16 +645,16 @@
   line-height: 1.4;
 }
 
-.obsidian-brain-composer textarea:focus {
+.brain-cli-composer textarea:focus {
   border: 0;
   box-shadow: none;
 }
 
-.obsidian-brain-composer textarea::placeholder {
+.brain-cli-composer textarea::placeholder {
   color: var(--brain-faint);
 }
 
-.obsidian-brain-run-button {
+.brain-cli-run-button {
   flex: 0 0 auto;
   min-width: var(--input-height);
   min-height: var(--input-height);
@@ -665,17 +665,17 @@
   font-family: var(--font-monospace);
 }
 
-.obsidian-brain-run-button:hover {
+.brain-cli-run-button:hover {
   border-color: var(--brain-border-hover);
   background: var(--brain-surface);
   color: var(--brain-text);
 }
 
-.obsidian-brain-stop {
+.brain-cli-stop {
   color: var(--brain-error) !important;
 }
 
-.obsidian-brain-command-hint {
+.brain-cli-command-hint {
   width: min(100%, var(--brain-content-width));
   margin: var(--brain-xs) auto 0;
   color: var(--brain-faint);
@@ -683,7 +683,7 @@
   text-align: right;
 }
 
-.obsidian-brain-command-suggestions {
+.brain-cli-command-suggestions {
   display: none;
   width: min(100%, var(--brain-content-width));
   max-height: min(45vh, 22rem);
@@ -695,11 +695,11 @@
   box-shadow: var(--shadow-s);
 }
 
-.obsidian-brain-command-suggestions.is-visible {
+.brain-cli-command-suggestions.is-visible {
   display: block;
 }
 
-.obsidian-brain-command-suggestion {
+.brain-cli-command-suggestion {
   display: grid;
   grid-template-columns: minmax(9rem, 0.8fr) minmax(0, 1.2fr);
   gap: var(--brain-md);
@@ -709,116 +709,116 @@
   font-size: var(--font-ui-small);
 }
 
-.obsidian-brain-command-suggestion + .obsidian-brain-command-suggestion {
+.brain-cli-command-suggestion + .brain-cli-command-suggestion {
   border-top: var(--border-width, 1px) solid var(--brain-border);
 }
 
-.obsidian-brain-command-suggestion code {
+.brain-cli-command-suggestion code {
   overflow: hidden;
   color: var(--brain-accent);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.obsidian-brain-command-suggestion.is-selected,
-.obsidian-brain-command-suggestion:hover {
+.brain-cli-command-suggestion.is-selected,
+.brain-cli-command-suggestion:hover {
   background: var(--background-modifier-hover);
   color: var(--brain-text);
 }
 
-.obsidian-brain-stream-cursor::after {
+.brain-cli-stream-cursor::after {
   content: "▋";
   color: var(--brain-accent);
-  animation: obsidian-brain-blink 0.9s steps(1) infinite;
+  animation: brain-cli-blink 0.9s steps(1) infinite;
 }
 
-@keyframes obsidian-brain-blink {
+@keyframes brain-cli-blink {
   50% { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .obsidian-brain-stream-cursor::after {
+  .brain-cli-stream-cursor::after {
     animation: none;
   }
 }
 
 @media (max-width: 600px) {
-  .obsidian-brain-header,
-  .obsidian-brain-composer {
+  .brain-cli-header,
+  .brain-cli-composer {
     padding-inline: var(--brain-sm);
   }
 
-  .obsidian-brain-transcript {
+  .brain-cli-transcript {
     padding: var(--brain-md) var(--brain-sm);
     background: var(--brain-bg);
   }
 
-  .obsidian-brain-model-details,
-  .obsidian-brain-command-hint {
+  .brain-cli-model-details,
+  .brain-cli-command-hint {
     display: none;
   }
 
-  .obsidian-brain-message {
+  .brain-cli-message {
     grid-template-columns: 3.7rem minmax(0, 1fr);
     gap: var(--brain-sm);
   }
 
-  .obsidian-brain-diff {
+  .brain-cli-diff {
     grid-template-columns: 1fr;
   }
 
-  .obsidian-brain-tool-header {
+  .brain-cli-tool-header {
     flex-wrap: wrap;
   }
 
-  .obsidian-brain-tool-header::before {
+  .brain-cli-tool-header::before {
     flex: 0 0 auto;
   }
 
-  .obsidian-brain-tool-name {
+  .brain-cli-tool-name {
     flex: 1 1 10rem;
   }
 
-  .obsidian-brain-tool-status {
+  .brain-cli-tool-status {
     flex: 1 0 100%;
     margin-left: 0;
     padding-left: calc(2rem + var(--brain-sm));
     text-align: left;
   }
 
-  .obsidian-brain-tool-details,
-  .obsidian-brain-tool-preview,
-  .obsidian-brain-tool-result,
-  .obsidian-brain-tool-error,
-  .obsidian-brain-tool-sources {
+  .brain-cli-tool-details,
+  .brain-cli-tool-preview,
+  .brain-cli-tool-result,
+  .brain-cli-tool-error,
+  .brain-cli-tool-sources {
     padding-inline: var(--brain-sm);
   }
 
-  .obsidian-brain-tool-actions {
+  .brain-cli-tool-actions {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     padding-inline: var(--brain-sm);
   }
 
-  .obsidian-brain-tool-action-hint {
+  .brain-cli-tool-action-hint {
     grid-column: 1 / -1;
     margin-right: 0;
   }
 
-  .obsidian-brain-tool-actions button {
+  .brain-cli-tool-actions button {
     width: 100%;
   }
 
-  .obsidian-brain-command-suggestion {
+  .brain-cli-command-suggestion {
     grid-template-columns: 1fr;
     gap: var(--brain-xs);
   }
 
-  .obsidian-brain-config-item {
+  .brain-cli-config-item {
     grid-template-columns: 1rem 2.3rem minmax(0, 1fr);
   }
 
-  .obsidian-brain-config-detail {
+  .brain-cli-config-detail {
     grid-column: 3;
     padding-left: 0;
     text-align: left;

@@ -42,7 +42,7 @@ type StoredPluginData = Partial<BrainSettings> & { _catalogCache?: CatalogCache 
 
 const CATALOG_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 
-export default class ObsidianBrainPlugin extends Plugin {
+export default class BrainCliPlugin extends Plugin {
   settings: BrainSettings = DEFAULT_SETTINGS;
   vaultTools!: VaultTools;
   agentTools!: AgentToolRegistry;
@@ -78,7 +78,7 @@ export default class ObsidianBrainPlugin extends Plugin {
       try {
         Object.assign(this.settings, await this.portableSettings.load());
       } catch (error) {
-        console.warn("[Obsidian Brain] Portable settings are invalid; using the last valid plugin-data cache.", error);
+        console.warn("[Brain CLI] Portable settings are invalid; using the last valid plugin-data cache.", error);
         new Notice("Brain/Settings/config.md is invalid. Brain kept the last valid settings.", 0);
       }
       stage = "initializing services";
@@ -134,11 +134,11 @@ export default class ObsidianBrainPlugin extends Plugin {
           this.settings.autoExpQueue = paths;
           await this.saveLocalSettings();
         },
-        (result) => new Notice(`Obsidian Brain scored ${result.title} at ${result.value} EXP.`),
+        (result) => new Notice(`Brain CLI scored ${result.title} at ${result.value} EXP.`),
         (path, error) => {
           const message = error instanceof Error ? error.message : String(error);
           if (/Task not found/i.test(message)) return;
-          console.error(`[Obsidian Brain] Automatic EXP scoring failed for ${path}.`, error);
+          console.error(`[Brain CLI] Automatic EXP scoring failed for ${path}.`, error);
           new Notice(`Automatic EXP scoring failed for ${path}: ${message}`, 0);
         }
       );
@@ -150,10 +150,10 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.expCompletionQueue,
         () => this.settings,
         () => this.saveLocalSettings(),
-        (title, value) => new Notice(`Obsidian Brain awarded ${value} EXP for ${title}.`),
+        (title, value) => new Notice(`Brain CLI awarded ${value} EXP for ${title}.`),
         (path, error) => {
           const message = error instanceof Error ? error.message : String(error);
-          console.error(`[Obsidian Brain] Completion EXP failed for ${path}.`, error);
+          console.error(`[Brain CLI] Completion EXP failed for ${path}.`, error);
           new Notice(`Completion EXP failed for ${path}: ${message}`, 0);
         }
       );
@@ -205,7 +205,7 @@ export default class ObsidianBrainPlugin extends Plugin {
       stage = "registering chat view";
       this.registerView(BRAIN_VIEW_TYPE, (leaf) => new BrainChatView(leaf, this));
       stage = "registering commands";
-      this.addRibbonIcon("bot", "Open Obsidian Brain", () => void this.activateChat());
+      this.addRibbonIcon("bot", "Open Brain CLI", () => void this.activateChat());
       this.addCommand({ id: "open-chat", name: "Open chat", callback: () => void this.activateChat() });
       this.addCommand({ id: "create-brain-layout", name: "Create or repair Brain data folders", callback: () => void this.ensureDataLayout() });
       this.addCommand({ id: "refresh-openrouter-models", name: "Refresh OpenRouter model catalog", callback: () => void this.refreshOpenRouterModels() });
@@ -241,12 +241,12 @@ export default class ObsidianBrainPlugin extends Plugin {
           await this.initializeCatalogCache();
           if (this.settings.openRouterSecretId) {
             await this.refreshOpenRouterModels(false).catch((error) =>
-              console.warn("[Obsidian Brain] Automatic model refresh failed.", error)
+              console.warn("[Brain CLI] Automatic model refresh failed.", error)
             );
           }
           if (this.settings.openRouterSecretId && (this.settings.semanticSearchEnabled || this.settings.embeddingModel)) {
             await this.refreshEmbeddingModels(false).catch((error) =>
-              console.warn("[Obsidian Brain] Automatic embedding catalog refresh failed.", error)
+              console.warn("[Brain CLI] Automatic embedding catalog refresh failed.", error)
             );
           }
         });
@@ -263,8 +263,8 @@ export default class ObsidianBrainPlugin extends Plugin {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[Obsidian Brain] Startup failed while ${stage}.`, error);
-      new Notice(`Obsidian Brain startup failed while ${stage}: ${message}`, 0);
+      console.error(`[Brain CLI] Startup failed while ${stage}.`, error);
+      new Notice(`Brain CLI startup failed while ${stage}: ${message}`, 0);
       throw error;
     } finally {
       finishOnload();
@@ -278,7 +278,7 @@ export default class ObsidianBrainPlugin extends Plugin {
 
   async rebuildRetrievalIndex(): Promise<void> {
     await this.retrievalIndex.rebuild();
-    new Notice(`Obsidian Brain indexed ${this.retrievalIndex.getStatus().indexedNotes} notes.`);
+    new Notice(`Brain CLI indexed ${this.retrievalIndex.getStatus().indexedNotes} notes.`);
   }
 
   async reconfigureLexicalProvider(): Promise<void> {
@@ -398,7 +398,7 @@ export default class ObsidianBrainPlugin extends Plugin {
       throw new Error(`Unsupported active-note workflow: ${workflow}`);
     }
     const result = await this.expAutoScorer.scoreNow(file.path);
-    new Notice(`Obsidian Brain stored ${result.value} EXP as ${result.title}.`);
+    new Notice(`Brain CLI stored ${result.value} EXP as ${result.title}.`);
   }
 
   async refreshOpenRouterModels(showNotice = true): Promise<void> {
@@ -410,7 +410,7 @@ export default class ObsidianBrainPlugin extends Plugin {
     this.modelCatalog = await this.performance.measure("catalog.models.fetch", () => this.openRouter.listModels());
     this.catalogCache.models = { fetchedAt: Date.now(), rows: this.modelCatalog };
     await this.catalogStore.set("models", this.catalogCache.models);
-    if (showNotice) new Notice(`Obsidian Brain loaded ${this.modelCatalog.length} OpenRouter models.`);
+    if (showNotice) new Notice(`Brain CLI loaded ${this.modelCatalog.length} OpenRouter models.`);
     for (const leaf of this.app.workspace.getLeavesOfType(BRAIN_VIEW_TYPE)) {
       const view = leaf.view;
       if (view instanceof BrainChatView) view.refreshModels();
@@ -428,7 +428,7 @@ export default class ObsidianBrainPlugin extends Plugin {
     );
     this.catalogCache.embeddings = { fetchedAt: Date.now(), rows: this.embeddingModelCatalog };
     await this.catalogStore.set("embeddings", this.catalogCache.embeddings);
-    if (showNotice) new Notice(`Obsidian Brain loaded ${this.embeddingModelCatalog.length} embedding models.`);
+    if (showNotice) new Notice(`Brain CLI loaded ${this.embeddingModelCatalog.length} embedding models.`);
   }
 
   async selectEmbeddingModel(modelId: string): Promise<void> {
@@ -513,8 +513,8 @@ export default class ObsidianBrainPlugin extends Plugin {
 
   reportError(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
-    new Notice(`Obsidian Brain: ${message}`);
-    console.error("[Obsidian Brain]", error);
+    new Notice(`Brain CLI: ${message}`);
+    console.error("[Brain CLI]", error);
   }
 
   async saveLowRiskMemory(content: string, source: string): Promise<TFile> {
@@ -525,7 +525,7 @@ export default class ObsidianBrainPlugin extends Plugin {
       sensitivity: "low",
       source
     });
-    new Notice("Obsidian Brain saved a low-risk memory fragment.");
+    new Notice("Brain CLI saved a low-risk memory fragment.");
     const file = this.app.vault.getAbstractFileByPath(fragment.path);
     if (!(file instanceof TFile)) throw new Error("Memory file could not be found after writing.");
     return file;

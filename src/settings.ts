@@ -1,5 +1,5 @@
 import { App, PluginSettingTab, SecretComponent, Setting, normalizePath } from "obsidian";
-import type ObsidianBrainPlugin from "./main";
+import type BrainCliPlugin from "./main";
 
 export interface AutoExpQueueEntry {
   path: string;
@@ -68,14 +68,14 @@ export const DEFAULT_SETTINGS: BrainSettings = {
 };
 
 export class BrainSettingTab extends PluginSettingTab {
-  constructor(app: App, private readonly plugin: ObsidianBrainPlugin) {
+  constructor(app: App, private readonly plugin: BrainCliPlugin) {
     super(app, plugin);
   }
 
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Obsidian Brain" });
+    containerEl.createEl("h2", { text: "Brain CLI" });
 
     new Setting(containerEl)
       .setName("Brain folder")

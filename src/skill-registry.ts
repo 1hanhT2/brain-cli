@@ -88,7 +88,7 @@ export class SkillRegistry {
         const metadata = this.parseMetadata(file, content);
         if (!discovered.has(metadata.name)) discovered.set(metadata.name, metadata);
       } catch (error) {
-        console.warn(`[Obsidian Brain] Ignoring invalid skill at ${file.path}.`, error);
+        console.warn(`[Brain CLI] Ignoring invalid skill at ${file.path}.`, error);
       }
     }
     this.skills = discovered;

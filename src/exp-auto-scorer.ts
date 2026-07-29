@@ -443,7 +443,7 @@ export class ExpAutoScorer {
       readyAt: item.readyAt
     }));
     this.persistence = this.persistence.then(() => this.persistQueue(snapshot)).catch((error) =>
-      console.error("[Obsidian Brain] Could not persist the automatic EXP queue.", error)
+      console.error("[Brain CLI] Could not persist the automatic EXP queue.", error)
     );
   }
 

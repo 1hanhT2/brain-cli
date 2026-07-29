@@ -84,7 +84,7 @@ export class SemanticIndexCoordinator {
     this.emit();
     if (settings.semanticSearchEnabled && settings.embeddingModel && settings.semanticFolders.length > 0) {
       void this.start("enable").catch((error) =>
-        console.error("[Obsidian Brain] Automatic semantic resume failed.", error)
+        console.error("[Brain CLI] Automatic semantic resume failed.", error)
       );
     }
   }
@@ -538,7 +538,7 @@ export class SemanticIndexCoordinator {
     // A full reconciliation still reads only the selected Markdown notes and
     // content hashes ensure that OpenRouter receives changed chunks only.
     await this.start("vault-change").catch((error) => {
-      console.error("[Obsidian Brain] Semantic incremental update failed.", error);
+      console.error("[Brain CLI] Semantic incremental update failed.", error);
     });
   }
 

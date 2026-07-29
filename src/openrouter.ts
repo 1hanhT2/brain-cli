@@ -172,7 +172,7 @@ export class OpenRouterClient {
         .filter((model) => model.pricing)
         .map((model) => [model.id, model.pricing!]));
     } catch (error) {
-      console.warn("[Obsidian Brain] Embedding pricing metadata could not be refreshed.", error);
+      console.warn("[Brain CLI] Embedding pricing metadata could not be refreshed.", error);
     }
 
     return [...new Map(embeddingModels
@@ -200,7 +200,7 @@ export class OpenRouterClient {
           headers: {
             Authorization: `Bearer ${apiKey}`,
             "Content-Type": "application/json",
-            "X-OpenRouter-Title": "Obsidian Brain"
+            "X-OpenRouter-Title": "Brain CLI"
           },
           body: JSON.stringify({
             model,
@@ -294,7 +294,7 @@ export class OpenRouterClient {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        "X-OpenRouter-Title": "Obsidian Brain"
+        "X-OpenRouter-Title": "Brain CLI"
       },
       body: JSON.stringify(body),
       signal
@@ -315,7 +315,7 @@ export class OpenRouterClient {
       const { functionTools, webSearchTool } = splitOpenRouterTools(tools);
       if (primaryStatus >= 500 && webSearchTool) {
         console.warn(
-          "[Obsidian Brain] OpenRouter's web-search server tool failed; retrying with the legacy web plugin.",
+          "[Brain CLI] OpenRouter's web-search server tool failed; retrying with the legacy web plugin.",
           primaryError
         );
         response = await request({
@@ -443,7 +443,7 @@ export class OpenRouterClient {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        "X-OpenRouter-Title": "Obsidian Brain"
+        "X-OpenRouter-Title": "Brain CLI"
       },
       body: JSON.stringify({
         model,
@@ -475,7 +475,7 @@ export class OpenRouterClient {
 
   private async getApiKey(): Promise<string> {
     const secretId = this.getSecretId().trim();
-    if (!secretId) throw new Error("Choose an OpenRouter API key in Obsidian Brain settings first.");
+    if (!secretId) throw new Error("Choose an OpenRouter API key in Brain CLI settings first.");
     const apiKey = await this.app.secretStorage.getSecret(secretId);
     if (!apiKey) throw new Error("The selected OpenRouter secret is unavailable on this device.");
     return apiKey;

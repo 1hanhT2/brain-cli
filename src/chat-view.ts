@@ -12,7 +12,7 @@ import {
   type App,
   type WorkspaceLeaf
 } from "obsidian";
-import type ObsidianBrainPlugin from "./main";
+import type BrainCliPlugin from "./main";
 import type { ChatMessage, ToolCall } from "./openrouter";
 import { requiresApproval } from "./permissions";
 import type { ToolRisk, OpenRouterModel } from "./types";
@@ -31,7 +31,7 @@ import { extractFileMentions, fileMention, findAtQuery } from "./file-mentions";
 import type { ExpCompletionProposal } from "./exp-completion-core";
 import type { WritingCoachStatus, WritingPillar } from "./writing-coach";
 
-export const BRAIN_VIEW_TYPE = "obsidian-brain-chat";
+export const BRAIN_VIEW_TYPE = "brain-cli-chat";
 
 interface BrainCommand {
   name: string;
@@ -110,8 +110,8 @@ const BRAIN_COMMANDS: BrainCommand[] = [
 const createSystemMessage = (): ChatMessage => ({
   role: "system",
   content: [
-    "[Obsidian Brain system v2]",
-    "You are Obsidian Brain, a concise and thoughtful agent operating inside an Obsidian vault.",
+    "[Brain CLI system v2]",
+    "You are Brain CLI, a concise and thoughtful agent operating inside an Obsidian vault.",
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
     "You can query, inspect, create, update, and complete TaskNotes tasks through the active task provider.",
     "You can use the EXP tools to plan, award, review, and persist accomplishment-first task EXP. Use record_task_exp instead of generic frontmatter writes for EXP.",
@@ -276,14 +276,14 @@ export class BrainChatView extends ItemView {
   private unsubscribeSemantic: (() => void) | null = null;
   private semanticProgressEl: HTMLElement | null = null;
   private transcriptVisibleStart: number | null = null;
-  private readonly suggestionsId = `obsidian-brain-suggestions-${Math.random().toString(36).slice(2)}`;
+  private readonly suggestionsId = `brain-cli-suggestions-${Math.random().toString(36).slice(2)}`;
 
-  constructor(leaf: WorkspaceLeaf, private readonly plugin: ObsidianBrainPlugin) {
+  constructor(leaf: WorkspaceLeaf, private readonly plugin: BrainCliPlugin) {
     super(leaf);
   }
 
   getViewType(): string { return BRAIN_VIEW_TYPE; }
-  getDisplayText(): string { return this.currentChat?.title ?? "Obsidian Brain"; }
+  getDisplayText(): string { return this.currentChat?.title ?? "Brain CLI"; }
   getIcon(): string { return "bot"; }
 
   refreshModels(): void {
@@ -296,11 +296,11 @@ export class BrainChatView extends ItemView {
     const finish = this.plugin.performance.start("view.open");
     try {
       this.containerEl.empty();
-      this.containerEl.addClass("obsidian-brain-view");
+      this.containerEl.addClass("brain-cli-view");
       this.renderHeader();
-      this.transcriptEl = this.containerEl.createDiv({ cls: "obsidian-brain-transcript" });
+      this.transcriptEl = this.containerEl.createDiv({ cls: "brain-cli-transcript" });
       this.transcriptEl.setAttribute("role", "log");
-      this.transcriptEl.setAttribute("aria-label", "Obsidian Brain conversation");
+      this.transcriptEl.setAttribute("aria-label", "Brain CLI conversation");
       this.renderEmptyState();
       this.renderComposer();
       await this.refreshChatSummaries();
@@ -320,26 +320,26 @@ export class BrainChatView extends ItemView {
   }
 
   private renderHeader(): void {
-    const header = this.containerEl.createDiv({ cls: "obsidian-brain-header" });
-    const titleRow = header.createDiv({ cls: "obsidian-brain-title-row" });
-    const identity = titleRow.createDiv({ cls: "obsidian-brain-identity" });
-    identity.createSpan({ cls: "obsidian-brain-terminal-mark", text: "●" });
+    const header = this.containerEl.createDiv({ cls: "brain-cli-header" });
+    const titleRow = header.createDiv({ cls: "brain-cli-title-row" });
+    const identity = titleRow.createDiv({ cls: "brain-cli-identity" });
+    identity.createSpan({ cls: "brain-cli-terminal-mark", text: "●" });
     identity.createEl("h3", { text: "brain" });
-    identity.createSpan({ cls: "obsidian-brain-vault", text: `@${this.app.vault.getName()}` });
-    this.statusEl = titleRow.createSpan({ cls: "obsidian-brain-status", text: "ready" });
+    identity.createSpan({ cls: "brain-cli-vault", text: `@${this.app.vault.getName()}` });
+    this.statusEl = titleRow.createSpan({ cls: "brain-cli-status", text: "ready" });
     this.statusEl.setAttribute("role", "status");
     this.statusEl.setAttribute("aria-live", "polite");
 
-    const contextRow = header.createDiv({ cls: "obsidian-brain-context-row" });
-    contextRow.createSpan({ cls: "obsidian-brain-context-prefix", text: "~/" });
-    this.contextChatEl = contextRow.createSpan({ cls: "obsidian-brain-context-chat", text: "new" });
-    contextRow.createSpan({ cls: "obsidian-brain-context-divider", text: "│" });
-    this.contextModelEl = contextRow.createSpan({ cls: "obsidian-brain-context-model" });
-    this.modelDetailsEl = contextRow.createSpan({ cls: "obsidian-brain-model-details" });
+    const contextRow = header.createDiv({ cls: "brain-cli-context-row" });
+    contextRow.createSpan({ cls: "brain-cli-context-prefix", text: "~/" });
+    this.contextChatEl = contextRow.createSpan({ cls: "brain-cli-context-chat", text: "new" });
+    contextRow.createSpan({ cls: "brain-cli-context-divider", text: "│" });
+    this.contextModelEl = contextRow.createSpan({ cls: "brain-cli-context-model" });
+    this.modelDetailsEl = contextRow.createSpan({ cls: "brain-cli-model-details" });
 
     // Native controls remain as an accessibility/state fallback. The terminal
     // command layer is the primary interface.
-    const internal = header.createDiv({ cls: "obsidian-brain-internal-controls" });
+    const internal = header.createDiv({ cls: "brain-cli-internal-controls" });
     const chatRow = internal.createDiv();
     this.chatSelect = chatRow.createEl("select", { attr: { "aria-label": "Saved chat" } });
     this.chatSelect.addEventListener("change", () => {
@@ -375,17 +375,17 @@ export class BrainChatView extends ItemView {
   }
 
   private renderComposer(): void {
-    const composer = this.containerEl.createDiv({ cls: "obsidian-brain-composer" });
-    this.commandSuggestionsEl = composer.createDiv({ cls: "obsidian-brain-command-suggestions" });
+    const composer = this.containerEl.createDiv({ cls: "brain-cli-composer" });
+    this.commandSuggestionsEl = composer.createDiv({ cls: "brain-cli-command-suggestions" });
     this.commandSuggestionsEl.id = this.suggestionsId;
     this.commandSuggestionsEl.setAttribute("role", "listbox");
     this.commandSuggestionsEl.setAttribute("aria-label", "Command, skill, and file suggestions");
-    const row = composer.createDiv({ cls: "obsidian-brain-composer-row" });
-    row.createSpan({ cls: "obsidian-brain-shell-prompt", text: "brain>" });
+    const row = composer.createDiv({ cls: "brain-cli-composer-row" });
+    row.createSpan({ cls: "brain-cli-shell-prompt", text: "brain>" });
     this.inputEl = row.createEl("textarea", {
       attr: {
         placeholder: "ask the vault or type /help",
-        "aria-label": "Obsidian Brain terminal input",
+        "aria-label": "Brain CLI terminal input",
         "aria-controls": this.commandSuggestionsEl.id,
         "aria-autocomplete": "list",
         "aria-expanded": "false",
@@ -395,11 +395,11 @@ export class BrainChatView extends ItemView {
     });
     this.sendButton = row.createEl("button", {
       text: "↵",
-      cls: "obsidian-brain-run-button",
+      cls: "brain-cli-run-button",
       attr: { "aria-label": "Run", title: "Run command or send message" }
     });
     this.commandHintEl = composer.createDiv({
-      cls: "obsidian-brain-command-hint",
+      cls: "brain-cli-command-hint",
       text: "enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop"
     });
     const submit = async () => {
@@ -684,7 +684,7 @@ export class BrainChatView extends ItemView {
         this.sensitiveContextActive = false;
         await this.persistCurrentChat();
       }
-      this.activeAssistantBody?.removeClass("obsidian-brain-stream-cursor");
+      this.activeAssistantBody?.removeClass("brain-cli-stream-cursor");
       this.activeMemoryContext = null;
       this.activeAssistantBody = null;
       this.activePartial = "";
@@ -1782,19 +1782,19 @@ export class BrainChatView extends ItemView {
   }
 
   private addCommandEcho(command: string): void {
-    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
-    const line = this.transcriptEl.createDiv({ cls: "obsidian-brain-command-echo" });
-    line.createSpan({ cls: "obsidian-brain-line-prefix", text: "$" });
+    this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
+    const line = this.transcriptEl.createDiv({ cls: "brain-cli-command-echo" });
+    line.createSpan({ cls: "brain-cli-line-prefix", text: "$" });
     line.createSpan({ text: command });
     line.scrollIntoView({ block: "end" });
   }
 
   private async addTerminalOutput(markdown: string, state: "system" | "warning" | "error" = "system"): Promise<void> {
-    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
-    const output = this.transcriptEl.createDiv({ cls: `obsidian-brain-terminal-output is-${state}` });
+    this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
+    const output = this.transcriptEl.createDiv({ cls: `brain-cli-terminal-output is-${state}` });
     output.setAttribute("role", state === "error" ? "alert" : "status");
-    output.createSpan({ cls: "obsidian-brain-line-prefix", text: state === "error" ? "!" : state === "warning" ? "?" : "›" });
-    const body = output.createDiv({ cls: "obsidian-brain-terminal-output-body markdown-rendered obsidian-brain-markdown" });
+    output.createSpan({ cls: "brain-cli-line-prefix", text: state === "error" ? "!" : state === "warning" ? "?" : "›" });
+    const body = output.createDiv({ cls: "brain-cli-terminal-output-body markdown-rendered brain-cli-markdown" });
     await this.renderInlineMarkdown(body, markdown);
     output.scrollIntoView({ block: "end" });
   }
@@ -1994,13 +1994,13 @@ export class BrainChatView extends ItemView {
       await this.addTerminalOutput("no completion EXP proposals are waiting");
       return;
     }
-    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+    this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
     const output = this.transcriptEl.createDiv({
-      cls: "obsidian-brain-terminal-output obsidian-brain-config-output is-system"
+      cls: "brain-cli-terminal-output brain-cli-config-output is-system"
     });
-    output.createSpan({ cls: "obsidian-brain-line-prefix", text: "›" });
+    output.createSpan({ cls: "brain-cli-line-prefix", text: "›" });
     this.expPendingPickerEl = output.createDiv({
-      cls: "obsidian-brain-terminal-output-body obsidian-brain-config-menu"
+      cls: "brain-cli-terminal-output-body brain-cli-config-menu"
     });
     this.expPendingSelection = 0;
     this.expPendingSelected.clear();
@@ -2023,37 +2023,37 @@ export class BrainChatView extends ItemView {
       Math.min(this.expPendingSelection, this.expPendingItems.length - 1)
     );
     this.expPendingPickerEl.empty();
-    this.expPendingPickerEl.createDiv({ cls: "obsidian-brain-config-title", text: "pending EXP completions" });
+    this.expPendingPickerEl.createDiv({ cls: "brain-cli-config-title", text: "pending EXP completions" });
     this.expPendingPickerEl.createDiv({
-      cls: "obsidian-brain-config-section",
+      cls: "brain-cli-config-section",
       text: "award-ready rows can be selected; needs-score rows open the EXP skill"
     });
     this.expPendingItems.forEach((proposal, index) => {
       const selectable = proposal.state === "ready" && Boolean(proposal.input);
       const selected = this.expPendingSelected.has(proposal.id);
       const row = this.expPendingPickerEl!.createDiv({
-        cls: `obsidian-brain-config-item${index === this.expPendingSelection ? " is-selected" : ""}`,
+        cls: `brain-cli-config-item${index === this.expPendingSelection ? " is-selected" : ""}`,
         attr: {
           role: "checkbox",
           "aria-checked": String(selected),
           "aria-label": proposal.title
         }
       });
-      row.createSpan({ cls: "obsidian-brain-config-cursor", text: index === this.expPendingSelection ? ">" : " " });
+      row.createSpan({ cls: "brain-cli-config-cursor", text: index === this.expPendingSelection ? ">" : " " });
       row.createSpan({
-        cls: "obsidian-brain-config-checkbox",
+        cls: "brain-cli-config-checkbox",
         text: selectable ? (selected ? "[x]" : "[ ]") : "[!]"
       });
-      const copy = row.createDiv({ cls: "obsidian-brain-config-copy" });
-      copy.createDiv({ cls: "obsidian-brain-config-label", text: proposal.title || proposal.path });
+      const copy = row.createDiv({ cls: "brain-cli-config-copy" });
+      copy.createDiv({ cls: "brain-cli-config-label", text: proposal.title || proposal.path });
       copy.createDiv({
-        cls: "obsidian-brain-config-description",
+        cls: "brain-cli-config-description",
         text: proposal.input
           ? `${proposal.input.value} EXP · ${proposal.input.scoringSource ?? "manual"} · ${proposal.completionAt}`
           : `needs score · ${proposal.completionAt}`
       });
       row.createSpan({
-        cls: "obsidian-brain-config-detail",
+        cls: "brain-cli-config-detail",
         text: proposal.state === "ready" ? "Ready" : proposal.state === "failed" ? "Failed" : "Needs score"
       });
       row.addEventListener("mouseenter", () => {
@@ -2068,7 +2068,7 @@ export class BrainChatView extends ItemView {
       });
     });
     this.expPendingPickerEl.createDiv({
-      cls: "obsidian-brain-config-footer",
+      cls: "brain-cli-config-footer",
       text: this.expPendingBusy
         ? "working…"
         : `${this.expPendingSelected.size} selected · space toggle · enter review`
@@ -2163,7 +2163,7 @@ export class BrainChatView extends ItemView {
     this.expPendingBusy = false;
     if (showClosedState) {
       picker.empty();
-      picker.createDiv({ cls: "obsidian-brain-config-closed", text: "EXP review queue closed" });
+      picker.createDiv({ cls: "brain-cli-config-closed", text: "EXP review queue closed" });
     } else {
       picker.parentElement?.remove();
     }
@@ -2176,13 +2176,13 @@ export class BrainChatView extends ItemView {
 
   private openConfigMenu(): void {
     if (this.configMenuEl) return;
-    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+    this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
     const output = this.transcriptEl.createDiv({
-      cls: "obsidian-brain-terminal-output obsidian-brain-config-output is-system"
+      cls: "brain-cli-terminal-output brain-cli-config-output is-system"
     });
-    output.createSpan({ cls: "obsidian-brain-line-prefix", text: "›" });
+    output.createSpan({ cls: "brain-cli-line-prefix", text: "›" });
     this.configMenuEl = output.createDiv({
-      cls: "obsidian-brain-terminal-output-body obsidian-brain-config-menu"
+      cls: "brain-cli-terminal-output-body brain-cli-config-menu"
     });
     this.configMenuSelection = 0;
     this.inputEl.value = "";
@@ -2201,23 +2201,23 @@ export class BrainChatView extends ItemView {
     const items = this.getConfigMenuItems();
     this.configMenuSelection = Math.max(0, Math.min(this.configMenuSelection, items.length - 1));
     this.configMenuEl.empty();
-    this.configMenuEl.createDiv({ cls: "obsidian-brain-config-title", text: "config" });
-    this.configMenuEl.createDiv({ cls: "obsidian-brain-config-section", text: "features and retrieval" });
+    this.configMenuEl.createDiv({ cls: "brain-cli-config-title", text: "config" });
+    this.configMenuEl.createDiv({ cls: "brain-cli-config-section", text: "features and retrieval" });
     items.forEach((item, index) => {
       const row = this.configMenuEl!.createDiv({
-        cls: `obsidian-brain-config-item${index === this.configMenuSelection ? " is-selected" : ""}`,
+        cls: `brain-cli-config-item${index === this.configMenuSelection ? " is-selected" : ""}`,
         attr: {
           role: "checkbox",
           "aria-checked": String(item.checked()),
           "aria-label": item.label
         }
       });
-      row.createSpan({ cls: "obsidian-brain-config-cursor", text: index === this.configMenuSelection ? ">" : " " });
-      row.createSpan({ cls: "obsidian-brain-config-checkbox", text: item.checked() ? "[x]" : "[ ]" });
-      const copy = row.createDiv({ cls: "obsidian-brain-config-copy" });
-      copy.createDiv({ cls: "obsidian-brain-config-label", text: item.label });
-      copy.createDiv({ cls: "obsidian-brain-config-description", text: item.description });
-      row.createSpan({ cls: "obsidian-brain-config-detail", text: item.detail() });
+      row.createSpan({ cls: "brain-cli-config-cursor", text: index === this.configMenuSelection ? ">" : " " });
+      row.createSpan({ cls: "brain-cli-config-checkbox", text: item.checked() ? "[x]" : "[ ]" });
+      const copy = row.createDiv({ cls: "brain-cli-config-copy" });
+      copy.createDiv({ cls: "brain-cli-config-label", text: item.label });
+      copy.createDiv({ cls: "brain-cli-config-description", text: item.description });
+      row.createSpan({ cls: "brain-cli-config-detail", text: item.detail() });
       row.addEventListener("mouseenter", () => {
         if (this.configMenuSelection === index) return;
         this.configMenuSelection = index;
@@ -2230,7 +2230,7 @@ export class BrainChatView extends ItemView {
       });
     });
     this.configMenuEl.createDiv({
-      cls: "obsidian-brain-config-footer",
+      cls: "brain-cli-config-footer",
       text: this.configMenuBusy ? "saving…" : "space toggle · enter leave"
     });
   }
@@ -2267,7 +2267,7 @@ export class BrainChatView extends ItemView {
     this.configMenuBusy = false;
     if (showClosedState) {
       menu.empty();
-      menu.createDiv({ cls: "obsidian-brain-config-closed", text: "config saved · menu closed" });
+      menu.createDiv({ cls: "brain-cli-config-closed", text: "config saved · menu closed" });
     } else {
       menu.parentElement?.remove();
     }
@@ -2281,13 +2281,13 @@ export class BrainChatView extends ItemView {
   private openFolderPicker(enableAfterConfirm: boolean): void {
     if (this.folderPickerEl) return;
     this.closeConfigMenu(false);
-    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+    this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
     const output = this.transcriptEl.createDiv({
-      cls: "obsidian-brain-terminal-output obsidian-brain-config-output is-system"
+      cls: "brain-cli-terminal-output brain-cli-config-output is-system"
     });
-    output.createSpan({ cls: "obsidian-brain-line-prefix", text: "›" });
+    output.createSpan({ cls: "brain-cli-line-prefix", text: "›" });
     this.folderPickerEl = output.createDiv({
-      cls: "obsidian-brain-terminal-output-body obsidian-brain-config-menu"
+      cls: "brain-cli-terminal-output-body brain-cli-config-menu"
     });
     this.folderPickerFolders = ["/", ...this.app.vault.getAllLoadedFiles()
       .filter((file): file is TFolder => file instanceof TFolder)
@@ -2311,34 +2311,34 @@ export class BrainChatView extends ItemView {
   private renderFolderPicker(): void {
     if (!this.folderPickerEl) return;
     this.folderPickerEl.empty();
-    this.folderPickerEl.createDiv({ cls: "obsidian-brain-config-title", text: "semantic folders" });
+    this.folderPickerEl.createDiv({ cls: "brain-cli-config-title", text: "semantic folders" });
     this.folderPickerEl.createDiv({
-      cls: "obsidian-brain-config-section",
+      cls: "brain-cli-config-section",
       text: "selected folders include all descendants"
     });
     if (this.folderPickerFolders.length === 0) {
-      this.folderPickerEl.createDiv({ cls: "obsidian-brain-config-closed", text: "no vault folders found" });
+      this.folderPickerEl.createDiv({ cls: "brain-cli-config-closed", text: "no vault folders found" });
     }
     this.folderPickerFolders.forEach((folder, index) => {
       const depth = folder === "/" ? 0 : folder.split("/").length - 1;
       const row = this.folderPickerEl!.createDiv({
-        cls: `obsidian-brain-config-item${index === this.folderPickerSelection ? " is-selected" : ""}`,
+        cls: `brain-cli-config-item${index === this.folderPickerSelection ? " is-selected" : ""}`,
         attr: {
           role: "checkbox",
           "aria-checked": String(this.folderPickerSelected.has(folder)),
           "aria-label": folder
         }
       });
-      row.createSpan({ cls: "obsidian-brain-config-cursor", text: index === this.folderPickerSelection ? ">" : " " });
+      row.createSpan({ cls: "brain-cli-config-cursor", text: index === this.folderPickerSelection ? ">" : " " });
       row.createSpan({
-        cls: "obsidian-brain-config-checkbox",
+        cls: "brain-cli-config-checkbox",
         text: this.folderPickerSelected.has(folder) ? "[x]" : "[ ]"
       });
       row.createDiv({
-        cls: "obsidian-brain-config-label",
+        cls: "brain-cli-config-label",
         text: folder === "/" ? "(vault root)" : `${"  ".repeat(depth)}${folder.split("/").at(-1) ?? folder}`
       });
-      row.createSpan({ cls: "obsidian-brain-config-detail", text: folder });
+      row.createSpan({ cls: "brain-cli-config-detail", text: folder });
       row.addEventListener("mouseenter", () => {
         this.folderPickerSelection = index;
         this.renderFolderPicker();
@@ -2350,7 +2350,7 @@ export class BrainChatView extends ItemView {
       });
     });
     this.folderPickerEl.createDiv({
-      cls: "obsidian-brain-config-footer",
+      cls: "brain-cli-config-footer",
       text: `${this.folderPickerSelected.size} selected · space toggle · enter save`
     });
   }
@@ -2401,7 +2401,7 @@ export class BrainChatView extends ItemView {
     this.folderPickerEl = null;
     if (showClosedState) {
       picker.empty();
-      picker.createDiv({ cls: "obsidian-brain-config-closed", text: "folder picker closed" });
+      picker.createDiv({ cls: "brain-cli-config-closed", text: "folder picker closed" });
     } else picker.parentElement?.remove();
     this.inputEl.readOnly = false;
     this.inputEl.placeholder = "ask the vault or type /help";
@@ -2426,13 +2426,13 @@ export class BrainChatView extends ItemView {
       || Boolean(this.semanticProgressEl && status.completedChunks > 0);
     if (!shouldRender || !this.transcriptEl) return;
     if (!this.semanticProgressEl) {
-      this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+      this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
       const output = this.transcriptEl.createDiv({
-        cls: "obsidian-brain-terminal-output obsidian-brain-semantic-progress is-system"
+        cls: "brain-cli-terminal-output brain-cli-semantic-progress is-system"
       });
-      output.createSpan({ cls: "obsidian-brain-line-prefix", text: "↻" });
+      output.createSpan({ cls: "brain-cli-line-prefix", text: "↻" });
       this.semanticProgressEl = output.createEl("pre", {
-        cls: "obsidian-brain-terminal-output-body obsidian-brain-progress-body"
+        cls: "brain-cli-terminal-output-body brain-cli-progress-body"
       });
       output.scrollIntoView({ block: "end" });
     }
@@ -2505,7 +2505,7 @@ export class BrainChatView extends ItemView {
       const assistantBody = this.addMessage("assistant", "");
       this.activeAssistantBody = assistantBody;
       this.activePartial = "";
-      assistantBody.addClass("obsidian-brain-stream-cursor");
+      assistantBody.addClass("brain-cli-stream-cursor");
       this.statusEl.setText(iteration === 0 ? "thinking…" : "using tools…");
 
       const result = await this.plugin.streamChatCompletion(
@@ -2517,7 +2517,7 @@ export class BrainChatView extends ItemView {
         },
         signal
       );
-      assistantBody.removeClass("obsidian-brain-stream-cursor");
+      assistantBody.removeClass("brain-cli-stream-cursor");
 
       let completed = result.content || this.activePartial;
       if (result.toolCalls.length === 0 && completed && this.turnCitations.size > 0) {
@@ -2646,24 +2646,24 @@ export class BrainChatView extends ItemView {
     setSources: (citations: string[]) => void;
     requestApproval: (signal: AbortSignal) => Promise<boolean>;
   } {
-    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
-    const card = this.transcriptEl.createDiv({ cls: "obsidian-brain-tool" });
+    this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
+    const card = this.transcriptEl.createDiv({ cls: "brain-cli-tool" });
     card.setAttribute("role", "group");
     card.setAttribute("aria-label", `${this.plugin.agentTools.displayName(call.function.name)} tool operation`);
-    const header = card.createDiv({ cls: "obsidian-brain-tool-header" });
+    const header = card.createDiv({ cls: "brain-cli-tool-header" });
     const toolName = header.createSpan({
-      cls: "obsidian-brain-tool-name",
+      cls: "brain-cli-tool-name",
       text: this.plugin.agentTools.displayName(call.function.name || "unknown tool")
     });
     toolName.title = call.function.name;
     header.createSpan({
-      cls: "obsidian-brain-tool-risk",
+      cls: "brain-cli-tool-risk",
       text: risk === "read" ? "read" : risk ? "write" : "unknown"
     });
-    const status = header.createSpan({ cls: "obsidian-brain-tool-status", text: "requested" });
+    const status = header.createSpan({ cls: "brain-cli-tool-status", text: "requested" });
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
-    const details = card.createEl("details", { cls: "obsidian-brain-tool-details" });
+    const details = card.createEl("details", { cls: "brain-cli-tool-details" });
     details.createEl("summary", { text: "Technical details" });
     const argumentsEl = details.createEl("pre");
     try {
@@ -2671,18 +2671,18 @@ export class BrainChatView extends ItemView {
     } catch {
       argumentsEl.setText(call.function.arguments);
     }
-    const previewEl = card.createDiv({ cls: "obsidian-brain-tool-preview" });
-    const resultEl = card.createDiv({ cls: "obsidian-brain-tool-result" });
-    const errorEl = card.createDiv({ cls: "obsidian-brain-tool-error" });
-    const sourcesEl = card.createDiv({ cls: "obsidian-brain-tool-sources" });
-    const actions = card.createDiv({ cls: "obsidian-brain-tool-actions" });
+    const previewEl = card.createDiv({ cls: "brain-cli-tool-preview" });
+    const resultEl = card.createDiv({ cls: "brain-cli-tool-result" });
+    const errorEl = card.createDiv({ cls: "brain-cli-tool-error" });
+    const sourcesEl = card.createDiv({ cls: "brain-cli-tool-sources" });
+    const actions = card.createDiv({ cls: "brain-cli-tool-actions" });
     card.scrollIntoView({ block: "end" });
 
     const renderPreview = (container: HTMLElement, preview: ToolPreview): void => {
       container.empty();
-      container.createDiv({ cls: "obsidian-brain-tool-preview-title", text: preview.title });
+      container.createDiv({ cls: "brain-cli-tool-preview-title", text: preview.title });
       if (preview.details) container.createEl("pre", {
-        cls: "obsidian-brain-tool-preview-details",
+        cls: "brain-cli-tool-preview-details",
         text: preview.details
       });
       const panes = [
@@ -2694,10 +2694,10 @@ export class BrainChatView extends ItemView {
           : null
       ].filter((pane): pane is { value: string; label: string; className: string } => pane !== null);
       if (panes.length > 0) {
-        const diff = container.createDiv({ cls: `obsidian-brain-diff${panes.length === 1 ? " is-single" : ""}` });
+        const diff = container.createDiv({ cls: `brain-cli-diff${panes.length === 1 ? " is-single" : ""}` });
         for (const pane of panes) {
-          const paneEl = diff.createDiv({ cls: `obsidian-brain-diff-pane ${pane.className}` });
-          paneEl.createDiv({ cls: "obsidian-brain-diff-label", text: pane.label });
+          const paneEl = diff.createDiv({ cls: `brain-cli-diff-pane ${pane.className}` });
+          paneEl.createDiv({ cls: "brain-cli-diff-label", text: pane.label });
           paneEl.createEl("pre", { text: pane.value });
         }
       }
@@ -2720,7 +2720,7 @@ export class BrainChatView extends ItemView {
       },
       setSensitive: (reasons) => {
         card.addClass("is-sensitive");
-        const warning = previewEl.createDiv({ cls: "obsidian-brain-sensitive-warning" });
+        const warning = previewEl.createDiv({ cls: "brain-cli-sensitive-warning" });
         warning.createEl("strong", { text: "Sensitive note content" });
         warning.createDiv({ text: reasons.join(" · ") });
       },
@@ -2733,7 +2733,7 @@ export class BrainChatView extends ItemView {
       },
       requestApproval: (signal) => new Promise<boolean>((resolve) => {
         actions.createSpan({
-          cls: "obsidian-brain-tool-action-hint",
+          cls: "brain-cli-tool-action-hint",
           text: "Confirm this exact operation:"
         });
         const approve = actions.createEl("button", {
@@ -2878,7 +2878,7 @@ export class BrainChatView extends ItemView {
         content
       });
     }
-    const event = this.transcriptEl.createDiv({ cls: "obsidian-brain-skill-event" });
+    const event = this.transcriptEl.createDiv({ cls: "brain-cli-skill-event" });
     event.createSpan({
       text: activeIndex >= 0 ? "Refreshed skill: " : automatic ? "Auto-activated skill: " : "Activated skill: "
     });
@@ -3002,7 +3002,9 @@ export class BrainChatView extends ItemView {
     const current = createSystemMessage();
     const index = this.messages.findIndex((message) =>
       message.role === "system" &&
-      (message.content.startsWith("[Obsidian Brain system") ||
+      (message.content.startsWith("[Brain CLI system") ||
+        message.content.startsWith("You are Brain CLI") ||
+        message.content.startsWith("[Obsidian Brain system") ||
         message.content.startsWith("You are Obsidian Brain"))
     );
     if (index < 0) this.messages.unshift(current);
@@ -3036,7 +3038,7 @@ export class BrainChatView extends ItemView {
     if (!await modal.result) return;
     try {
       await this.plugin.chatStore.remove(this.currentChat);
-      new Notice("Obsidian Brain moved the chat to the vault trash.");
+      new Notice("Brain CLI moved the chat to the vault trash.");
       this.startNewChat();
       await this.refreshChatSummaries();
     } catch (error) {
@@ -3080,7 +3082,7 @@ export class BrainChatView extends ItemView {
     if (this.transcriptVisibleStart > 0) {
       const earlierCount = this.transcriptVisibleStart;
       const loadEarlier = this.transcriptEl.createEl("button", {
-        cls: "obsidian-brain-load-earlier",
+        cls: "brain-cli-load-earlier",
         text: `↑ load ${Math.min(TRANSCRIPT_PAGE_MESSAGES, earlierCount)} earlier · ${earlierCount} hidden`
       });
       loadEarlier.addEventListener("click", () => {
@@ -3124,12 +3126,12 @@ export class BrainChatView extends ItemView {
   }
 
   private renderEmptyState(): void {
-    const empty = this.transcriptEl.createDiv({ cls: "obsidian-brain-empty" });
+    const empty = this.transcriptEl.createDiv({ cls: "brain-cli-empty" });
     empty.setAttribute("role", "status");
-    empty.createDiv({ cls: "obsidian-brain-empty-mark", text: "OBSIDIAN_BRAIN" });
+    empty.createDiv({ cls: "brain-cli-empty-mark", text: "BRAIN_CLI" });
     empty.createDiv({ text: "Your vault agent is ready." });
     empty.createDiv({
-      cls: "obsidian-brain-empty-hint",
+      cls: "brain-cli-empty-hint",
       text: "Ask about your notes, type / for commands, or @ to attach a file or activate a skill."
     });
   }
@@ -3313,7 +3315,7 @@ export class BrainChatView extends ItemView {
     }
     this.visibleSuggestions.forEach((command, index) => {
       const item = this.commandSuggestionsEl.createDiv({
-        cls: `obsidian-brain-command-suggestion${index === this.suggestionIndex ? " is-selected" : ""}`,
+        cls: `brain-cli-command-suggestion${index === this.suggestionIndex ? " is-selected" : ""}`,
         attr: {
           id: `${this.commandSuggestionsEl.id}-option-${index}`,
           role: "option",
@@ -3517,7 +3519,7 @@ export class BrainChatView extends ItemView {
 
   private iconButton(parent: HTMLElement, icon: string, label: string, action: () => void): HTMLButtonElement {
     const button = parent.createEl("button", {
-      cls: "clickable-icon obsidian-brain-icon-button",
+      cls: "clickable-icon brain-cli-icon-button",
       attr: { "aria-label": label, title: label }
     });
     setIcon(button, icon);
@@ -3526,22 +3528,22 @@ export class BrainChatView extends ItemView {
   }
 
   private addMessage(role: "user" | "assistant", text: string): HTMLElement {
-    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
-    const message = this.transcriptEl.createDiv({ cls: "obsidian-brain-message" });
+    this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
+    const message = this.transcriptEl.createDiv({ cls: "brain-cli-message" });
     message.dataset.role = role;
     message.setAttribute("role", "article");
     message.setAttribute("aria-label", role === "user" ? "You" : "Brain");
     message.createDiv({
-      cls: "obsidian-brain-message-label",
+      cls: "brain-cli-message-label",
       text: role === "user" ? "you>" : "brain>"
     });
-    const body = message.createDiv({ cls: "obsidian-brain-message-body", text });
+    const body = message.createDiv({ cls: "brain-cli-message-body", text });
     message.scrollIntoView({ block: "end" });
     return body;
   }
 
   private async renderAssistantMarkdown(body: HTMLElement, markdown: string): Promise<void> {
-    body.addClasses(["markdown-rendered", "obsidian-brain-markdown"]);
+    body.addClasses(["markdown-rendered", "brain-cli-markdown"]);
     await this.renderInlineMarkdown(body, markdown);
   }
 
@@ -3574,7 +3576,7 @@ export class BrainChatView extends ItemView {
     this.sendButton.setText(generating ? "^C" : "↵");
     this.sendButton.setAttribute("aria-label", generating ? "Stop generation" : "Run");
     this.sendButton.title = generating ? "Stop generation (Ctrl+C)" : "Run command or send message";
-    this.sendButton.toggleClass("obsidian-brain-stop", generating);
+    this.sendButton.toggleClass("brain-cli-stop", generating);
     this.modelSelect.disabled = generating;
     this.modelSearch.disabled = generating;
     this.modelFilter.disabled = generating;

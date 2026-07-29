@@ -1,4 +1,4 @@
-# Obsidian Brain
+# Brain CLI
 
 Android-safe Obsidian agent foundation, derived selectively from OpenCode's interaction and permission concepts.
 
@@ -278,10 +278,10 @@ model filter, so `/model all 1` and `/model popular 1` open those lists while
 The plugin uses Obsidian's semantic variables for backgrounds, text, borders,
 typography, spacing, controls, and motion preferences. Themes and CSS snippets
 can optionally customize the Brain surface by overriding these variables on
-`.obsidian-brain-view`:
+`.brain-cli-view`:
 
 ```css
-.obsidian-brain-view {
+.brain-cli-view {
   --brain-bg: var(--background-primary);
   --brain-surface: var(--background-secondary);
   --brain-border: var(--background-modifier-border);

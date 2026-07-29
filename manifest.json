@@ -1,9 +1,9 @@
 {
-  "id": "obsidian-brain",
-  "name": "Obsidian Brain",
-  "version": "0.12.3",
+  "id": "brain-cli",
+  "name": "Brain CLI",
+  "version": "0.13.0",
   "minAppVersion": "1.11.4",
-  "description": "An OpenRouter-powered vault agent with safe Obsidian and TaskNotes foundations.",
+  "description": "An OpenRouter-powered CLI-style vault agent with safe note and TaskNotes tools.",
   "author": "Thanh12",
   "isDesktopOnly": false
 }

@@ -80,7 +80,7 @@ export class OmnisearchProvider {
     try {
       rawResults = await api.search(trimmed);
     } catch (error) {
-      console.warn("[Obsidian Brain] Omnisearch failed; using the built-in search fallback.", error);
+      console.warn("[Brain CLI] Omnisearch failed; using the built-in search fallback.", error);
       return null;
     }
 

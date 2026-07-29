@@ -1,6 +1,6 @@
 {
-  "name": "obsidian-brain",
-  "version": "0.12.3",
+  "name": "brain-cli",
+  "version": "0.13.0",
   "private": true,
   "description": "An OpenRouter-powered, Obsidian-native vault agent.",
   "scripts": {

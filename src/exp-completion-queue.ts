@@ -38,7 +38,7 @@ export class ExpCompletionQueueStore {
         const proposal = await this.read(file);
         if (proposal) proposals.push(proposal);
       } catch (error) {
-        console.warn(`[Obsidian Brain] Could not read EXP queue item ${file.path}.`, error);
+        console.warn(`[Brain CLI] Could not read EXP queue item ${file.path}.`, error);
       }
     }
     return proposals.sort((left, right) =>

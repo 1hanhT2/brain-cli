@@ -207,7 +207,7 @@ export class TaskNotesProvider implements TaskProvider {
 
   private context(reason: string): UnknownRecord {
     return {
-      source: "obsidian-brain",
+      source: "brain-cli",
       correlationId: typeof crypto?.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`,

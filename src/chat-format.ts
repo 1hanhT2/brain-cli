@@ -18,7 +18,7 @@ export interface ChatSummary {
   model: string;
 }
 
-const STATE_PATTERN = /<!-- obsidian-brain-state:([A-Za-z0-9+/=]+) -->/;
+const STATE_PATTERN = /<!-- (?:brain-cli|obsidian-brain)-state:([A-Za-z0-9+/=]+) -->/;
 
 const bytesToBase64 = (value: string): string => {
   const bytes = new TextEncoder().encode(value);
@@ -59,7 +59,7 @@ export const encodeChatState = (state: ChatState): string =>
 
 export const decodeChatState = (markdown: string): ChatState => {
   const encoded = markdown.match(STATE_PATTERN)?.[1];
-  if (!encoded) throw new Error("This note does not contain an Obsidian Brain chat state.");
+  if (!encoded) throw new Error("This note does not contain a Brain CLI chat state.");
   const state = JSON.parse(base64ToText(encoded)) as Partial<ChatState>;
   if (
     typeof state.id !== "string"
@@ -70,7 +70,7 @@ export const decodeChatState = (markdown: string): ChatState => {
     || typeof state.model !== "string"
     || !Array.isArray(state.messages)
   ) {
-    throw new Error("The stored Obsidian Brain chat state is invalid.");
+    throw new Error("The stored Brain CLI chat state is invalid.");
   }
   return state as ChatState;
 };
@@ -109,7 +109,7 @@ export const renderChatMarkdown = (state: ChatState): string => {
     `> Model: \`${state.model}\`  `,
     `> Updated: ${state.updatedAt}`,
     "",
-    `<!-- obsidian-brain-state:${encodeChatState(state)} -->`,
+    `<!-- brain-cli-state:${encodeChatState(state)} -->`,
     "",
     transcript
   ].join("\n").trimEnd() + "\n";

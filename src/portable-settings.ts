@@ -170,7 +170,7 @@ export class PortableSettingsStore {
     lines.push(
       "---",
       "",
-      "# Obsidian Brain settings",
+      "# Brain CLI settings",
       "",
       "This is the human-readable source for portable, non-secret Brain preferences.",
       "Use Brain's `/config` menu or Obsidian settings when possible; direct edits are validated before being applied.",

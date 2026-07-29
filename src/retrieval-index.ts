@@ -187,7 +187,7 @@ export class VaultRetrievalIndex {
     this.recordsByPath.delete(normalized);
     this.sensitivePaths.delete(normalized);
     void this.store.remove(normalized).catch((error) =>
-      console.warn("[Obsidian Brain] Could not remove a persisted lexical index record.", error)
+      console.warn("[Brain CLI] Could not remove a persisted lexical index record.", error)
     );
   }
 
@@ -218,7 +218,7 @@ export class VaultRetrievalIndex {
         semantic = this.semanticRanks(await this.semanticIndex.search(query, options, engineLimit));
       } catch (error) {
         semanticFailed = true;
-        console.warn("[Obsidian Brain] Semantic retrieval failed; using lexical fallback.", error);
+        console.warn("[Brain CLI] Semantic retrieval failed; using lexical fallback.", error);
       }
     } else if (requestedMode !== "lexical") {
       semanticFailed = true;
