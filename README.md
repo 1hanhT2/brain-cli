@@ -150,6 +150,11 @@ while Brain was closed. Existing planned EXP is reused without another model
 call; unscored completions either use the background model or remain
 `needs-score`, according to `/config`.
 
+`@exp score-completed` turns every `needs-score` completion proposal into one
+explicit scoring session. Brain reads each task before scoring it and still
+pauses on a separate approval preview for each award, so a batch never creates
+unreviewed EXP writes.
+
 When automatic award writes are disabled, `@exp pending` opens a CLI checklist.
 Use arrows to navigate, Space to select ready proposals, and Enter to show one
 batch approval preview. `/approve` records the selected awards; `/deny` leaves

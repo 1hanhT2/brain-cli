@@ -233,7 +233,9 @@ export class SkillRegistry {
         "  - value: check",
         "    description: Reconcile completed tasks and process their EXP",
         "  - value: pending",
-        "    description: Review pending completion awards"
+        "    description: Review pending completion awards",
+        "  - value: score-completed",
+        "    description: Batch-score completed tasks that need EXP"
       ].join("\n");
       const expanded = frontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
       migrated = `${expanded}${migrated.slice(frontmatter.length)}`;

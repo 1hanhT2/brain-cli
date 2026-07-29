@@ -64,7 +64,7 @@ interface HandledToolCall {
 
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
-const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate", "check", "pending", "analytics", "goals"]);
+const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate", "check", "pending", "score-completed", "analytics", "goals"]);
 const EMBEDDING_MANAGEMENT_ACTIONS = new Set(["status", "refresh", "delete", "pause", "resume", "cancel"]);
 const TRANSCRIPT_INITIAL_MESSAGES = 40;
 const TRANSCRIPT_PAGE_MESSAGES = 40;
@@ -1471,6 +1471,27 @@ export class BrainChatView extends ItemView {
       await this.openExpPendingPicker();
       return;
     }
+    if (action === "score-completed") {
+      if (parts.length > 1) {
+        await this.addTerminalOutput("usage: `@exp score-completed`", "error");
+        return;
+      }
+      const pending = (await this.plugin.expCompletionQueue.list()).filter((proposal) => proposal.state === "needs-score");
+      if (pending.length === 0) {
+        await this.addTerminalOutput("no completed tasks need manual EXP scoring · run `@exp check` to reconcile first.");
+        return;
+      }
+      await this.addTerminalOutput([
+        `Preparing **${pending.length}** completed task${pending.length === 1 ? "" : "s"} for EXP scoring.`,
+        "Brain will inspect each task and show a separate approval preview for every award; no EXP is written until you approve each one."
+      ].join("\n\n"));
+      const request = [
+        "Score the following completed tasks for earned EXP. For each task, read its complete note, apply the EXP rubric, and call record_task_exp with action award and the completion occurrence. Do not score from titles alone. Process one task at a time and wait for the approval preview before each write.",
+        ...pending.map((proposal) => `- @[[${proposal.path}]] · completed ${proposal.completionAt}`)
+      ].join("\n");
+      await this.handleInput(`@exp ${request}`);
+      return;
+    }
     if (action === "analytics") {
       const days = parts[1] === undefined ? 30 : Number.parseInt(parts[1], 10);
       if (!Number.isInteger(days) || days < 1 || days > 365 || parts.length > 2) {
@@ -1609,7 +1630,7 @@ export class BrainChatView extends ItemView {
       return;
     }
     await this.addTerminalOutput(
-      "usage: `@exp [status|check|pending|analytics [days]|goals|history [page]|review [days]|task <path>|calibrate]`",
+      "usage: `@exp [status|check|pending|score-completed|analytics [days]|goals|history [page]|review [days]|task <path>|calibrate]`",
       "error"
     );
   }

@@ -10,6 +10,8 @@ completions:
     description: Reconcile completed tasks and process their EXP
   - value: pending
     description: Review pending completion awards
+  - value: score-completed
+    description: Batch-score completed tasks that need EXP
   - value: review
     description: Review scoring consistency
   - value: analytics
