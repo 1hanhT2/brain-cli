@@ -13,6 +13,7 @@ import {
   type TaskQuery
 } from "./task-provider";
 import type { ExpService } from "./exp-service";
+import type { MemoryService } from "./memory-service";
 import type { ExpAction, ExpFactors, ExpRecordInput, TaskExpState } from "./exp-core";
 
 export interface ToolExecutionResult {
@@ -162,6 +163,11 @@ const TOOL_LABELS: Record<string, string> = {
   get_task_exp: "Inspect task EXP",
   get_exp_progress: "Review EXP progress",
   review_exp_calibration: "Review EXP calibration",
+  get_exp_analytics: "Review EXP analytics",
+  create_exp_goal: "Create EXP goal",
+  search_memory: "Search memory",
+  record_memory: "Save memory",
+  update_memory_status: "Update memory",
   record_task_exp: "Record task EXP",
   create_task: "Create task",
   update_task: "Update task",
@@ -280,6 +286,7 @@ export class AgentToolRegistry {
     private readonly skillRegistry: SkillRegistry,
     private readonly taskService: TaskService,
     private readonly expService: ExpService,
+    private readonly memoryService: MemoryService,
     private readonly isAutoExpScoringEnabled: () => boolean = () => false,
     private readonly getInteractiveModel: () => string = () => "",
     private readonly getCompletionExpSettings: () => {
@@ -289,6 +296,85 @@ export class AgentToolRegistry {
     } = () => ({ enabled: false, automaticAwards: false, automaticScoring: false })
   ) {
     const registered: RegisteredTool[] = [
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "search_memory",
+            description: "Search durable Brain memory fragments relevant to the current request. Review-sensitive memories are excluded.",
+            parameters: {
+              type: "object",
+              properties: {
+                query: { type: "string" },
+                limit: { type: "integer", minimum: 1, maximum: 10 }
+              },
+              required: ["query"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "read",
+        execute: async (input) => ({
+          memories: await this.memoryService.search(stringArg(input, "query"), numberArg(input, "limit", 5))
+        })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "record_memory",
+            description: "Propose a durable memory fragment from user-confirmed preferences, habits, goals, abilities, or workflows. Requires approval; use sensitivity review when it should not be retrieved automatically.",
+            parameters: {
+              type: "object",
+              properties: {
+                category: { type: "string", enum: ["ability", "habit", "preference", "goal", "workflow", "other"] },
+                content: { type: "string", description: "One concise, durable fact. Never infer sensitive personal data." },
+                confidence: { type: "number", minimum: 0, maximum: 1 },
+                sensitivity: { type: "string", enum: ["low", "review"] }
+              },
+              required: ["category", "content", "confidence"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "low-write",
+        execute: async (input) => ({
+          memory: await this.memoryService.create({
+            category: stringArg(input, "category") as import("./types").MemoryFragment["category"],
+            content: stringArg(input, "content"),
+            confidence: numberArg(input, "confidence", Number.NaN),
+            sensitivity: input.sensitivity === "review" ? "review" : "low",
+            source: "approved agent proposal"
+          }),
+          verified: true
+        })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "update_memory_status",
+            description: "Revoke or supersede a durable memory fragment. Requires approval and never deletes its audit trail.",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                status: { type: "string", enum: ["superseded", "revoked"] }
+              },
+              required: ["path", "status"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "high-write",
+        execute: async (input) => ({
+          memory: await this.memoryService.setStatus(
+            stringArg(input, "path"),
+            stringArg(input, "status") as "superseded" | "revoked"
+          ),
+          verified: true
+        })
+      },
       {
         definition: {
           type: "function",
@@ -313,8 +399,10 @@ export class AgentToolRegistry {
             "inspect, list, read, search, and retrieve permitted Markdown notes",
             "create, append, patch, replace, rename, move, trash, and update frontmatter after approval",
             "discover and load traditional SKILL.md skills",
+            "search and propose approval-gated durable memory fragments",
             "query, inspect, create, update, and complete TaskNotes tasks",
             "score, award, review, and track accomplishment-first task EXP",
+            "analyze EXP by task tag or project and track immutable-ledger EXP goals",
             "detect and reconcile completed-task EXP when the user enables it",
             "cite vault sources with clickable Obsidian wikilinks"
           ],
@@ -577,6 +665,57 @@ export class AgentToolRegistry {
         },
         risk: "read",
         execute: async (input) => this.expService.review(numberArg(input, "days", 30))
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "get_exp_analytics",
+            description: "Analyze earned EXP by TaskNotes tags and projects over a recent window, and show active goal progress.",
+            parameters: {
+              type: "object",
+              properties: { days: { type: "integer", minimum: 1, maximum: 365 } },
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "read",
+        execute: async (input) => ({
+          analytics: await this.expService.analytics(numberArg(input, "days", 30)),
+          goals: await this.expService.goals()
+        })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "create_exp_goal",
+            description: "Create an EXP goal backed by immutable ledger awards. Optionally filter the goal by task tags or projects. Requires approval.",
+            parameters: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                target_exp: { type: "integer", minimum: 25 },
+                period: { type: "string", enum: ["daily", "weekly", "monthly", "all-time"] },
+                tags: { type: "array", items: { type: "string" } },
+                projects: { type: "array", items: { type: "string" } }
+              },
+              required: ["name", "target_exp", "period"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "low-write",
+        execute: async (input) => ({
+          goal: await this.expService.createGoal({
+            name: stringArg(input, "name"),
+            target: numberArg(input, "target_exp", Number.NaN),
+            period: stringArg(input, "period") as "daily" | "weekly" | "monthly" | "all-time",
+            tags: stringArrayArg(input, "tags"),
+            projects: stringArrayArg(input, "projects")
+          }),
+          verified: true
+        })
       },
       {
         definition: {
@@ -1110,6 +1249,27 @@ export class AgentToolRegistry {
         title: "Find tasks",
         details: taskQueryPreview(input)
       };
+    } else if (call.function.name === "search_memory") {
+      preview = { title: "Search memory", details: `Query: ${stringArg(input, "query")}` };
+    } else if (call.function.name === "record_memory") {
+      preview = {
+        title: "Save durable memory",
+        before: "No memory fragment exists yet.",
+        after: [
+          `Category: ${stringArg(input, "category")}`,
+          `Confidence: ${Math.round(numberArg(input, "confidence", 0) * 100)}%`,
+          `Retrieval: ${input.sensitivity === "review" ? "review-only" : "eligible when relevant"}`,
+          `Memory: ${stringArg(input, "content")}`
+        ].join("\n"),
+        beforeLabel: "Current state",
+        afterLabel: "Proposed memory",
+        details: "A Markdown memory fragment will be created. It can later be revoked without deleting its audit trail."
+      };
+    } else if (call.function.name === "update_memory_status") {
+      preview = {
+        title: "Update memory status",
+        details: `Memory: ${stringArg(input, "path")}\nNew status: ${stringArg(input, "status")}`
+      };
     } else if (call.function.name === "read_note") {
       const report = await this.vaultTools.inspectSensitivity(stringArg(input, "path"));
       sensitive = report.sensitive;
@@ -1129,6 +1289,23 @@ export class AgentToolRegistry {
       preview = {
         title: "Review EXP calibration",
         details: `Review window: ${Math.min(numberArg(input, "days", 30), 365)} days`
+      };
+    } else if (call.function.name === "get_exp_analytics") {
+      preview = { title: "Review EXP analytics", details: `Review window: ${Math.min(numberArg(input, "days", 30), 365)} days` };
+    } else if (call.function.name === "create_exp_goal") {
+      const tags = stringArrayArg(input, "tags") ?? [];
+      const projects = stringArrayArg(input, "projects") ?? [];
+      preview = {
+        title: `Create EXP goal: ${stringArg(input, "name")}`,
+        before: "No goal exists yet.",
+        after: [
+          `Target: ${numberArg(input, "target_exp", 0).toLocaleString()} EXP`,
+          `Period: ${stringArg(input, "period")}`,
+          `Scope: ${[...tags.map((tag) => `#${tag.replace(/^#/, "")}`), ...projects].join(" · ") || "all awards"}`
+        ].join("\n"),
+        beforeLabel: "Current state",
+        afterLabel: "Proposed goal",
+        details: "Progress will be calculated from immutable earned EXP ledger events."
       };
     } else if (call.function.name === "create_task") {
       preview = {
@@ -1278,11 +1455,62 @@ export class AgentToolRegistry {
         details: typeof result.provider === "string" ? `Provider: ${result.provider}` : undefined
       };
     }
+    if (name === "search_memory") {
+      const memories = Array.isArray(recordValue(value).memories) ? recordValue(value).memories as unknown[] : [];
+      return {
+        title: `${memories.length} matching memor${memories.length === 1 ? "y" : "ies"}`,
+        after: memories.length ? memories.map((value) => {
+          const memory = recordValue(value);
+          return `• ${typeof memory.category === "string" ? memory.category : "memory"}: ${typeof memory.content === "string" ? memory.content : ""}`;
+        }).join("\n") : "No relevant active low-risk memories.",
+        afterLabel: "Results"
+      };
+    }
+    if (name === "record_memory" || name === "update_memory_status") {
+      const memory = recordValue(recordValue(value).memory);
+      return {
+        title: name === "record_memory" ? "Memory saved" : "Memory updated",
+        after: [
+          `Category: ${typeof memory.category === "string" ? memory.category : "memory"}`,
+          `Status: ${typeof memory.status === "string" ? memory.status : "unknown"}`,
+          `Memory: ${typeof memory.content === "string" ? memory.content : ""}`
+        ].join("\n"),
+        afterLabel: "Verified memory",
+        details: typeof memory.citation === "string" ? memory.citation : undefined
+      };
+    }
     if (name === "get_task") {
       return {
         title: "Task inspected",
         after: taskPreview(recordValue(value) as TaskPreviewInput),
         afterLabel: "Task"
+      };
+    }
+    if (name === "get_exp_analytics") {
+      const result = recordValue(value);
+      const analytics = recordValue(result.analytics);
+      const goals = Array.isArray(result.goals) ? result.goals as unknown[] : [];
+      return {
+        title: "EXP analytics ready",
+        after: [
+          `Earned: ${typeof analytics.earned === "number" ? analytics.earned.toLocaleString() : "0"} EXP`,
+          `Awards: ${typeof analytics.awards === "number" ? analytics.awards : 0}`,
+          `Active goals: ${goals.length}`
+        ].join("\n"),
+        afterLabel: "Summary"
+      };
+    }
+    if (name === "create_exp_goal") {
+      const goal = recordValue(recordValue(value).goal);
+      return {
+        title: "EXP goal created",
+        after: [
+          `Goal: ${typeof goal.name === "string" ? goal.name : "EXP goal"}`,
+          `Progress: ${typeof goal.earned === "number" ? goal.earned.toLocaleString() : 0} / ${typeof goal.target === "number" ? goal.target.toLocaleString() : 0} EXP`,
+          `Period: ${typeof goal.period === "string" ? goal.period : "unknown"}`
+        ].join("\n"),
+        afterLabel: "Verified goal",
+        details: typeof goal.citation === "string" ? goal.citation : undefined
       };
     }
     if (name === "get_task_exp") {

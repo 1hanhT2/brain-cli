@@ -68,6 +68,8 @@ export interface ExpLedgerEntry {
   completionTokens?: number;
   costUsd?: number;
   rubricVersion?: number;
+  tags?: string[];
+  projects?: string[];
 }
 
 export interface ExpProgress {
@@ -94,6 +96,28 @@ export interface ExpCalibrationReview {
   commonScores: Array<{ value: number; count: number }>;
   observations: string[];
   recent: ExpLedgerEntry[];
+}
+
+export interface ExpAnalytics {
+  days: number;
+  awards: number;
+  earned: number;
+  byTag: Array<{ name: string; exp: number; awards: number }>;
+  byProject: Array<{ name: string; exp: number; awards: number }>;
+  unclassified: number;
+}
+
+export interface ExpGoal {
+  path: string;
+  citation: string;
+  name: string;
+  target: number;
+  period: "daily" | "weekly" | "monthly" | "all-time";
+  tags: string[];
+  projects: string[];
+  active: boolean;
+  earned: number;
+  progress: number;
 }
 
 export const expRecord = (value: unknown): Record<string, unknown> =>

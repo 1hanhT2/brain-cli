@@ -12,6 +12,10 @@ completions:
     description: Review pending completion awards
   - value: review
     description: Review scoring consistency
+  - value: analytics
+    description: Show EXP by tag and project
+  - value: goals
+    description: Show active EXP goals
   - value: task
     description: Inspect EXP stored on a task
   - value: calibrate

@@ -32,6 +32,8 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Bundled EXP skill with a calibrated 25-1000 accomplishment-first rubric, approval-gated task scoring, and repeat-award protection.
 - Flat TaskNotes-compatible EXP frontmatter plus an immutable Markdown event ledger for totals, recurring-task history, streaks, levels, and calibration reviews.
 - Event-driven task-completion detection with idempotent recurring awards, `@exp check` reconciliation, and an approval-ready Markdown queue.
+- Durable, approval-gated memory fragments with review-only handling, local search, revocation, and ephemeral automatic retrieval for relevant chats.
+- EXP analytics by TaskNotes tag/project plus ledger-backed daily, weekly, monthly, and all-time EXP goals.
 - Audited EXP ledger metadata for completion identity, scoring source, model, token usage, cost, and rubric version.
 - Versioned portable non-secret configuration under `Brain/Settings/config.md`; secrets, consent grants, and rebuildable caches remain device-local.
 - Markdown-backed chats with command-operated new/open/continue/rename/trash session controls.
@@ -97,7 +99,7 @@ for explicit activation, and `/skill exp history` is an EXP-view alias.
 /embedding-favorite [number|id]
 /skills [page]
 /skill <name>
-/memory <text>
+/memory <text>|list|review|search <words>|forget <path> --confirm
 /search <query> [--mode hybrid|semantic|lexical] [--folder path] [--tag tag] [--property key=value] [--limit n]
 /index status
 /index rebuild
@@ -137,7 +139,8 @@ flat task frontmatter and add an immutable event under
 auditable; only awards count toward totals and streaks. `@exp status` shows
 progress, `@exp history` pages through the ledger, `@exp review` checks score
 distribution and confidence, `@exp task` inspects one task, and
-`@exp calibrate` starts a rubric-guided scoring session.
+`@exp calibrate` starts a rubric-guided scoring session. `@exp analytics [days]`
+breaks earned EXP down by task tag and project; `@exp goals` shows active goals.
 
 Completion detection is opt-in. Brain debounces TaskNotes and Markdown metadata
 changes, establishes a baseline before first enabling the watcher, and records
@@ -178,6 +181,20 @@ in plugin data. Embeddings, lexical indexes, and model catalogs remain
 rebuildable IndexedDB caches. Each AI-generated EXP ledger event records its
 model and available usage/cost metadata without saving the model prompt or full
 task contents.
+
+Memory fragments are ordinary Markdown in `Brain/Memory/`. `/memory <text>`
+creates a low-risk fragment; `/memory list`, `/memory review`, and
+`/memory search <words>` provide local review. The model may propose a concise
+memory through an approval preview when the user explicitly confirms something
+durable. Fragments marked `review` are never automatically injected; active
+low-risk memories are retrieved only for a relevant chat request and are not
+saved into the chat transcript. `/memory forget <path> --confirm` revokes a
+fragment without destroying its audit trail.
+
+EXP goals are Markdown under `Brain/EXP/Goals/`, created through the
+approval-gated `create_exp_goal` tool. New EXP ledger events snapshot the
+TaskNote tags and projects at award time, so later task edits do not rewrite
+historical analytics.
 
 `/config`, `/setting`, and `/settings` open the terminal settings menu. Use
 the arrow keys to select an item, `Space` to toggle its checkbox, and `Enter`

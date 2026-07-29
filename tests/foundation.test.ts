@@ -115,6 +115,12 @@ const makeRegistry = (vaultTools: VaultTools): AgentToolRegistry =>
       record: async () => { throw new Error("not configured"); },
       validate: (input: unknown) => input
     } as unknown as ExpService
+    ,
+    {
+      create: async () => { throw new Error("not configured"); },
+      search: async () => [],
+      setStatus: async () => { throw new Error("not configured"); }
+    } as never
   );
 
 test("vault path policy rejects hidden config, traversal, absolute paths, and URLs", () => {
@@ -222,6 +228,9 @@ test("registry exposes the complete foundational tool surface", () => {
   assert.deepEqual(
     registry.definitions().map((tool) => tool.function.name),
     [
+      "search_memory",
+      "record_memory",
+      "update_memory_status",
       "get_environment",
       "list_notes",
       "read_note",
@@ -232,6 +241,8 @@ test("registry exposes the complete foundational tool surface", () => {
       "get_task_exp",
       "get_exp_progress",
       "review_exp_calibration",
+      "get_exp_analytics",
+      "create_exp_goal",
       "record_task_exp",
       "create_task",
       "update_task",
@@ -255,6 +266,8 @@ test("registry exposes the complete foundational tool surface", () => {
   );
   assert.equal(registry.riskFor("read_note"), "read");
   assert.equal(registry.riskFor("get_exp_progress"), "read");
+  assert.equal(registry.riskFor("record_memory"), "low-write");
+  assert.equal(registry.riskFor("create_exp_goal"), "low-write");
   assert.equal(registry.riskFor("record_task_exp"), "high-write");
   assert.equal(registry.riskFor("create_note"), "high-write");
   assert.equal(registry.riskFor("missing"), null);

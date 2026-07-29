@@ -11,6 +11,8 @@ import {
   validateExpInput,
   validateExpTransition,
   type ExpCalibrationReview,
+  type ExpAnalytics,
+  type ExpGoal,
   type ExpLedgerEntry,
   type ExpProgress,
   type ExpRecordInput,
@@ -30,6 +32,18 @@ const uniqueId = (): string =>
   typeof crypto?.randomUUID === "function"
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+const stringArray = (value: unknown): string[] => Array.isArray(value)
+  ? value.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean)
+  : [];
+
+const goalPeriodStart = (period: ExpGoal["period"], now: Date): Date | null => {
+  if (period === "all-time") return null;
+  if (period === "daily") return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (period === "monthly") return new Date(now.getFullYear(), now.getMonth(), 1);
+  const day = now.getDay();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - (day === 0 ? 6 : day - 1));
+};
 
 export class ExpService {
   constructor(
@@ -110,7 +124,9 @@ export class ExpService {
       revision,
       sensitivity.sensitive,
       taskId,
-      completionId
+      completionId,
+      task.tags,
+      task.projects
     );
     const taskFile = this.requireFile(task.path);
     const before = await this.frontmatter(taskFile);
@@ -209,7 +225,9 @@ export class ExpService {
           : undefined,
         rubricVersion: Number.isFinite(expNumber(frontmatter.rubric_version, Number.NaN))
           ? expNumber(frontmatter.rubric_version)
-          : undefined
+          : undefined,
+        tags: stringArray(frontmatter.tags),
+        projects: stringArray(frontmatter.projects)
       });
     }
     return entries.sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
@@ -310,6 +328,114 @@ export class ExpService {
     };
   }
 
+  async analytics(days = 30, now = new Date()): Promise<ExpAnalytics> {
+    const window = Math.min(Math.max(Math.floor(days), 1), 365);
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - window);
+    const awards = (await this.history()).filter((entry) =>
+      entry.action === "award" && new Date(entry.completionAt || entry.recordedAt) >= cutoff
+    );
+    const aggregate = (field: "tags" | "projects") => {
+      const rows = new Map<string, { exp: number; awards: number }>();
+      for (const award of awards) {
+        for (const value of award[field] ?? []) {
+          const name = value.replace(/^#/, "").trim();
+          if (!name) continue;
+          const current = rows.get(name) ?? { exp: 0, awards: 0 };
+          current.exp += award.value;
+          current.awards += 1;
+          rows.set(name, current);
+        }
+      }
+      return [...rows.entries()]
+        .map(([name, value]) => ({ name, ...value }))
+        .sort((left, right) => right.exp - left.exp || left.name.localeCompare(right.name));
+    };
+    return {
+      days: window,
+      awards: awards.length,
+      earned: awards.reduce((sum, award) => sum + award.value, 0),
+      byTag: aggregate("tags"),
+      byProject: aggregate("projects"),
+      unclassified: awards.filter((award) => (award.tags?.length ?? 0) === 0 && (award.projects?.length ?? 0) === 0)
+        .reduce((sum, award) => sum + award.value, 0)
+    };
+  }
+
+  async goals(now = new Date()): Promise<ExpGoal[]> {
+    const root = normalizePath(`${this.getExpRoot()}/Goals`);
+    const awards = (await this.history()).filter((entry) => entry.action === "award");
+    const files = this.app.vault.getMarkdownFiles().filter((file) => file.path.startsWith(`${root}/`));
+    const goals = await Promise.all(files.map(async (file) => {
+      const frontmatter = await this.frontmatter(file);
+      if (frontmatter.type !== "exp-goal" || frontmatter.active === false) return null;
+      const target = expNumber(frontmatter.target_exp, Number.NaN);
+      const period = expString(frontmatter.period) as ExpGoal["period"];
+      if (!Number.isFinite(target) || target <= 0 || !["daily", "weekly", "monthly", "all-time"].includes(period)) return null;
+      const tags = stringArray(frontmatter.tags).map((value) => value.replace(/^#/, ""));
+      const projects = stringArray(frontmatter.projects);
+      const start = goalPeriodStart(period, now);
+      const earned = awards.filter((award) => {
+        if (start && new Date(award.completionAt || award.recordedAt) < start) return false;
+        if (tags.length && !tags.some((tag) => award.tags?.map((value) => value.replace(/^#/, "")).includes(tag))) return false;
+        if (projects.length && !projects.some((project) => award.projects?.includes(project))) return false;
+        return true;
+      }).reduce((sum, award) => sum + award.value, 0);
+      return {
+        path: file.path,
+        citation: `[[${file.path.replace(/\.md$/i, "")}]]`,
+        name: expString(frontmatter.name) || file.basename,
+        target,
+        period,
+        tags,
+        projects,
+        active: true,
+        earned,
+        progress: Math.min(1, earned / target)
+      } satisfies ExpGoal;
+    }));
+    const activeGoals: ExpGoal[] = goals.filter((goal) => goal !== null).map((goal) => ({
+      ...goal!,
+      active: true
+    }));
+    return activeGoals.sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  async createGoal(input: {
+    name: string;
+    target: number;
+    period: ExpGoal["period"];
+    tags?: string[];
+    projects?: string[];
+  }): Promise<ExpGoal> {
+    const name = input.name.trim();
+    if (!name) throw new Error("EXP goal name cannot be empty.");
+    if (!Number.isInteger(input.target) || input.target < 25) throw new Error("EXP goal target must be a whole number of at least 25.");
+    if (!["daily", "weekly", "monthly", "all-time"].includes(input.period)) throw new Error("EXP goal period is invalid.");
+    const slug = name.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/(^-|-$)/g, "").slice(0, 72) || "goal";
+    const path = normalizePath(`${this.getExpRoot()}/Goals/${slug}.md`);
+    if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`An EXP goal already exists at ${path}.`);
+    await this.vaultTools.createMarkdown(path, [
+      "---",
+      "type: exp-goal",
+      `name: ${JSON.stringify(name)}`,
+      `target_exp: ${input.target}`,
+      `period: ${input.period}`,
+      `tags: ${JSON.stringify(input.tags ?? [])}`,
+      `projects: ${JSON.stringify(input.projects ?? [])}`,
+      "active: true",
+      "---",
+      "",
+      `# ${name}`,
+      "",
+      "Progress is calculated from immutable earned EXP ledger events.",
+      ""
+    ].join("\n"));
+    const goal = (await this.goals()).find((candidate) => candidate.path === path);
+    if (!goal) throw new Error("EXP goal could not be verified after writing.");
+    return goal;
+  }
+
   private makeLedgerEntry(
     input: ExpRecordInput,
     taskTitle: string,
@@ -317,7 +443,9 @@ export class ExpService {
     revision: number,
     sensitive: boolean,
     taskId: string,
-    completionId?: string
+    completionId?: string,
+    tags: string[] = [],
+    projects: string[] = []
   ): ExpLedgerEntry {
     const id = uniqueId();
     return {
@@ -343,7 +471,9 @@ export class ExpService {
       promptTokens: input.promptTokens,
       completionTokens: input.completionTokens,
       costUsd: input.costUsd,
-      rubricVersion: input.rubricVersion ?? 1
+      rubricVersion: input.rubricVersion ?? 1,
+      tags,
+      projects
     };
   }
 
@@ -378,6 +508,8 @@ export class ExpService {
       `completion_tokens: ${JSON.stringify(entry.completionTokens ?? null)}`,
       `cost_usd: ${JSON.stringify(entry.costUsd ?? null)}`,
       `rubric_version: ${entry.rubricVersion ?? 1}`,
+      `tags: ${JSON.stringify(entry.tags ?? [])}`,
+      `projects: ${JSON.stringify(entry.projects ?? [])}`,
       `sensitive: ${entry.sensitive === true}`,
       "---",
       "",

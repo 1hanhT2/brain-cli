@@ -64,7 +64,7 @@ interface HandledToolCall {
 
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
-const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate", "check", "pending"]);
+const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate", "check", "pending", "analytics", "goals"]);
 const EMBEDDING_MANAGEMENT_ACTIONS = new Set(["status", "refresh", "delete", "pause", "resume", "cancel"]);
 const TRANSCRIPT_INITIAL_MESSAGES = 40;
 const TRANSCRIPT_PAGE_MESSAGES = 40;
@@ -92,7 +92,7 @@ const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "embedding-favorite", usage: "/embedding-favorite [number|id]", description: "Toggle an embedding model favorite" },
   { name: "skills", usage: "/skills [page]", description: "List installed SKILL.md skills" },
   { name: "skill", usage: "/skill <name>", description: "Activate a skill for this conversation" },
-  { name: "memory", usage: "/memory <text>", description: "Save a low-risk Markdown memory fragment" },
+  { name: "memory", usage: "/memory <text>|list|search|review|forget", description: "Manage durable, reviewable Brain memory" },
   { name: "search", usage: "/search <query> [--mode hybrid|semantic|lexical]", description: "Search the vault and show cited excerpts" },
   { name: "index", usage: "/index status|rebuild|pause|resume|cancel|clear", description: "Inspect and control retrieval indexing" },
   { name: "semantic", usage: "/semantic folders|cap <usd|unlimited>", description: "Configure semantic indexing" },
@@ -113,6 +113,7 @@ const createSystemMessage = (): ChatMessage => ({
     "You have real tools for inspecting the environment and listing, reading, searching, creating, replacing, and updating frontmatter on permitted Markdown notes.",
     "You can query, inspect, create, update, and complete TaskNotes tasks through the active task provider.",
     "You can use the EXP tools to plan, award, review, and persist accomplishment-first task EXP. Use record_task_exp instead of generic frontmatter writes for EXP.",
+    "You can search durable memory and propose concise memory fragments only when the user explicitly confirms a lasting preference, habit, goal, ability, or workflow. Memory writes always require approval.",
     "When EXP is recorded, the task's actual title is stored as [EXP] Task title. Use displayTitle and do not add a second prefix.",
     "Before proposing EXP after task creation, call get_environment. If automaticTaskExp is enabled, the background queue owns that write and you must not propose a duplicate score.",
     "Completed-task EXP detection and automatic award behavior are separately configured. Use @exp check for reconciliation and @exp pending for approval-ready completion proposals.",
@@ -236,6 +237,7 @@ export class BrainChatView extends ItemView {
   private pendingApproval: { finish: (approved: boolean) => void } | null = null;
   private activeAssistantBody: HTMLElement | null = null;
   private activePartial = "";
+  private activeMemoryContext: ChatMessage | null = null;
   private messages: ChatMessage[] = [createSystemMessage()];
   private currentChat: ChatState | null = null;
   private chatSummaries: ChatSummary[] = [];
@@ -621,6 +623,8 @@ export class BrainChatView extends ItemView {
 
     await this.plugin.skillRegistry.initialize();
     await this.prepareSkillContext(prompt);
+    const memoryContext = await this.plugin.memoryService.contextFor(prompt);
+    this.activeMemoryContext = memoryContext ? { role: "system", content: memoryContext } : null;
     this.turnCitations.clear();
     this.abortController = new AbortController();
     this.setGenerating(true);
@@ -667,6 +671,7 @@ export class BrainChatView extends ItemView {
         await this.persistCurrentChat();
       }
       this.activeAssistantBody?.removeClass("obsidian-brain-stream-cursor");
+      this.activeMemoryContext = null;
       this.activeAssistantBody = null;
       this.activePartial = "";
       this.abortController = null;
@@ -784,7 +789,7 @@ export class BrainChatView extends ItemView {
           }
           return;
         case "memory":
-          await this.saveMemoryCommand(argument);
+          await this.memoryCommand(parts, argument);
           return;
         case "search":
           await this.searchCommand(parts);
@@ -1466,6 +1471,53 @@ export class BrainChatView extends ItemView {
       await this.openExpPendingPicker();
       return;
     }
+    if (action === "analytics") {
+      const days = parts[1] === undefined ? 30 : Number.parseInt(parts[1], 10);
+      if (!Number.isInteger(days) || days < 1 || days > 365 || parts.length > 2) {
+        await this.addTerminalOutput("usage: `@exp analytics [1-365 days]`", "error");
+        return;
+      }
+      const analytics = await this.plugin.expService.analytics(days);
+      await this.addTerminalOutput([
+        `## EXP analytics · ${analytics.days} days`,
+        "",
+        `**${analytics.earned.toLocaleString()} EXP** from ${analytics.awards} award${analytics.awards === 1 ? "" : "s"} · ${analytics.unclassified.toLocaleString()} EXP not yet classified by task tag or project.`,
+        "",
+        "### By tag",
+        "",
+        "| Tag | EXP | Awards |",
+        "| --- | ---: | ---: |",
+        ...(analytics.byTag.length ? analytics.byTag.map((row) => `| ${this.escapeTable(row.name)} | ${row.exp.toLocaleString()} | ${row.awards} |`) : ["| No tagged awards yet | 0 | 0 |"]),
+        "",
+        "### By project",
+        "",
+        "| Project | EXP | Awards |",
+        "| --- | ---: | ---: |",
+        ...(analytics.byProject.length ? analytics.byProject.map((row) => `| ${this.escapeTable(row.name)} | ${row.exp.toLocaleString()} | ${row.awards} |`) : ["| No project-classified awards yet | 0 | 0 |"]),
+        "",
+        "New ledger events capture the task's tags and projects automatically. Existing historical events remain intact."
+      ].join("\n"));
+      return;
+    }
+    if (action === "goals") {
+      if (parts.length > 1) {
+        await this.addTerminalOutput("usage: `@exp goals`", "error");
+        return;
+      }
+      const goals = await this.plugin.expService.goals();
+      await this.addTerminalOutput(goals.length
+        ? [
+          "## EXP goals",
+          "",
+          "| Goal | Period | Progress | Scope |",
+          "| --- | --- | ---: | --- |",
+          ...goals.map((goal) => `| ${this.escapeTable(goal.name)} | ${goal.period} | **${goal.earned.toLocaleString()} / ${goal.target.toLocaleString()} EXP** (${Math.round(goal.progress * 100)}%) | ${[...goal.tags.map((tag) => `#${tag}`), ...goal.projects].join(" · ") || "all awards"} |`),
+          "",
+          "Ask Brain to create an EXP goal; it will show an approval preview before writing the goal note."
+        ].join("\n")
+        : "no active EXP goals · ask Brain to create one, for example: `create a weekly 1500 EXP goal for #study`." );
+      return;
+    }
     if (action === "history") {
       const { page, remaining } = readLeadingPage(parts.slice(1));
       if (remaining.length > 0) {
@@ -1557,17 +1609,73 @@ export class BrainChatView extends ItemView {
       return;
     }
     await this.addTerminalOutput(
-      "usage: `@exp [status|check|pending|history [page]|review [days]|task <path>|calibrate]`",
+      "usage: `@exp [status|check|pending|analytics [days]|goals|history [page]|review [days]|task <path>|calibrate]`",
       "error"
     );
   }
 
-  private async saveMemoryCommand(content: string): Promise<void> {
-    if (!content) {
-      await this.addTerminalOutput("usage: `/memory <text>`", "error");
+  private async memoryCommand(parts: string[], raw: string): Promise<void> {
+    const action = parts[0]?.toLocaleLowerCase();
+    if (action === "list" || action === "review") {
+      const { page, remaining } = readLeadingPage(parts.slice(1));
+      if (remaining.length > 0) {
+        await this.addTerminalOutput(`usage: \`/memory ${action} [page]\``, "error");
+        return;
+      }
+      const memories = await this.plugin.memoryService.list(action === "list" ? "active" : undefined);
+      const paged = paginate(memories, page);
+      if (paged.outOfRange) {
+        await this.addPageOutOfRange("memory", paged);
+        return;
+      }
+      if (memories.length === 0) {
+        await this.addTerminalOutput(action === "list" ? "no active memory fragments" : "no memory fragments yet");
+        return;
+      }
+      await this.addTerminalOutput([
+        action === "list" ? "## Active memory" : "## Memory review",
+        "",
+        "| # | Category | Confidence | Status | Memory |",
+        "| ---: | --- | ---: | --- | --- |",
+        ...paged.items.map((memory, index) =>
+          `| ${(paged.page - 1) * 30 + index + 1} | ${memory.category} | ${Math.round(memory.confidence * 100)}% | ${memory.status}${memory.sensitivity === "review" ? " · review" : ""} | ${this.escapeTable(memory.content)} |`
+        ),
+        "",
+        this.paginationLine(paged, "memories", (target) => `/memory ${action} ${target}`),
+        "",
+        "Use `/memory search <words>` to inspect relevant fragments. The agent can propose changes through approval-gated memory tools."
+      ].join("\n"));
       return;
     }
-    const file = await this.plugin.saveLowRiskMemory(content, "chat command");
+    if (action === "search") {
+      const query = parts.slice(1).join(" ");
+      if (!query) {
+        await this.addTerminalOutput("usage: `/memory search <words>`", "error");
+        return;
+      }
+      const memories = await this.plugin.memoryService.search(query, 10, true);
+      await this.addTerminalOutput(memories.length
+        ? ["## Memory search", "", ...memories.map((memory) =>
+          `- **${memory.category}** · ${Math.round(memory.confidence * 100)}% · ${memory.status}${memory.sensitivity === "review" ? " · review-only" : ""}\n  ${memory.content}\n  ${memory.citation}`
+        )].join("\n")
+        : "no matching memory fragments");
+      return;
+    }
+    if (action === "forget") {
+      const path = parts.slice(1).filter((part) => part !== "--confirm").join(" ");
+      if (!path || !parts.includes("--confirm")) {
+        await this.addTerminalOutput("usage: `/memory forget <Brain/Memory/file.md> --confirm`", "error");
+        return;
+      }
+      const memory = await this.plugin.memoryService.setStatus(path, "revoked");
+      await this.addTerminalOutput(`revoked memory fragment · ${memory.citation}`);
+      return;
+    }
+    if (!raw) {
+      await this.addTerminalOutput("usage: `/memory <text>` · `/memory list` · `/memory review` · `/memory search <words>` · `/memory forget <path> --confirm`", "error");
+      return;
+    }
+    const file = await this.plugin.saveLowRiskMemory(raw, "chat command");
     await this.addTerminalOutput(`saved memory fragment · [[${file.path.replace(/\.md$/, "")}]]`);
   }
 
@@ -2299,7 +2407,7 @@ export class BrainChatView extends ItemView {
       this.statusEl.setText(iteration === 0 ? "thinking…" : "using tools…");
 
       const result = await this.plugin.streamChatCompletion(
-        this.messages,
+        this.messagesForRequest(),
         (delta) => {
           this.activePartial += delta;
           assistantBody.setText(this.activePartial);
@@ -2358,6 +2466,17 @@ export class BrainChatView extends ItemView {
       }
     }
     throw new Error(`The agent exceeded ${maxIterations} tool iterations.`);
+  }
+
+  private messagesForRequest(): ChatMessage[] {
+    if (!this.activeMemoryContext) return this.messages;
+    const firstSystem = this.messages.findIndex((message) => message.role === "system");
+    const insertion = firstSystem < 0 ? 0 : firstSystem + 1;
+    return [
+      ...this.messages.slice(0, insertion),
+      this.activeMemoryContext,
+      ...this.messages.slice(insertion)
+    ];
   }
 
   private async handleToolCall(call: ToolCall, signal: AbortSignal): Promise<HandledToolCall> {

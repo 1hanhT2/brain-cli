@@ -24,6 +24,8 @@ const EXP_COMPLETIONS: SkillCompletion[] = [
   { value: "pending", description: "Review pending completion awards" },
   { value: "history", description: "Browse the EXP ledger" },
   { value: "review", description: "Review scoring consistency" },
+  { value: "analytics", description: "Show EXP by tag and project" },
+  { value: "goals", description: "Show active EXP goals" },
   { value: "task", description: "Inspect EXP stored on a task" },
   { value: "calibrate", description: "Start rubric-guided calibration" },
   { value: "score", description: "Score a task or described work" }
@@ -235,6 +237,17 @@ export class SkillRegistry {
       ].join("\n");
       const expanded = frontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
       migrated = `${expanded}${migrated.slice(frontmatter.length)}`;
+    }
+    const currentFrontmatter = migrated.match(FRONTMATTER_PATTERN)?.[0] ?? "";
+    if (currentFrontmatter && !currentFrontmatter.includes("value: analytics")) {
+      const additions = [
+        "  - value: analytics",
+        "    description: Show EXP by tag and project",
+        "  - value: goals",
+        "    description: Show active EXP goals"
+      ].join("\n");
+      const expanded = currentFrontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
+      migrated = `${expanded}${migrated.slice(currentFrontmatter.length)}`;
     }
     return migrated;
   }

@@ -2,7 +2,6 @@ import { Notice, Plugin, TFile, TFolder, normalizePath, type WorkspaceLeaf } fro
 import { brainPath, ensureBrainLayout } from "./data-layout";
 import { BRAIN_VIEW_TYPE, BrainChatView } from "./chat-view";
 import { BrainSettingTab, DEFAULT_SETTINGS, type BrainSettings } from "./settings";
-import type { MemoryFragment } from "./types";
 import { VaultTools } from "./vault-tools";
 import { OpenRouterClient } from "./openrouter";
 import type { ChatMessage } from "./openrouter";
@@ -31,6 +30,7 @@ import { ExpAutoScorer } from "./exp-auto-scorer";
 import { ExpCompletionQueueStore } from "./exp-completion-queue";
 import { ExpCompletionCoordinator } from "./exp-completion";
 import { PortableSettingsStore } from "./portable-settings";
+import { MemoryService } from "./memory-service";
 
 interface CatalogCache {
   models?: { fetchedAt: number; rows: OpenRouterModel[] };
@@ -60,6 +60,7 @@ export default class ObsidianBrainPlugin extends Plugin {
   expCompletionQueue!: ExpCompletionQueueStore;
   expCompletion!: ExpCompletionCoordinator;
   portableSettings!: PortableSettingsStore;
+  memoryService!: MemoryService;
   readonly performance = new PerformanceTracer();
   private catalogCache: CatalogCache = {};
   private legacyCatalogCache: CatalogCache | null = null;
@@ -105,6 +106,7 @@ export default class ObsidianBrainPlugin extends Plugin {
         () => brainPath(this.settings, "EXP"),
         () => this.settings.expTitleMaxLength
       );
+      this.memoryService = new MemoryService(this.app, () => brainPath(this.settings, ""));
       this.expAutoScorer = new ExpAutoScorer(
         this.app,
         this.taskService,
@@ -166,6 +168,7 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.skillRegistry,
         this.taskService,
         this.expService,
+        this.memoryService,
         () => this.settings.autoScoreTaskExp,
         () => this.settings.interactiveModel,
         () => ({
@@ -475,22 +478,16 @@ export default class ObsidianBrainPlugin extends Plugin {
   }
 
   async saveLowRiskMemory(content: string, source: string): Promise<TFile> {
-    const timestamp = new Date().toISOString();
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const fragment: MemoryFragment = {
-      id,
+    const fragment = await this.memoryService.create({
       category: "preference",
       content,
       confidence: 0.7,
       sensitivity: "low",
-      createdAt: timestamp,
-      source,
-      status: "active"
-    };
-    const path = brainPath(this.settings, `Memory/${id}.md`);
-    const markdown = `---\nid: ${fragment.id}\ntype: memory\ncategory: ${fragment.category}\nconfidence: ${fragment.confidence}\nsensitivity: ${fragment.sensitivity}\ncreated: ${fragment.createdAt}\nsource: ${JSON.stringify(fragment.source)}\nstatus: ${fragment.status}\n---\n\n${fragment.content}\n`;
-    const file = await this.app.vault.create(path, markdown);
+      source
+    });
     new Notice("Obsidian Brain saved a low-risk memory fragment.");
+    const file = this.app.vault.getAbstractFileByPath(fragment.path);
+    if (!(file instanceof TFile)) throw new Error("Memory file could not be found after writing.");
     return file;
   }
 
