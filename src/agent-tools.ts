@@ -5,6 +5,7 @@ import type { VaultRetrievalIndex } from "./retrieval-index";
 import type { SkillRegistry } from "./skill-registry";
 import type { TaskService } from "./task-service";
 import {
+  formatExpTaskTitle,
   taskDisplayTitle,
   type BrainTask,
   type TaskCreateInput,
@@ -24,6 +25,8 @@ export interface ToolPreview {
   title: string;
   before?: string;
   after?: string;
+  beforeLabel?: string;
+  afterLabel?: string;
   details?: string;
 }
 
@@ -150,6 +153,38 @@ const citationForPath = (path: string): string => `[[${path.replace(/\.md$/, "")
 const previewText = (value: string): string =>
   value.length <= 40_000 ? value : `${value.slice(0, 40_000)}\n[Preview truncated]`;
 
+const recordValue = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+const TOOL_LABELS: Record<string, string> = {
+  query_tasks: "Find tasks",
+  get_task: "Inspect task",
+  get_task_exp: "Inspect task EXP",
+  get_exp_progress: "Review EXP progress",
+  review_exp_calibration: "Review EXP calibration",
+  record_task_exp: "Record task EXP",
+  create_task: "Create task",
+  update_task: "Update task",
+  complete_task: "Complete task",
+  add_task_dependency: "Add task dependency",
+  remove_task_dependency: "Remove task dependency",
+  start_task_timer: "Start task timer",
+  stop_task_timer: "Stop task timer"
+};
+
+const TASK_RESULT_LABELS: Record<string, string> = {
+  create_task: "Task created",
+  update_task: "Task updated",
+  complete_task: "Task completed",
+  add_task_dependency: "Task dependency added",
+  remove_task_dependency: "Task dependency removed",
+  start_task_timer: "Task timer started",
+  stop_task_timer: "Task timer stopped"
+};
+
+const toolLabel = (name: string): string =>
+  TOOL_LABELS[name] ?? name.replace(/_/g, " ").replace(/^\w/, (character) => character.toLocaleUpperCase());
+
 type TaskPreviewInput = Partial<Omit<BrainTask, "dependencies">> & {
   dependencies?: Array<{ uid: string; reltype?: string }>;
 };
@@ -165,7 +200,7 @@ const taskPreview = (task: TaskPreviewInput): string => {
 
   add("Title", task.title === undefined ? undefined : task.exp === null || task.exp === undefined
     ? task.title
-    : `[${task.exp}] ${task.title}`);
+    : formatExpTaskTitle(task.title, task.exp, 200));
   add("Status", task.status);
   add("Priority", task.priority);
   add("Due", task.due);
@@ -180,6 +215,38 @@ const taskPreview = (task: TaskPreviewInput): string => {
   }
   add("Path", task.path);
   return lines.join("\n") || "No task fields set.";
+};
+
+const taskQueryPreview = (input: Record<string, unknown>): string => {
+  const lines: string[] = [];
+  const add = (label: string, value: unknown): void => {
+    if (typeof value === "string" && value.trim()) lines.push(`${label}: ${value.trim()}`);
+  };
+  add("Text", input.text);
+  add("Status", input.status);
+  add("Priority", input.priority);
+  add("Folder", input.folder);
+  add("Due on or before", input.due_before);
+  add("Due on or after", input.due_after);
+  add("Completed on", input.completed_on);
+  const tags = Array.isArray(input.tags) ? input.tags.filter((tag) => typeof tag === "string") : [];
+  if (tags.length) lines.push(`Tags: ${tags.join(", ")}`);
+  lines.push(`Completed tasks: ${input.include_completed === true ? "included" : "hidden"}`);
+  lines.push(`Maximum results: ${Math.min(numberArg(input, "limit", 50), 200)}`);
+  return lines.join("\n");
+};
+
+const taskListPreview = (tasks: unknown[]): string => {
+  if (tasks.length === 0) return "No matching tasks.";
+  return tasks.map((value) => {
+    const task = recordValue(value);
+    const title = typeof task.displayTitle === "string"
+      ? task.displayTitle
+      : typeof task.title === "string" ? task.title : "Untitled task";
+    const status = typeof task.status === "string" ? task.status : "unknown status";
+    const due = typeof task.due === "string" && task.due ? ` · due ${task.due}` : "";
+    return `• ${title} — ${status}${due}`;
+  }).join("\n");
 };
 
 const presentTask = (task: BrainTask): BrainTask & { displayTitle: string } => ({
@@ -1020,6 +1087,10 @@ export class AgentToolRegistry {
     return this.tools.get(name)?.risk ?? null;
   }
 
+  displayName(name: string): string {
+    return toolLabel(name);
+  }
+
   parseArguments(call: ToolCall): Record<string, unknown> {
     try {
       return objectInput(JSON.parse(call.function.arguments));
@@ -1034,19 +1105,38 @@ export class AgentToolRegistry {
     let sensitive = false;
     let sensitivityReasons: string[] = [];
     let preview: ToolPreview | undefined;
-    if (call.function.name === "read_note") {
+    if (call.function.name === "query_tasks") {
+      preview = {
+        title: "Find tasks",
+        details: taskQueryPreview(input)
+      };
+    } else if (call.function.name === "read_note") {
       const report = await this.vaultTools.inspectSensitivity(stringArg(input, "path"));
       sensitive = report.sensitive;
       sensitivityReasons = report.reasons;
     } else if (call.function.name === "get_task" || call.function.name === "get_task_exp") {
-      const report = await this.taskService.inspectSensitivity(stringArg(input, "path"));
+      const path = stringArg(input, "path");
+      const report = await this.taskService.inspectSensitivity(path);
       sensitive = report.sensitive;
       sensitivityReasons = report.reasons;
+      preview = {
+        title: call.function.name === "get_task" ? "Inspect task" : "Inspect task EXP",
+        details: `Task: ${path}`
+      };
+    } else if (call.function.name === "get_exp_progress") {
+      preview = { title: "Review EXP progress", details: "Earned totals, levels, streaks, and recent awards" };
+    } else if (call.function.name === "review_exp_calibration") {
+      preview = {
+        title: "Review EXP calibration",
+        details: `Review window: ${Math.min(numberArg(input, "days", 30), 365)} days`
+      };
     } else if (call.function.name === "create_task") {
       preview = {
         title: `Create task: ${stringArg(input, "title")}`,
         before: "Task does not exist yet.",
         after: taskPreview({ ...taskFields(input), title: stringArg(input, "title") }),
+        beforeLabel: "Current state",
+        afterLabel: "Proposed task",
         details: `Provider: ${this.taskService.getStatus().active.provider}`
       };
     } else if (call.function.name === "update_task") {
@@ -1059,6 +1149,8 @@ export class AgentToolRegistry {
         title: `Update task: ${before.title}`,
         before: taskPreview(before),
         after: taskPreview({ ...before, ...updates }),
+        beforeLabel: "Current task",
+        afterLabel: "Proposed task",
         details: before.citation
       };
     } else if (call.function.name === "complete_task") {
@@ -1069,7 +1161,11 @@ export class AgentToolRegistry {
       preview = {
         title: `Complete task: ${before.title}`,
         before: taskPreview(before),
-        after: "TaskNotes will apply its configured completion status and recurrence behavior.",
+        after: before.recurrence
+          ? `Mark this occurrence complete.\nRecurrence: ${before.recurrence}\nTaskNotes will schedule the next occurrence using its configured behavior.`
+          : `Mark as completed: ${taskDisplayTitle(before)}\nPath: ${before.path}`,
+        beforeLabel: "Current task",
+        afterLabel: "Completion result",
         details: before.citation
       };
     } else if (call.function.name === "add_task_dependency" || call.function.name === "remove_task_dependency") {
@@ -1092,8 +1188,12 @@ export class AgentToolRegistry {
       preview = {
         title: `${call.function.name === "add_task_dependency" ? "Add" : "Remove"} task dependency`,
         before: before.dependencies.length ? before.dependencies.map((dependency) => dependency.uid).join("\n") : "No task dependencies.",
-        after: dependencies.length ? dependencies.map((dependency) => dependency.uid).join("\n") : "No task dependencies.",
-        details: before.citation
+        after: dependencies.length ? dependencies.map((dependency) =>
+          `${dependency.uid}${dependency.reltype ? ` (${dependency.reltype})` : ""}`
+        ).join("\n") : "No task dependencies.",
+        beforeLabel: "Currently blocked by",
+        afterLabel: "Proposed blocked by",
+        details: `Task: ${taskDisplayTitle(before)}\n${before.citation}`
       };
     } else if (call.function.name === "start_task_timer" || call.function.name === "stop_task_timer") {
       const path = stringArg(input, "path");
@@ -1103,8 +1203,13 @@ export class AgentToolRegistry {
       const starting = call.function.name === "start_task_timer";
       preview = {
         title: `${starting ? "Start" : "Stop"} task timer: ${before.title}`,
-        before: before.timeTrackingActive ? "timer active" : "timer stopped",
-        after: starting ? "timer active" : "timer stopped",
+        before: before.timeTrackingActive ? "Timer is running." : "Timer is stopped.",
+        after: starting
+          ? `Start tracking time${typeof input.description === "string" && input.description.trim()
+            ? `: ${input.description.trim()}` : "."}`
+          : "Stop the active time entry.",
+        beforeLabel: "Current timer",
+        afterLabel: "Proposed timer",
         details: before.citation
       };
     } else if (call.function.name === "record_task_exp") {
@@ -1118,6 +1223,8 @@ export class AgentToolRegistry {
         title: `${next.action === "award" ? "Award" : next.action === "recalibrate" ? "Recalibrate" : "Plan"} EXP: ${task.title}`,
         before: expPreview(await this.expService.taskState(next.path)),
         after: expPreview(next),
+        beforeLabel: "Current EXP",
+        afterLabel: "Proposed EXP",
         details: `${task.citation}\nTitle → ${taskDisplayTitle({ ...task, exp: next.value })}\nImmutable Markdown ledger entry · time fields remain unchanged`
       };
     } else if (call.function.name === "create_note") {
@@ -1156,6 +1263,69 @@ export class AgentToolRegistry {
       preview = { title: "Move note to vault trash", details: stringArg(input, "path") };
     }
     return { sensitive, sensitivityReasons, preview };
+  }
+
+  resultPreview(call: ToolCall, value: unknown): ToolPreview | undefined {
+    const name = call.function.name;
+    if (name === "query_tasks") {
+      const result = recordValue(value);
+      const tasks = Array.isArray(result.tasks) ? result.tasks : [];
+      const count = typeof result.count === "number" ? result.count : tasks.length;
+      return {
+        title: `${count} matching task${count === 1 ? "" : "s"}`,
+        after: taskListPreview(tasks),
+        afterLabel: "Results",
+        details: typeof result.provider === "string" ? `Provider: ${result.provider}` : undefined
+      };
+    }
+    if (name === "get_task") {
+      return {
+        title: "Task inspected",
+        after: taskPreview(recordValue(value) as TaskPreviewInput),
+        afterLabel: "Task"
+      };
+    }
+    if (name === "get_task_exp") {
+      const result = recordValue(value);
+      const task = recordValue(result.task);
+      return {
+        title: "Task EXP inspected",
+        after: expPreview((result.exp ?? null) as TaskExpState | null),
+        afterLabel: "EXP",
+        details: typeof task.citation === "string" ? task.citation : undefined
+      };
+    }
+    if ([
+      "create_task",
+      "update_task",
+      "complete_task",
+      "add_task_dependency",
+      "remove_task_dependency",
+      "start_task_timer",
+      "stop_task_timer"
+    ].includes(name)) {
+      const result = recordValue(value);
+      return {
+        title: TASK_RESULT_LABELS[name] ?? `${toolLabel(name)} completed`,
+        after: taskPreview(recordValue(result.task) as TaskPreviewInput),
+        afterLabel: "Verified task",
+        details: result.verified === true ? "Verified after writing" : undefined
+      };
+    }
+    if (name === "record_task_exp") {
+      const result = recordValue(value);
+      const task = recordValue(result.task);
+      return {
+        title: "Task EXP recorded",
+        after: expPreview((result.exp ?? null) as TaskExpState | null),
+        afterLabel: "Verified EXP",
+        details: [
+          typeof task.citation === "string" ? task.citation : "",
+          result.verified === true ? "Task frontmatter and ledger entry verified" : ""
+        ].filter(Boolean).join("\n") || undefined
+      };
+    }
+    return undefined;
   }
 
   async execute(call: ToolCall, options: ToolExecutionOptions = { allowSensitive: false }): Promise<ToolExecutionResult> {

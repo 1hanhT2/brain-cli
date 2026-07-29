@@ -494,6 +494,36 @@ test("tool inspection returns patch diffs and sensitive-read warnings", async ()
   assert.deepEqual(read.sensitivityReasons, ["#private"]);
 });
 
+test("task tools expose readable intent and result previews instead of raw JSON", async () => {
+  const registry = makeRegistry({} as VaultTools);
+  const queryCall = call("query_tasks", {
+    tags: ["study"],
+    due_before: "2026-07-31",
+    include_completed: true,
+    limit: 20
+  });
+  const query = await registry.inspect(queryCall);
+  assert.equal(query.preview?.title, "Find tasks");
+  assert.match(query.preview?.details ?? "", /Tags: study/);
+  assert.match(query.preview?.details ?? "", /Completed tasks: included/);
+  assert.doesNotMatch(query.preview?.details ?? "", /[{}"]/);
+
+  const result = registry.resultPreview(queryCall, {
+    provider: "tasknotes",
+    count: 1,
+    tasks: [{
+      title: "Read 15 pages",
+      displayTitle: "[200] Read 15 pages",
+      status: "open",
+      due: "2026-07-31"
+    }]
+  });
+  assert.equal(result?.title, "1 matching task");
+  assert.equal(result?.afterLabel, "Results");
+  assert.match(result?.after ?? "", /\[200\] Read 15 pages — open · due 2026-07-31/);
+  assert.equal(registry.displayName("add_task_dependency"), "Add task dependency");
+});
+
 test("chat Markdown round-trips Unicode state while remaining readable", () => {
   const state: ChatState = {
     id: "chat-1",

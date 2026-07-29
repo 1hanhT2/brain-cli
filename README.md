@@ -9,6 +9,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Real multi-turn OpenRouter chat completions with incremental SSE rendering.
 - Stop-generation control backed by request cancellation.
 - Native OpenRouter tool calling with iterative tool-result feedback.
+- Human-readable tool cards with persistent verified results, inline errors, explicit approval intent, and collapsible technical arguments.
 - Environment inspection plus Markdown listing, reading, and searching.
 - Native Obsidian Markdown rendering for tables, callouts, wikilinks, code, and math.
 - Approval-gated note creation, append, exact patch, replacement, rename, move, trash, and frontmatter updates.
@@ -23,7 +24,8 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Fast startup paths that skip Brain's built-in lexical scan when Omnisearch is active and reuse compact 24-hour model catalogs from asynchronous IndexedDB storage.
 - Lightweight frontmatter chat summaries, semantic-vector hot caching, progressive transcript history, and local `/perf` diagnostics.
 - TaskNotes runtime API v1 integration for normalized task queries, inspection, creation, updates, and completion.
-- Approval-gated task mutation previews, post-operation verification, sensitive-task filtering, and a generic Markdown fallback when TaskNotes is unavailable.
+- Human-readable intent and result previews for every task query, inspection, EXP operation, mutation, dependency change, and timer action.
+- Approval-gated task mutations, post-operation verification, sensitive-task filtering, and a generic Markdown fallback when TaskNotes is unavailable.
 - Optional OpenRouter server-side web search alongside Brain's local vault tools.
 - Sensitive-tag and credential-pattern detection before note content leaves the vault.
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
@@ -40,6 +42,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Ordinary local Markdown under `Brain/` for chats, memory, calibration, settings, and queued work. Sync is deliberately outside the plugin.
 - Safe Markdown read/search/create/frontmatter-update primitives.
 - Mobile-safe build: no Node filesystem, shell, or desktop-only dependencies at runtime.
+- Keyboard-only approval and autocomplete flows, screen-reader live regions, visible focus states, and stacked mobile tool previews.
 
 ## Development
 

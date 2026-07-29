@@ -272,6 +272,7 @@ export class BrainChatView extends ItemView {
   private unsubscribeSemantic: (() => void) | null = null;
   private semanticProgressEl: HTMLElement | null = null;
   private transcriptVisibleStart: number | null = null;
+  private readonly suggestionsId = `obsidian-brain-suggestions-${Math.random().toString(36).slice(2)}`;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: ObsidianBrainPlugin) {
     super(leaf);
@@ -294,6 +295,8 @@ export class BrainChatView extends ItemView {
       this.containerEl.addClass("obsidian-brain-view");
       this.renderHeader();
       this.transcriptEl = this.containerEl.createDiv({ cls: "obsidian-brain-transcript" });
+      this.transcriptEl.setAttribute("role", "log");
+      this.transcriptEl.setAttribute("aria-label", "Obsidian Brain conversation");
       this.renderEmptyState();
       this.renderComposer();
       await this.refreshChatSummaries();
@@ -320,6 +323,8 @@ export class BrainChatView extends ItemView {
     identity.createEl("h3", { text: "brain" });
     identity.createSpan({ cls: "obsidian-brain-vault", text: `@${this.app.vault.getName()}` });
     this.statusEl = titleRow.createSpan({ cls: "obsidian-brain-status", text: "ready" });
+    this.statusEl.setAttribute("role", "status");
+    this.statusEl.setAttribute("aria-live", "polite");
 
     const contextRow = header.createDiv({ cls: "obsidian-brain-context-row" });
     contextRow.createSpan({ cls: "obsidian-brain-context-prefix", text: "~/" });
@@ -368,12 +373,18 @@ export class BrainChatView extends ItemView {
   private renderComposer(): void {
     const composer = this.containerEl.createDiv({ cls: "obsidian-brain-composer" });
     this.commandSuggestionsEl = composer.createDiv({ cls: "obsidian-brain-command-suggestions" });
+    this.commandSuggestionsEl.id = this.suggestionsId;
+    this.commandSuggestionsEl.setAttribute("role", "listbox");
+    this.commandSuggestionsEl.setAttribute("aria-label", "Command, skill, and file suggestions");
     const row = composer.createDiv({ cls: "obsidian-brain-composer-row" });
     row.createSpan({ cls: "obsidian-brain-shell-prompt", text: "brain>" });
     this.inputEl = row.createEl("textarea", {
       attr: {
         placeholder: "ask the vault or type /help",
         "aria-label": "Obsidian Brain terminal input",
+        "aria-controls": this.commandSuggestionsEl.id,
+        "aria-autocomplete": "list",
+        "aria-expanded": "false",
         rows: "1",
         spellcheck: "true"
       }
@@ -1571,6 +1582,7 @@ export class BrainChatView extends ItemView {
   private async addTerminalOutput(markdown: string, state: "system" | "warning" | "error" = "system"): Promise<void> {
     this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
     const output = this.transcriptEl.createDiv({ cls: `obsidian-brain-terminal-output is-${state}` });
+    output.setAttribute("role", state === "error" ? "alert" : "status");
     output.createSpan({ cls: "obsidian-brain-line-prefix", text: state === "error" ? "!" : state === "warning" ? "?" : "›" });
     const body = output.createDiv({ cls: "obsidian-brain-terminal-output-body markdown-rendered obsidian-brain-markdown" });
     await this.renderInlineMarkdown(body, markdown);
@@ -2353,6 +2365,7 @@ export class BrainChatView extends ItemView {
     const card = this.addToolCard(call, risk);
     if (!risk) {
       card.setStatus("unknown tool", "error");
+      card.setError(`Brain does not recognize the requested tool: ${call.function.name}`);
       return { value: { ok: false, error: `Unknown tool: ${call.function.name}` }, sensitive: false };
     }
     let inspection;
@@ -2361,6 +2374,7 @@ export class BrainChatView extends ItemView {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       card.setStatus(message, "error");
+      card.setError(message);
       return { value: { ok: false, error: message }, sensitive: false };
     }
     if (inspection.preview) card.setPreview(inspection.preview);
@@ -2391,9 +2405,13 @@ export class BrainChatView extends ItemView {
     const result = await this.plugin.agentTools.execute(call, { allowSensitive: inspection.sensitive });
     card.setStatus(result.ok ? "completed" : result.error ?? "failed", result.ok ? "success" : "error");
     if (result.ok) {
+      const resultPreview = this.plugin.agentTools.resultPreview(call, result.result);
+      if (resultPreview) card.setResult(resultPreview);
       const citations = this.collectCitations(result.result);
       citations.forEach((citation) => this.turnCitations.add(citation));
       card.setSources(citations);
+    } else {
+      card.setError(result.error ?? "The operation failed without an error message.");
     }
     return { value: result, sensitive: inspection.sensitive };
   }
@@ -2401,21 +2419,31 @@ export class BrainChatView extends ItemView {
   private addToolCard(call: ToolCall, risk: ToolRisk | null): {
     setStatus: (text: string, state: "pending" | "success" | "error") => void;
     setPreview: (preview: ToolPreview) => void;
+    setResult: (preview: ToolPreview) => void;
+    setError: (message: string) => void;
     setSensitive: (reasons: string[]) => void;
     setSources: (citations: string[]) => void;
     requestApproval: (signal: AbortSignal) => Promise<boolean>;
   } {
     this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
     const card = this.transcriptEl.createDiv({ cls: "obsidian-brain-tool" });
+    card.setAttribute("role", "group");
+    card.setAttribute("aria-label", `${this.plugin.agentTools.displayName(call.function.name)} tool operation`);
     const header = card.createDiv({ cls: "obsidian-brain-tool-header" });
-    header.createSpan({ cls: "obsidian-brain-tool-name", text: call.function.name || "unknown tool" });
+    const toolName = header.createSpan({
+      cls: "obsidian-brain-tool-name",
+      text: this.plugin.agentTools.displayName(call.function.name || "unknown tool")
+    });
+    toolName.title = call.function.name;
     header.createSpan({
       cls: "obsidian-brain-tool-risk",
       text: risk === "read" ? "read" : risk ? "write" : "unknown"
     });
     const status = header.createSpan({ cls: "obsidian-brain-tool-status", text: "requested" });
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
     const details = card.createEl("details", { cls: "obsidian-brain-tool-details" });
-    details.createEl("summary", { text: "Arguments" });
+    details.createEl("summary", { text: "Technical details" });
     const argumentsEl = details.createEl("pre");
     try {
       argumentsEl.setText(JSON.stringify(this.plugin.agentTools.parseArguments(call), null, 2));
@@ -2423,28 +2451,51 @@ export class BrainChatView extends ItemView {
       argumentsEl.setText(call.function.arguments);
     }
     const previewEl = card.createDiv({ cls: "obsidian-brain-tool-preview" });
+    const resultEl = card.createDiv({ cls: "obsidian-brain-tool-result" });
+    const errorEl = card.createDiv({ cls: "obsidian-brain-tool-error" });
     const sourcesEl = card.createDiv({ cls: "obsidian-brain-tool-sources" });
     const actions = card.createDiv({ cls: "obsidian-brain-tool-actions" });
     card.scrollIntoView({ block: "end" });
+
+    const renderPreview = (container: HTMLElement, preview: ToolPreview): void => {
+      container.empty();
+      container.createDiv({ cls: "obsidian-brain-tool-preview-title", text: preview.title });
+      if (preview.details) container.createEl("pre", {
+        cls: "obsidian-brain-tool-preview-details",
+        text: preview.details
+      });
+      const panes = [
+        preview.before !== undefined
+          ? { value: preview.before, label: preview.beforeLabel ?? "Before", className: "is-before" }
+          : null,
+        preview.after !== undefined
+          ? { value: preview.after, label: preview.afterLabel ?? "After", className: "is-after" }
+          : null
+      ].filter((pane): pane is { value: string; label: string; className: string } => pane !== null);
+      if (panes.length > 0) {
+        const diff = container.createDiv({ cls: `obsidian-brain-diff${panes.length === 1 ? " is-single" : ""}` });
+        for (const pane of panes) {
+          const paneEl = diff.createDiv({ cls: `obsidian-brain-diff-pane ${pane.className}` });
+          paneEl.createDiv({ cls: "obsidian-brain-diff-label", text: pane.label });
+          paneEl.createEl("pre", { text: pane.value });
+        }
+      }
+    };
 
     return {
       setStatus: (text, state) => {
         status.setText(text);
         status.dataset.state = state;
+        card.dataset.state = state;
       },
-      setPreview: (preview) => {
-        previewEl.empty();
-        previewEl.createDiv({ cls: "obsidian-brain-tool-preview-title", text: preview.title });
-        if (preview.details) previewEl.createEl("pre", { text: preview.details });
-        if (preview.before !== undefined || preview.after !== undefined) {
-          const diff = previewEl.createDiv({ cls: "obsidian-brain-diff" });
-          const before = diff.createDiv({ cls: "obsidian-brain-diff-pane is-before" });
-          before.createDiv({ cls: "obsidian-brain-diff-label", text: "Before" });
-          before.createEl("pre", { text: preview.before ?? "" });
-          const after = diff.createDiv({ cls: "obsidian-brain-diff-pane is-after" });
-          after.createDiv({ cls: "obsidian-brain-diff-label", text: "After" });
-          after.createEl("pre", { text: preview.after ?? "" });
-        }
+      setPreview: (preview) => renderPreview(previewEl, preview),
+      setResult: (preview) => {
+        renderPreview(resultEl, preview);
+        resultEl.setAttribute("role", "status");
+      },
+      setError: (message) => {
+        errorEl.setText(message);
+        errorEl.setAttribute("role", "alert");
       },
       setSensitive: (reasons) => {
         card.addClass("is-sensitive");
@@ -2460,8 +2511,19 @@ export class BrainChatView extends ItemView {
         void this.renderInlineMarkdown(links, [...new Set(citations)].join(" · "));
       },
       requestApproval: (signal) => new Promise<boolean>((resolve) => {
-        const approve = actions.createEl("button", { text: "/approve", cls: "mod-cta" });
-        const deny = actions.createEl("button", { text: "/deny" });
+        actions.createSpan({
+          cls: "obsidian-brain-tool-action-hint",
+          text: "Confirm this exact operation:"
+        });
+        const approve = actions.createEl("button", {
+          text: "/approve",
+          cls: "mod-cta",
+          attr: { "aria-label": "Approve this tool operation" }
+        });
+        const deny = actions.createEl("button", {
+          text: "/deny",
+          attr: { "aria-label": "Deny this tool operation" }
+        });
         let settled = false;
         const finish = (approved: boolean) => {
           if (settled) return;
@@ -2761,6 +2823,23 @@ export class BrainChatView extends ItemView {
   private async renderTranscript(scrollToEnd = true): Promise<void> {
     this.disposeMarkdownComponents();
     this.transcriptEl.empty();
+    const savedToolResults = new Map<string, { ok: boolean; result?: unknown; error?: string }>();
+    for (const message of this.messages) {
+      if (message.role !== "tool") continue;
+      try {
+        const parsed = JSON.parse(message.content) as { ok?: unknown; result?: unknown; error?: unknown };
+        savedToolResults.set(message.tool_call_id, {
+          ok: parsed.ok === true,
+          result: parsed.result,
+          error: typeof parsed.error === "string" ? parsed.error : undefined
+        });
+      } catch {
+        savedToolResults.set(message.tool_call_id, {
+          ok: false,
+          error: "The saved tool result could not be displayed."
+        });
+      }
+    }
     const visibleIndexes = this.messages
       .map((message, index) => ({ message, index }))
       .filter(({ message }) =>
@@ -2799,7 +2878,19 @@ export class BrainChatView extends ItemView {
       if (message.role === "assistant") {
         for (const call of message.tool_calls ?? []) {
           const card = this.addToolCard(call, this.plugin.agentTools.riskFor(call.function.name));
-          card.setStatus("previously executed", "success");
+          const saved = savedToolResults.get(call.id);
+          if (!saved) {
+            card.setStatus("result unavailable", "error");
+            card.setError("This saved chat does not contain a result for the tool operation.");
+          } else if (!saved.ok) {
+            card.setStatus("failed", "error");
+            card.setError(saved.error ?? "The operation failed.");
+          } else {
+            card.setStatus("completed", "success");
+            const resultPreview = this.plugin.agentTools.resultPreview(call, saved.result);
+            if (resultPreview) card.setResult(resultPreview);
+            card.setSources(this.collectCitations(saved.result));
+          }
           visible = true;
         }
       }
@@ -2810,9 +2901,13 @@ export class BrainChatView extends ItemView {
 
   private renderEmptyState(): void {
     const empty = this.transcriptEl.createDiv({ cls: "obsidian-brain-empty" });
+    empty.setAttribute("role", "status");
     empty.createDiv({ cls: "obsidian-brain-empty-mark", text: "OBSIDIAN_BRAIN" });
-    empty.createDiv({ text: "vault agent online" });
-    empty.createDiv({ cls: "obsidian-brain-empty-hint", text: "type / for commands · @ for skills or files · plain text starts a conversation" });
+    empty.createDiv({ text: "Your vault agent is ready." });
+    empty.createDiv({
+      cls: "obsidian-brain-empty-hint",
+      text: "Ask about your notes, type / for commands, or @ to attach a file or activate a skill."
+    });
   }
 
   private renderPromptContext(): void {
@@ -2981,15 +3076,23 @@ export class BrainChatView extends ItemView {
     this.commandSuggestionsEl.empty();
     if (this.visibleSuggestions.length === 0) {
       this.commandSuggestionsEl.removeClass("is-visible");
+      this.inputEl.setAttribute("aria-expanded", "false");
+      this.inputEl.removeAttribute("aria-activedescendant");
       return;
     }
     this.commandSuggestionsEl.addClass("is-visible");
+    this.inputEl.setAttribute("aria-expanded", "true");
     if (!this.pendingApproval && !this.configMenuEl && !this.folderPickerEl && !this.expPendingPickerEl) {
       this.commandHintEl.setText("enter insert  ·  esc close  ·  ↑/↓ navigate  ·  tab insert");
     }
     this.visibleSuggestions.forEach((command, index) => {
       const item = this.commandSuggestionsEl.createDiv({
-        cls: `obsidian-brain-command-suggestion${index === this.suggestionIndex ? " is-selected" : ""}`
+        cls: `obsidian-brain-command-suggestion${index === this.suggestionIndex ? " is-selected" : ""}`,
+        attr: {
+          id: `${this.commandSuggestionsEl.id}-option-${index}`,
+          role: "option",
+          "aria-selected": index === this.suggestionIndex ? "true" : "false"
+        }
       });
       item.createEl("code", { text: command.usage });
       item.createSpan({ text: command.description });
@@ -2999,6 +3102,7 @@ export class BrainChatView extends ItemView {
         this.completeSuggestion();
       });
       if (index === this.suggestionIndex) {
+        this.inputEl.setAttribute("aria-activedescendant", item.id);
         item.scrollIntoView({ block: "nearest" });
       }
     });
@@ -3010,6 +3114,8 @@ export class BrainChatView extends ItemView {
     if (!this.commandSuggestionsEl) return;
     this.commandSuggestionsEl.empty();
     this.commandSuggestionsEl.removeClass("is-visible");
+    this.inputEl.setAttribute("aria-expanded", "false");
+    this.inputEl.removeAttribute("aria-activedescendant");
     if (!this.pendingApproval && !this.configMenuEl && !this.folderPickerEl && !this.expPendingPickerEl) {
       this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
     }
@@ -3197,6 +3303,8 @@ export class BrainChatView extends ItemView {
     this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
     const message = this.transcriptEl.createDiv({ cls: "obsidian-brain-message" });
     message.dataset.role = role;
+    message.setAttribute("role", "article");
+    message.setAttribute("aria-label", role === "user" ? "You" : "Brain");
     message.createDiv({
       cls: "obsidian-brain-message-label",
       text: role === "user" ? "you>" : "brain>"
