@@ -24,6 +24,11 @@ export interface ExpAutoScoreResult {
   source: "automatic" | "manual";
 }
 
+export interface ExpScoreProposal {
+  input: ExpRecordInput;
+  title: string;
+}
+
 export interface ExpAutoScoreStatus {
   queued: number;
   running: boolean;
@@ -154,6 +159,14 @@ export class ExpAutoScorer {
     return this.score(path, "manual");
   }
 
+  async proposeAward(
+    path: string,
+    completionToken: string,
+    completionAt: string
+  ): Promise<ExpScoreProposal> {
+    return this.propose(path, "automatic", "award", completionToken, completionAt);
+  }
+
   getStatus(): ExpAutoScoreStatus {
     return {
       queued: this.pending.size,
@@ -232,6 +245,29 @@ export class ExpAutoScorer {
   }
 
   private async score(path: string, source: "automatic" | "manual"): Promise<ExpAutoScoreResult> {
+    if (source === "automatic") {
+      const task = await this.taskService.get(path, true);
+      if (!task) throw new Error(`Task not found: ${path}`);
+      if (task.exp !== null) return { path, title: task.title, value: task.exp, source };
+    }
+    const proposal = await this.propose(path, source);
+    const input = this.expService.validate(proposal.input);
+    const recorded = await this.expService.record(input);
+    return {
+      path,
+      title: recorded.task.title,
+      value: recorded.exp.value,
+      source
+    };
+  }
+
+  private async propose(
+    path: string,
+    source: "automatic" | "manual",
+    requestedAction?: ExpRecordInput["action"],
+    completionToken?: string,
+    completionAt?: string
+  ): Promise<ExpScoreProposal> {
     if (source === "automatic" && this.activeController) {
       throw new Error("Another EXP scoring request is already running.");
     }
@@ -242,9 +278,6 @@ export class ExpAutoScorer {
       const settings = this.getSettings();
       const task = await this.taskService.get(path, true);
       if (!task) throw new Error(`Task not found: ${path}`);
-      if (source === "automatic" && task.exp !== null) {
-        return { path, title: task.title, value: task.exp, source };
-      }
       const sensitivity = await this.taskService.inspectSensitivity(path);
       if (sensitivity.sensitive) {
         throw new Error(`EXP scoring skipped a sensitive task: ${sensitivity.reasons.join(", ")}`);
@@ -255,10 +288,10 @@ export class ExpAutoScorer {
       }
       const content = (await this.app.vault.cachedRead(file as TFile)).slice(0, MAX_TASK_CONTEXT_CHARACTERS);
       const existing = await this.expService.taskState(path);
-      if (existing?.state === "earned") {
+      if (!requestedAction && existing?.state === "earned") {
         throw new Error("This task already has earned EXP and cannot be rescored as planned work.");
       }
-      const action: ExpRecordInput["action"] = existing ? "recalibrate" : "plan";
+      const action: ExpRecordInput["action"] = requestedAction ?? (existing ? "recalibrate" : "plan");
       const systemPrompt = [
         "Score one Obsidian task using the supplied EXP rubric.",
         "Return only one JSON object with: value, confidence, reason, and factors.",
@@ -298,14 +331,29 @@ export class ExpAutoScorer {
           response.completionTokens
         ) ?? estimated;
       }
-      const input = this.expService.validate(parseExpScoringResponse(response.content, path, action));
+      const pricedCost = this.actualRequestCost(
+        modelId,
+        response.promptTokens,
+        response.completionTokens
+      );
+      const actualCost = pricedCost ?? (source === "automatic" ? estimated : undefined);
+      const input = this.expService.validate({
+        ...parseExpScoringResponse(response.content, path, action),
+        allowRepeat: action === "award" && existing?.state === "earned",
+        completionToken,
+        completionAt,
+        scoringSource: source === "automatic" ? "background-ai" : "manual-ai",
+        modelId,
+        provider: "openrouter",
+        promptTokens: response.promptTokens,
+        completionTokens: response.completionTokens,
+        costUsd: actualCost,
+        rubricVersion: 1
+      });
       if (controller.signal.aborted) throw abortError();
-      const recorded = await this.expService.record(input, controller.signal);
       return {
-        path,
-        title: recorded.task.title,
-        value: recorded.exp.value,
-        source
+        input,
+        title: task.title
       };
     } finally {
       if (this.activeController === controller) {

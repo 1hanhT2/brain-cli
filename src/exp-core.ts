@@ -1,4 +1,5 @@
 export type ExpAction = "plan" | "award" | "recalibrate";
+export type ExpScoringSource = "manual" | "manual-ai" | "background-ai" | "planned-reuse";
 
 export interface ExpFactors {
   output: string;
@@ -17,6 +18,16 @@ export interface ExpRecordInput {
   reason: string;
   factors: ExpFactors;
   allowRepeat?: boolean;
+  completionToken?: string;
+  completionAt?: string;
+  scoringSource?: ExpScoringSource;
+  sourceEventId?: string;
+  modelId?: string;
+  provider?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  costUsd?: number;
+  rubricVersion?: number;
 }
 
 export interface TaskExpState {
@@ -29,6 +40,8 @@ export interface TaskExpState {
   scoredAt: string;
   awardedAt: string | null;
   revision: number;
+  taskId: string;
+  lastCompletionId: string | null;
 }
 
 export interface ExpLedgerEntry {
@@ -44,6 +57,17 @@ export interface ExpLedgerEntry {
   revision: number;
   citation: string;
   sensitive?: boolean;
+  taskId?: string;
+  completionId?: string;
+  completionAt?: string;
+  scoringSource?: ExpScoringSource;
+  sourceEventId?: string;
+  modelId?: string;
+  provider?: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  costUsd?: number;
+  rubricVersion?: number;
 }
 
 export interface ExpProgress {
@@ -140,6 +164,20 @@ export const validateExpInput = (input: ExpRecordInput): ExpRecordInput => {
     ...input,
     path,
     reason: input.reason.trim(),
+    completionToken: input.completionToken?.trim() || undefined,
+    completionAt: input.completionAt?.trim() || undefined,
+    scoringSource: input.scoringSource ?? "manual",
+    sourceEventId: input.sourceEventId?.trim() || undefined,
+    modelId: input.modelId?.trim() || undefined,
+    provider: input.provider?.trim() || undefined,
+    promptTokens: Number.isFinite(input.promptTokens) ? Math.max(0, Math.floor(input.promptTokens!)) : undefined,
+    completionTokens: Number.isFinite(input.completionTokens)
+      ? Math.max(0, Math.floor(input.completionTokens!))
+      : undefined,
+    costUsd: Number.isFinite(input.costUsd) ? Math.max(0, input.costUsd!) : undefined,
+    rubricVersion: Number.isFinite(input.rubricVersion)
+      ? Math.max(1, Math.floor(input.rubricVersion!))
+      : undefined,
     factors: Object.fromEntries(
       Object.entries(input.factors).map(([key, value]) => [key, value.trim()])
     ) as unknown as ExpFactors

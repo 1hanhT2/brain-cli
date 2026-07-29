@@ -20,6 +20,8 @@ export interface SkillCompletion {
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 const EXP_COMPLETIONS: SkillCompletion[] = [
   { value: "status", description: "Show EXP totals, level, and streaks" },
+  { value: "check", description: "Reconcile newly completed tasks and process their EXP" },
+  { value: "pending", description: "Review pending completion awards" },
   { value: "history", description: "Browse the EXP ledger" },
   { value: "review", description: "Review scoring consistency" },
   { value: "task", description: "Inspect EXP stored on a task" },
@@ -186,6 +188,23 @@ export class SkillRegistry {
               'The task note stores its current EXP state in flat frontmatter:\n\n- `title: "[EXP] Task title"` (existing numeric prefixes are replaced)\n'
             );
           }
+          if (entry.path === `${root}/references/schema.md`) {
+            migrated = migrated.replace("- `exp_schema: 1`", "- `exp_schema: 2`");
+            if (!migrated.includes("exp_task_id")) {
+              migrated = migrated.replace(
+                "- `exp_revision: positive integer`",
+                [
+                  "- `exp_revision: positive integer`",
+                  "- `exp_task_id: stable task identifier`",
+                  "- `exp_last_completion_id: most recently awarded completion or null`"
+                ].join("\n")
+              );
+              migrated = migrated.replace(
+                "Totals and streaks count only events whose action is `award`.",
+                "Version 2 award events can include completion identity, model, usage, cost, and rubric metadata.\nTotals and streaks count only events whose action is `award`."
+              );
+            }
+          }
           if (migrated !== content) await this.app.vault.modify(file, migrated);
         }
         continue;
@@ -206,6 +225,15 @@ export class SkillRegistry {
     const frontmatter = migrated.match(FRONTMATTER_PATTERN)?.[0] ?? "";
     if (frontmatter && !/\ncompletions:\s*\n/.test(frontmatter)) {
       const expanded = frontmatter.replace(/\r?\n---\r?\n?$/, `\ncompletions:\n${EXP_COMPLETIONS_YAML}\n---\n`);
+      migrated = `${expanded}${migrated.slice(frontmatter.length)}`;
+    } else if (frontmatter && !frontmatter.includes("value: check")) {
+      const additions = [
+        "  - value: check",
+        "    description: Reconcile completed tasks and process their EXP",
+        "  - value: pending",
+        "    description: Review pending completion awards"
+      ].join("\n");
+      const expanded = frontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
       migrated = `${expanded}${migrated.slice(frontmatter.length)}`;
     }
     return migrated;

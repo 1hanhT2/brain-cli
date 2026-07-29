@@ -16,6 +16,11 @@ export interface BrainSettings {
   autoScoreTaskExp: boolean;
   autoExpSpendCapUsd: number;
   autoExpQueue: AutoExpQueueEntry[];
+  detectCompletedTaskExp: boolean;
+  autoAwardCompletedTaskExp: boolean;
+  autoScoreCompletedTaskExp: boolean;
+  completionExpSeen: Record<string, string[]>;
+  completionExpBaselineReady: boolean;
   expTitleMaxLength: number;
   favoriteModels: string[];
   embeddingModel: string;
@@ -40,6 +45,11 @@ export const DEFAULT_SETTINGS: BrainSettings = {
   autoScoreTaskExp: false,
   autoExpSpendCapUsd: 0.10,
   autoExpQueue: [],
+  detectCompletedTaskExp: false,
+  autoAwardCompletedTaskExp: false,
+  autoScoreCompletedTaskExp: false,
+  completionExpSeen: {},
+  completionExpBaselineReady: false,
   expTitleMaxLength: 100,
   favoriteModels: ["openrouter/free"],
   embeddingModel: "",
@@ -151,6 +161,60 @@ export class BrainSettingTab extends PluginSettingTab {
           }
           try {
             await this.plugin.setAutoScoreTaskExp(value);
+          } catch (error) {
+            toggle.setValue(!value);
+            this.plugin.reportError(error);
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName("Detect completed task EXP")
+      .setDesc("Watch TaskNotes and fallback Markdown tasks for newly completed work. Existing completions are baselined when first enabled.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.detectCompletedTaskExp)
+        .onChange(async (value) => {
+          try {
+            await this.plugin.setCompletionDetectionEnabled(value);
+          } catch (error) {
+            toggle.setValue(!value);
+            this.plugin.reportError(error);
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName("Automatically commit completion awards")
+      .setDesc("Write detected awards without per-task approval. When disabled, proposals remain in Brain/Queue/EXP/Pending.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.autoAwardCompletedTaskExp)
+        .onChange(async (value) => {
+          if (value && !window.confirm(
+            "Detected task completions will update task frontmatter and write EXP ledger entries automatically. Continue?"
+          )) {
+            toggle.setValue(false);
+            return;
+          }
+          try {
+            await this.plugin.setAutomaticCompletionAwards(value);
+          } catch (error) {
+            toggle.setValue(!value);
+            this.plugin.reportError(error);
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName("Automatically score unscored completions")
+      .setDesc("Send completed non-sensitive task notes without planned EXP to the background OpenRouter model. Otherwise they remain marked needs-score.")
+      .addToggle((toggle) => toggle
+        .setValue(this.plugin.settings.autoScoreCompletedTaskExp)
+        .onChange(async (value) => {
+          if (value && !window.confirm(
+            "Unscored completed task content will be sent to OpenRouter and may incur model charges. Continue?"
+          )) {
+            toggle.setValue(false);
+            return;
+          }
+          try {
+            await this.plugin.setAutomaticCompletionScoring(value);
           } catch (error) {
             toggle.setValue(!value);
             this.plugin.reportError(error);

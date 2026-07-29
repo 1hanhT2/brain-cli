@@ -19,11 +19,17 @@ import {
 import { formatExpTaskTitle, stripExpTitlePrefix } from "./task-provider";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
-const EXP_SCHEMA_VERSION = 1;
+const EXP_SCHEMA_VERSION = 2;
 const EXP_FRONTMATTER_KEYS = [
   "title", "exp_schema", "exp", "exp_state", "exp_confidence", "exp_reason",
-  "exp_factors", "exp_scored_at", "exp_awarded_at", "exp_revision"
+  "exp_factors", "exp_scored_at", "exp_awarded_at", "exp_revision",
+  "exp_task_id", "exp_last_completion_id"
 ];
+
+const uniqueId = (): string =>
+  typeof crypto?.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
 export class ExpService {
   constructor(
@@ -53,8 +59,21 @@ export class ExpService {
       factors: parseExpFactors(frontmatter.exp_factors),
       scoredAt: expString(frontmatter.exp_scored_at),
       awardedAt: state === "earned" ? expString(frontmatter.exp_awarded_at) || null : null,
-      revision: expNumber(frontmatter.exp_revision)
+      revision: expNumber(frontmatter.exp_revision),
+      taskId: expString(frontmatter.exp_task_id),
+      lastCompletionId: expString(frontmatter.exp_last_completion_id) || null
     };
+  }
+
+  async hasCompletion(completionId: string): Promise<boolean> {
+    if (!completionId) return false;
+    return (await this.history()).some((entry) =>
+      entry.action === "award" && entry.completionId === completionId
+    );
+  }
+
+  async latestEvent(path: string): Promise<ExpLedgerEntry | null> {
+    return (await this.history()).find((entry) => entry.taskPath === path) ?? null;
   }
 
   async record(input: ExpRecordInput, signal?: AbortSignal): Promise<{
@@ -68,14 +87,31 @@ export class ExpService {
     const task = await this.taskService.get(clean.path, true);
     if (!task) throw new Error(`Task not found: ${clean.path}`);
     const existing = await this.taskState(task.path);
-    validateExpTransition(clean.action, existing, clean.allowRepeat);
+    const taskId = existing?.taskId || uniqueId();
+    const completionId = clean.completionToken ? `${taskId}:${clean.completionToken}` : undefined;
+    if (completionId && await this.hasCompletion(completionId)) {
+      throw new Error("This task completion already has an EXP award.");
+    }
+    validateExpTransition(
+      clean.action,
+      existing,
+      clean.allowRepeat || Boolean(completionId && existing?.state === "earned")
+    );
 
     const now = new Date().toISOString();
     const revision = (existing?.revision ?? 0) + 1;
     const plainTitle = stripExpTitlePrefix(task.title);
     const storedTitle = formatExpTaskTitle(plainTitle, clean.value, this.getTitleMaxLength());
     const sensitivity = await this.taskService.inspectSensitivity(task.path);
-    const ledger = this.makeLedgerEntry(clean, plainTitle, now, revision, sensitivity.sensitive);
+    const ledger = this.makeLedgerEntry(
+      clean,
+      plainTitle,
+      now,
+      revision,
+      sensitivity.sensitive,
+      taskId,
+      completionId
+    );
     const taskFile = this.requireFile(task.path);
     const before = await this.frontmatter(taskFile);
     try {
@@ -90,7 +126,9 @@ export class ExpService {
         exp_factors: clean.factors,
         exp_scored_at: now,
         exp_awarded_at: clean.action === "award" ? now : null,
-        exp_revision: revision
+        exp_revision: revision,
+        exp_task_id: taskId,
+        exp_last_completion_id: completionId ?? existing?.lastCompletionId ?? null
       });
       const verified = await this.taskState(task.path);
       if (signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
@@ -148,7 +186,30 @@ export class ExpService {
         recordedAt: expString(frontmatter.recorded_at),
         revision: expNumber(frontmatter.revision),
         citation: `[[${file.path.replace(/\.md$/i, "")}]]`,
-        sensitive
+        sensitive,
+        taskId: expString(frontmatter.exp_task_id) || undefined,
+        completionId: expString(frontmatter.completion_id) || undefined,
+        completionAt: expString(frontmatter.completion_at) || undefined,
+        scoringSource: frontmatter.scoring_source === "manual-ai"
+          || frontmatter.scoring_source === "background-ai"
+          || frontmatter.scoring_source === "planned-reuse"
+          ? frontmatter.scoring_source
+          : "manual",
+        sourceEventId: expString(frontmatter.source_event_id) || undefined,
+        modelId: expString(frontmatter.model_id) || undefined,
+        provider: expString(frontmatter.provider) || undefined,
+        promptTokens: Number.isFinite(expNumber(frontmatter.prompt_tokens, Number.NaN))
+          ? expNumber(frontmatter.prompt_tokens)
+          : undefined,
+        completionTokens: Number.isFinite(expNumber(frontmatter.completion_tokens, Number.NaN))
+          ? expNumber(frontmatter.completion_tokens)
+          : undefined,
+        costUsd: Number.isFinite(expNumber(frontmatter.cost_usd, Number.NaN))
+          ? expNumber(frontmatter.cost_usd)
+          : undefined,
+        rubricVersion: Number.isFinite(expNumber(frontmatter.rubric_version, Number.NaN))
+          ? expNumber(frontmatter.rubric_version)
+          : undefined
       });
     }
     return entries.sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
@@ -157,21 +218,25 @@ export class ExpService {
   async progress(now = new Date()): Promise<ExpProgress> {
     const history = await this.history();
     const awards = history.filter((entry) => entry.action === "award");
+    const awardTimestamp = (entry: ExpLedgerEntry) => entry.completionAt || entry.recordedAt;
     const total = awards.reduce((sum, entry) => sum + entry.value, 0);
     const since = (days: number) => {
       const cutoff = new Date(now);
       cutoff.setDate(cutoff.getDate() - days);
       return awards
-        .filter((entry) => new Date(entry.recordedAt) >= cutoff)
+        .filter((entry) => new Date(awardTimestamp(entry)) >= cutoff)
         .reduce((sum, entry) => sum + entry.value, 0);
     };
     const today = localDateKey(now);
-    const streaks = calculateExpStreaks(awards, now);
+    const streaks = calculateExpStreaks(
+      awards.map((entry) => ({ ...entry, recordedAt: awardTimestamp(entry) })),
+      now
+    );
     const level = Math.floor(total / 1000) + 1;
     return {
       total,
       today: awards
-        .filter((entry) => localDateKey(entry.recordedAt) === today)
+        .filter((entry) => localDateKey(awardTimestamp(entry)) === today)
         .reduce((sum, entry) => sum + entry.value, 0),
       last7Days: since(7),
       last30Days: since(30),
@@ -250,11 +315,11 @@ export class ExpService {
     taskTitle: string,
     recordedAt: string,
     revision: number,
-    sensitive: boolean
+    sensitive: boolean,
+    taskId: string,
+    completionId?: string
   ): ExpLedgerEntry {
-    const id = typeof crypto?.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const id = uniqueId();
     return {
       id,
       action: input.action,
@@ -267,7 +332,18 @@ export class ExpService {
       recordedAt,
       revision,
       citation: "",
-      sensitive
+      sensitive,
+      taskId,
+      completionId,
+      completionAt: input.completionAt,
+      scoringSource: input.scoringSource ?? "manual",
+      sourceEventId: input.sourceEventId,
+      modelId: input.modelId,
+      provider: input.provider,
+      promptTokens: input.promptTokens,
+      completionTokens: input.completionTokens,
+      costUsd: input.costUsd,
+      rubricVersion: input.rubricVersion ?? 1
     };
   }
 
@@ -291,6 +367,17 @@ export class ExpService {
       `factors: ${JSON.stringify(entry.factors)}`,
       `recorded_at: ${JSON.stringify(entry.recordedAt)}`,
       `revision: ${entry.revision}`,
+      `exp_task_id: ${JSON.stringify(entry.taskId ?? "")}`,
+      `completion_id: ${JSON.stringify(entry.completionId ?? "")}`,
+      `completion_at: ${JSON.stringify(entry.completionAt ?? "")}`,
+      `scoring_source: ${entry.scoringSource ?? "manual"}`,
+      `source_event_id: ${JSON.stringify(entry.sourceEventId ?? "")}`,
+      `model_id: ${JSON.stringify(entry.modelId ?? "")}`,
+      `provider: ${JSON.stringify(entry.provider ?? "")}`,
+      `prompt_tokens: ${JSON.stringify(entry.promptTokens ?? null)}`,
+      `completion_tokens: ${JSON.stringify(entry.completionTokens ?? null)}`,
+      `cost_usd: ${JSON.stringify(entry.costUsd ?? null)}`,
+      `rubric_version: ${entry.rubricVersion ?? 1}`,
       `sensitive: ${entry.sensitive === true}`,
       "---",
       "",
@@ -300,6 +387,11 @@ export class ExpService {
       `- EXP: **${entry.value}**`,
       `- Action: ${entry.action}`,
       `- Confidence: ${Math.round(entry.confidence * 100)}%`,
+      `- Source: ${entry.scoringSource ?? "manual"}${entry.modelId ? ` via \`${entry.modelId}\`` : ""}`,
+      ...(entry.completionAt ? [`- Completed: ${entry.completionAt}`] : []),
+      ...(entry.promptTokens !== undefined || entry.completionTokens !== undefined
+        ? [`- Usage: ${(entry.promptTokens ?? 0).toLocaleString()} input + ${(entry.completionTokens ?? 0).toLocaleString()} output tokens${entry.costUsd !== undefined ? ` · $${entry.costUsd.toFixed(6)}` : ""}`]
+        : []),
       `- Reason: ${entry.reason}`,
       ""
     ].join("\n");

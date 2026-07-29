@@ -51,8 +51,10 @@ import { formatExpTaskTitle, stripExpTitlePrefix, taskDisplayTitle } from "../sr
 import { calculateExpStreaks, validateExpInput, validateExpTransition } from "../src/exp-core";
 import type { ExpService } from "../src/exp-service";
 import { parseSkillInvocation } from "../src/skill-invocation";
-import { parseExpScoringResponse } from "../src/exp-auto-scorer";
+import { parseExpScoringResponse, type ExpAutoScorer } from "../src/exp-auto-scorer";
 import { extractFileMentions, fileMention, findAtQuery } from "../src/file-mentions";
+import { ExpCompletionCoordinator } from "../src/exp-completion";
+import { completionProposalId, type ExpCompletionProposal } from "../src/exp-completion-core";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -1209,6 +1211,8 @@ test("model usage rankings aggregate popularity and positive growth", () => {
 test("bundled EXP skill has valid metadata, workflow, references, and calibration", () => {
   assert.match(EXP_SKILL, /^---\nname: exp\ndescription: .+\n[\s\S]*?\n---/);
   assert.match(EXP_SKILL, /completions:\n[\s\S]*value: score/);
+  assert.match(EXP_SKILL, /value: check/);
+  assert.match(EXP_SKILL, /value: pending/);
   assert.match(EXP_SKILL, /25 to 1000/);
   assert.match(EXP_SKILL, /references\/rubric\.md/);
   assert.match(EXP_SKILL, /references\/examples\.md/);
@@ -1216,6 +1220,8 @@ test("bundled EXP skill has valid metadata, workflow, references, and calibratio
   assert.match(EXP_RUBRIC, /Round to the nearest 25/);
   assert.match(EXP_EXAMPLES, /Read 15 pages of the Bible: 200 EXP/);
   assert.match(EXP_SCHEMA, /immutable ordinary Markdown/);
+  assert.match(EXP_SCHEMA, /exp_schema: 2/);
+  assert.match(EXP_SCHEMA, /model, token usage, cost/);
   assert.match(EXP_AGENT_METADATA, /default_prompt: "Use \$exp/);
   assert.doesNotMatch(`${EXP_SKILL}${EXP_RUBRIC}${EXP_EXAMPLES}${EXP_SCHEMA}`, /TODO/);
 });
@@ -1237,6 +1243,24 @@ test("EXP validation enforces calibrated scores and complete factor evidence", (
     }
   };
   assert.equal(validateExpInput(valid).value, 200);
+  assert.deepEqual(
+    {
+      scoringSource: validateExpInput({
+        ...valid,
+        scoringSource: "background-ai",
+        modelId: " model/example ",
+        promptTokens: 123.9,
+        completionTokens: 45.2,
+        costUsd: 0.001
+      }).scoringSource,
+      modelId: validateExpInput({
+        ...valid,
+        scoringSource: "background-ai",
+        modelId: " model/example "
+      }).modelId
+    },
+    { scoringSource: "background-ai", modelId: "model/example" }
+  );
   assert.throws(() => validateExpInput({ ...valid, value: 210 }), /nearest 25/);
   assert.throws(() => validateExpInput({ ...valid, path: "../outside.md" }), /vault-relative/);
   assert.throws(() => validateExpInput({
@@ -1290,6 +1314,159 @@ test("automatic EXP scoring rejects malformed numeric model output", () => {
       significance: "x"
     }
   }), "TaskNotes/Tasks/a.md", "plan"), /invalid numeric/);
+});
+
+test("completion reconciliation reuses planned EXP, persists approval proposals, and is idempotent", async () => {
+  const task = {
+    path: "TaskNotes/Tasks/read.md",
+    title: "[200] Read",
+    status: "done",
+    priority: null,
+    due: null,
+    scheduled: null,
+    tags: [],
+    contexts: [],
+    projects: [],
+    timeEstimate: null,
+    exp: 200,
+    expState: "planned" as const,
+    recurrence: "RRULE:FREQ=DAILY",
+    completedDate: "2026-07-29",
+    completedInstances: ["2026-07-28", "2026-07-29"],
+    dependencies: [],
+    timeTrackingActive: false,
+    completed: true,
+    provider: "markdown" as const,
+    citation: "[[TaskNotes/Tasks/read]]"
+  };
+  const settings = {
+    detectCompletedTaskExp: true,
+    completionExpBaselineReady: true,
+    completionExpSeen: {},
+    autoAwardCompletedTaskExp: false,
+    autoScoreCompletedTaskExp: false,
+    autoExpSpendCapUsd: 0.1
+  };
+  const proposals = new Map<string, ExpCompletionProposal>();
+  let persisted = 0;
+  const queue = {
+    list: async () => [...proposals.values()],
+    getByCompletion: async (path: string, token: string) =>
+      proposals.get(completionProposalId(path, token)) ?? null,
+    save: async (proposal: ExpCompletionProposal) => {
+      proposals.set(proposal.id, proposal);
+      return proposal;
+    },
+    remove: async (proposal: ExpCompletionProposal) => {
+      proposals.delete(proposal.id);
+    },
+    renameTask: async () => undefined
+  };
+  const expState = {
+    schema: 2,
+    value: 200,
+    state: "planned" as const,
+    confidence: 0.8,
+    reason: "Planned reading output.",
+    factors: {
+      output: "15 pages",
+      difficulty: "moderate",
+      rigor: "light",
+      friction: "some",
+      independence: "independent",
+      significance: "meaningful"
+    },
+    scoredAt: "2026-07-27T00:00:00Z",
+    awardedAt: null,
+    revision: 1,
+    taskId: "task-1",
+    lastCompletionId: null
+  };
+  const coordinator = new ExpCompletionCoordinator(
+    {
+      list: async () => [task],
+      get: async () => task,
+      inspectSensitivity: async () => ({ sensitive: false, reasons: [] })
+    } as unknown as TaskService,
+    {
+      taskState: async () => expState,
+      hasCompletion: async () => false,
+      latestEvent: async () => ({ id: "plan-1" }),
+      record: async () => { throw new Error("approval mode must not write"); }
+    } as unknown as ExpService,
+    {
+      proposeAward: async () => { throw new Error("planned EXP must not call a model"); }
+    } as unknown as ExpAutoScorer,
+    queue as never,
+    () => settings,
+    async () => { persisted += 1; },
+    () => undefined,
+    () => undefined
+  );
+  const first = await coordinator.reconcileAll();
+  assert.equal(first.discovered, 2);
+  assert.equal(first.queued, 2);
+  assert.equal(proposals.size, 2);
+  assert.ok([...proposals.values()].every((proposal) =>
+    proposal.input?.scoringSource === "planned-reuse"
+    && proposal.input.sourceEventId === "plan-1"
+  ));
+  const second = await coordinator.reconcileAll();
+  assert.equal(second.discovered, 0);
+  assert.ok(persisted >= 2);
+});
+
+test("unscored completions enter the needs-score queue when automatic AI scoring is disabled", async () => {
+  const task = {
+    path: "TaskNotes/Tasks/unscored.md",
+    title: "Unscored",
+    status: "done",
+    recurrence: null,
+    completedDate: "2026-07-29",
+    completedInstances: [],
+    completed: true
+  };
+  const settings = {
+    detectCompletedTaskExp: true,
+    completionExpBaselineReady: true,
+    completionExpSeen: {},
+    autoAwardCompletedTaskExp: false,
+    autoScoreCompletedTaskExp: false,
+    autoExpSpendCapUsd: 0.1
+  };
+  let saved: ExpCompletionProposal | null = null;
+  const coordinator = new ExpCompletionCoordinator(
+    {
+      list: async () => [task],
+      get: async () => task,
+      inspectSensitivity: async () => ({ sensitive: false, reasons: [] })
+    } as unknown as TaskService,
+    {
+      taskState: async () => null,
+      hasCompletion: async () => false,
+      latestEvent: async () => null
+    } as unknown as ExpService,
+    {
+      proposeAward: async () => { throw new Error("automatic scoring is disabled"); }
+    } as unknown as ExpAutoScorer,
+    {
+      list: async () => saved ? [saved] : [],
+      getByCompletion: async () => saved,
+      save: async (proposal: ExpCompletionProposal) => {
+        saved = proposal;
+        return proposal;
+      },
+      remove: async () => undefined,
+      renameTask: async () => undefined
+    } as never,
+    () => settings,
+    async () => undefined,
+    () => undefined,
+    () => undefined
+  );
+  const result = await coordinator.reconcileAll();
+  assert.equal(result.needsScore, 1);
+  assert.equal(saved?.state, "needs-score");
 });
 
 test("EXP streaks count unique award days and allow yesterday's streak to remain current", () => {

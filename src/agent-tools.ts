@@ -213,7 +213,13 @@ export class AgentToolRegistry {
     private readonly skillRegistry: SkillRegistry,
     private readonly taskService: TaskService,
     private readonly expService: ExpService,
-    private readonly isAutoExpScoringEnabled: () => boolean = () => false
+    private readonly isAutoExpScoringEnabled: () => boolean = () => false,
+    private readonly getInteractiveModel: () => string = () => "",
+    private readonly getCompletionExpSettings: () => {
+      enabled: boolean;
+      automaticAwards: boolean;
+      automaticScoring: boolean;
+    } = () => ({ enabled: false, automaticAwards: false, automaticScoring: false })
   ) {
     const registered: RegisteredTool[] = [
       {
@@ -233,6 +239,7 @@ export class AgentToolRegistry {
           automaticTaskExp: this.isAutoExpScoringEnabled()
             ? "enabled for newly created non-sensitive tasks"
             : "disabled",
+          completionTaskExp: this.getCompletionExpSettings(),
           installedSkills: this.skillRegistry.list(),
           capabilities: [
             "render Obsidian Markdown including tables, links, callouts, code, and math",
@@ -241,13 +248,15 @@ export class AgentToolRegistry {
             "discover and load traditional SKILL.md skills",
             "query, inspect, create, update, and complete TaskNotes tasks",
             "score, award, review, and track accomplishment-first task EXP",
+            "detect and reconcile completed-task EXP when the user enables it",
             "cite vault sources with clickable Obsidian wikilinks"
           ],
           limitations: [
             "no shell or unrestricted filesystem access",
             "no access to excluded paths",
             "direct sensitive note reads require approval; semantic retrieval follows the user's global semantic consent",
-            "chat-requested writes require explicit approval; automatic task EXP writes occur only under the user's global opt-in"
+            "chat-requested writes require explicit approval; automatic task EXP writes occur only under the user's global opt-in",
+            "completion detection, automatic completion scoring, and automatic award writes are separately configurable"
           ]
         })
       },
@@ -550,7 +559,13 @@ export class AgentToolRegistry {
           }
         },
         risk: "high-write",
-        execute: async (input) => this.expService.record(expInput(input))
+        execute: async (input) => this.expService.record({
+          ...expInput(input),
+          scoringSource: "manual-ai",
+          modelId: this.getInteractiveModel() || undefined,
+          provider: this.getInteractiveModel() ? "openrouter" : undefined,
+          rubricVersion: 1
+        })
       },
       {
         definition: {

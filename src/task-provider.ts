@@ -34,6 +34,8 @@ export interface TaskQuery {
   completedOn?: string;
   includeCompleted?: boolean;
   limit?: number;
+  /** Internal maintenance scans only; never exposed through the agent tool schema. */
+  internalUnbounded?: boolean;
 }
 
 export interface TaskCreateInput {
@@ -106,7 +108,9 @@ export const filterTasks = (tasks: BrainTask[], query: TaskQuery = {}): BrainTas
   const priority = query.priority?.trim().toLocaleLowerCase() ?? "";
   const folder = query.folder?.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "") ?? "";
   const tags = new Set((query.tags ?? []).map((tag) => tag.replace(/^#/, "").toLocaleLowerCase()));
-  const limit = Math.min(Math.max(Math.floor(query.limit ?? 50), 1), 200);
+  const limit = query.internalUnbounded
+    ? 10_000
+    : Math.min(Math.max(Math.floor(query.limit ?? 50), 1), 200);
   return tasks
     .filter((task) => query.includeCompleted || !task.completed)
     .filter((task) => !text || `${task.title} ${task.path}`.toLocaleLowerCase().includes(text))

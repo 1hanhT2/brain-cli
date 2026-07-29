@@ -28,6 +28,9 @@ import { MarkdownTaskProvider } from "./markdown-task-provider";
 import { TaskService } from "./task-service";
 import { ExpService } from "./exp-service";
 import { ExpAutoScorer } from "./exp-auto-scorer";
+import { ExpCompletionQueueStore } from "./exp-completion-queue";
+import { ExpCompletionCoordinator } from "./exp-completion";
+import { PortableSettingsStore } from "./portable-settings";
 
 interface CatalogCache {
   models?: { fetchedAt: number; rows: OpenRouterModel[] };
@@ -54,6 +57,9 @@ export default class ObsidianBrainPlugin extends Plugin {
   taskService!: TaskService;
   expService!: ExpService;
   expAutoScorer!: ExpAutoScorer;
+  expCompletionQueue!: ExpCompletionQueueStore;
+  expCompletion!: ExpCompletionCoordinator;
+  portableSettings!: PortableSettingsStore;
   readonly performance = new PerformanceTracer();
   private catalogCache: CatalogCache = {};
   private legacyCatalogCache: CatalogCache | null = null;
@@ -64,6 +70,13 @@ export default class ObsidianBrainPlugin extends Plugin {
     let stage = "loading settings";
     try {
       await this.loadSettings();
+      this.portableSettings = new PortableSettingsStore(this.app, () => this.settings);
+      try {
+        Object.assign(this.settings, await this.portableSettings.load());
+      } catch (error) {
+        console.warn("[Obsidian Brain] Portable settings are invalid; using the last valid plugin-data cache.", error);
+        new Notice("Brain/Settings/config.md is invalid. Brain kept the last valid settings.", 0);
+      }
       stage = "initializing services";
       this.openRouter = new OpenRouterClient(this.app, () => this.settings.openRouterSecretId);
       this.sensitiveGuard = new SensitiveContentGuard(this.app, () => this.settings.sensitiveTags);
@@ -101,7 +114,7 @@ export default class ObsidianBrainPlugin extends Plugin {
         (modelId) => this.getModel(modelId),
         async (paths) => {
           this.settings.autoExpQueue = paths;
-          await this.saveSettings();
+          await this.saveLocalSettings();
         },
         (result) => new Notice(`Obsidian Brain scored ${result.title} at ${result.value} EXP.`),
         (path, error) => {
@@ -109,6 +122,21 @@ export default class ObsidianBrainPlugin extends Plugin {
           if (/Task not found/i.test(message)) return;
           console.error(`[Obsidian Brain] Automatic EXP scoring failed for ${path}.`, error);
           new Notice(`Automatic EXP scoring failed for ${path}: ${message}`, 0);
+        }
+      );
+      this.expCompletionQueue = new ExpCompletionQueueStore(this.app, () => this.settings);
+      this.expCompletion = new ExpCompletionCoordinator(
+        this.taskService,
+        this.expService,
+        this.expAutoScorer,
+        this.expCompletionQueue,
+        () => this.settings,
+        () => this.saveLocalSettings(),
+        (title, value) => new Notice(`Obsidian Brain awarded ${value} EXP for ${title}.`),
+        (path, error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[Obsidian Brain] Completion EXP failed for ${path}.`, error);
+          new Notice(`Completion EXP failed for ${path}: ${message}`, 0);
         }
       );
       const semanticStore = new IndexedDbSemanticStore(`obsidian-brain:${this.settings.semanticVaultId}`);
@@ -138,7 +166,13 @@ export default class ObsidianBrainPlugin extends Plugin {
         this.skillRegistry,
         this.taskService,
         this.expService,
-        () => this.settings.autoScoreTaskExp
+        () => this.settings.autoScoreTaskExp,
+        () => this.settings.interactiveModel,
+        () => ({
+          enabled: this.settings.detectCompletedTaskExp,
+          automaticAwards: this.settings.autoAwardCompletedTaskExp,
+          automaticScoring: this.settings.autoScoreCompletedTaskExp
+        })
       );
       this.chatStore = new ChatStore(this.app, () => this.settings, this.performance);
       stage = "registering chat view";
@@ -170,13 +204,15 @@ export default class ObsidianBrainPlugin extends Plugin {
       stage = "scheduling vault layout";
       this.registerVaultIndexEvents();
       this.app.workspace.onLayoutReady(() => {
-        void this.ensureDataLayout().catch((error) => this.reportError(error));
         void this.performance.measure("skills.initialize", () => this.skillRegistry.initialize())
           .catch((error) => this.reportError(error));
         void this.retrievalIndex.initialize().catch((error) => this.reportError(error));
         void (async () => {
+          await this.ensureDataLayout();
+          await this.portableSettings.save(this.settings);
           await this.initializeCatalogCache();
           this.expAutoScorer.resumeQueued();
+          await this.expCompletion.initialize();
           if (this.settings.openRouterSecretId) {
             await this.refreshOpenRouterModels(false).catch((error) =>
               console.warn("[Obsidian Brain] Automatic model refresh failed.", error)
@@ -258,6 +294,7 @@ export default class ObsidianBrainPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.expCompletion?.dispose();
     this.expAutoScorer?.dispose();
     this.semanticIndex?.dispose();
     void this.app.workspace.detachLeavesOfType(BRAIN_VIEW_TYPE);
@@ -284,6 +321,30 @@ export default class ObsidianBrainPlugin extends Plugin {
     this.settings.autoScoreTaskExp = enabled;
     await this.saveSettings();
     if (!enabled) this.expAutoScorer.cancel();
+  }
+
+  async setCompletionDetectionEnabled(enabled: boolean): Promise<void> {
+    if (enabled && !this.settings.completionExpBaselineReady) {
+      await this.expCompletion.establishBaseline();
+    }
+    this.settings.detectCompletedTaskExp = enabled;
+    await this.saveSettings();
+  }
+
+  async setAutomaticCompletionAwards(enabled: boolean): Promise<void> {
+    this.settings.autoAwardCompletedTaskExp = enabled;
+    await this.saveSettings();
+  }
+
+  async setAutomaticCompletionScoring(enabled: boolean): Promise<void> {
+    if (enabled && !this.settings.openRouterSecretId) {
+      throw new Error("Choose an OpenRouter API key before enabling automatic completion scoring.");
+    }
+    if (enabled && !(this.settings.backgroundModel || this.settings.interactiveModel)) {
+      throw new Error("Choose a background model before enabling automatic completion scoring.");
+    }
+    this.settings.autoScoreCompletedTaskExp = enabled;
+    await this.saveSettings();
   }
 
   async runBrainWorkflowOnActiveNote(workflow: string, file = this.app.workspace.getActiveFile()): Promise<void> {
@@ -456,6 +517,16 @@ export default class ObsidianBrainPlugin extends Plugin {
           }];
         })
       : [];
+    this.settings.completionExpSeen = this.settings.completionExpSeen
+      && typeof this.settings.completionExpSeen === "object"
+      && !Array.isArray(this.settings.completionExpSeen)
+      ? Object.fromEntries(Object.entries(this.settings.completionExpSeen).flatMap(([path, values]) =>
+          Array.isArray(values)
+          && values.every((value) => typeof value === "string")
+            ? [[path, [...new Set(values)]]]
+            : []
+        ))
+      : {};
     if (!Number.isFinite(this.settings.autoExpSpendCapUsd) || this.settings.autoExpSpendCapUsd < 0) {
       this.settings.autoExpSpendCapUsd = DEFAULT_SETTINGS.autoExpSpendCapUsd;
     }
@@ -473,6 +544,56 @@ export default class ObsidianBrainPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+    await this.portableSettings?.save(this.settings);
+  }
+
+  private async saveLocalSettings(): Promise<void> {
+    await this.saveData(this.settings);
+  }
+
+  private async reloadPortableSettings(): Promise<void> {
+    const previousOmnisearch = this.settings.useOmnisearch;
+    const previousCompletionDetection = this.settings.detectCompletedTaskExp;
+    const previousSemantic = JSON.stringify([
+      this.settings.semanticSearchEnabled,
+      this.settings.embeddingModel,
+      this.settings.semanticFolders
+    ]);
+    const previousPrivacy = JSON.stringify([this.settings.excludedPaths, this.settings.sensitiveTags]);
+    Object.assign(this.settings, await this.portableSettings.load());
+    if (this.settings.semanticSearchEnabled && (!this.settings.embeddingModel || this.settings.semanticFolders.length === 0)) {
+      this.settings.semanticSearchEnabled = false;
+      new Notice("Brain portable settings requested semantic search without a model and folder scope; it remains disabled.");
+    }
+    if (
+      !previousCompletionDetection
+      && this.settings.detectCompletedTaskExp
+      && !this.settings.completionExpBaselineReady
+    ) {
+      await this.expCompletion.establishBaseline();
+    }
+    await this.saveLocalSettings();
+    const privacyChanged = previousPrivacy !== JSON.stringify([
+      this.settings.excludedPaths,
+      this.settings.sensitiveTags
+    ]);
+    if (privacyChanged) {
+      await this.rebuildPrivacyIndexes();
+    } else if (previousOmnisearch !== this.settings.useOmnisearch) {
+      await this.reconfigureLexicalProvider();
+    }
+    if (!privacyChanged && previousSemantic !== JSON.stringify([
+      this.settings.semanticSearchEnabled,
+      this.settings.embeddingModel,
+      this.settings.semanticFolders
+    ])) {
+      if (this.settings.semanticSearchEnabled) await this.semanticIndex.reconfigure();
+      else this.semanticIndex.disable();
+    }
+    for (const leaf of this.app.workspace.getLeavesOfType(BRAIN_VIEW_TYPE)) {
+      const view = leaf.view;
+      if (view instanceof BrainChatView) view.refreshModels();
+    }
   }
 
   private registerVaultIndexEvents(): void {
@@ -486,16 +607,25 @@ export default class ObsidianBrainPlugin extends Plugin {
       if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
       if (file instanceof TFile) this.semanticIndex.queueUpdate(file);
       if (file instanceof TFile) this.expAutoScorer.queue(file.path);
+      if (file instanceof TFile) this.expCompletion.observe(file.path);
+      if (this.portableSettings.isConfigPath(file.path)) {
+        void this.reloadPortableSettings().catch((error) => this.reportError(error));
+      }
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
       if (file instanceof TFile) this.semanticIndex.queueUpdate(file);
       if (file instanceof TFile) this.expAutoScorer.touch(file.path);
+      if (file instanceof TFile) this.expCompletion.observe(file.path);
+      if (this.portableSettings.isConfigPath(file.path)) {
+        void this.reloadPortableSettings().catch((error) => this.reportError(error));
+      }
       refreshSkillIfNeeded(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
       this.expAutoScorer.forget(file.path);
+      void this.expCompletion.forget(file.path);
       this.retrievalIndex.remove(file.path);
       void this.semanticIndex.remove(file.path).catch((error) => this.reportError(error));
       refreshSkillIfNeeded(file.path);
@@ -505,6 +635,11 @@ export default class ObsidianBrainPlugin extends Plugin {
       void this.semanticIndex.remove(oldPath).catch((error) => this.reportError(error));
       if (file instanceof TFile) void this.retrievalIndex.update(file).catch((error) => this.reportError(error));
       if (file instanceof TFile) this.semanticIndex.queueUpdate(file);
+      if (file instanceof TFile) {
+        void this.expCompletion.rename(oldPath, file.path)
+          .then(() => this.expCompletion.observe(file.path))
+          .catch((error) => this.reportError(error));
+      }
       refreshSkillIfNeeded(oldPath);
       refreshSkillIfNeeded(file.path);
     }));
@@ -512,6 +647,7 @@ export default class ObsidianBrainPlugin extends Plugin {
       void this.retrievalIndex.update(file, true).catch((error) => this.reportError(error));
       this.semanticIndex.queueUpdate(file);
       this.expAutoScorer.resolveCandidate(file.path);
+      this.expCompletion.observe(file.path);
     }));
   }
 

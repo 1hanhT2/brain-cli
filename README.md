@@ -29,6 +29,9 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Traditional `Brain/Skills/<name>/SKILL.md` discovery with progressive reference loading.
 - Bundled EXP skill with a calibrated 25-1000 accomplishment-first rubric, approval-gated task scoring, and repeat-award protection.
 - Flat TaskNotes-compatible EXP frontmatter plus an immutable Markdown event ledger for totals, recurring-task history, streaks, levels, and calibration reviews.
+- Event-driven task-completion detection with idempotent recurring awards, `@exp check` reconciliation, and an approval-ready Markdown queue.
+- Audited EXP ledger metadata for completion identity, scoring source, model, token usage, cost, and rubric version.
+- Versioned portable non-secret configuration under `Brain/Settings/config.md`; secrets, consent grants, and rebuildable caches remain device-local.
 - Markdown-backed chats with command-operated new/open/continue/rename/trash session controls.
 - Automatic context budgeting with model-generated summaries and safe trimming.
 - Command-searchable OpenRouter catalog with favorites and free/paid filters.
@@ -64,7 +67,7 @@ the normal approval-aware note tools for their contents. Skills are offered
 when `@` begins the prompt. After selecting a skill, typing a space shows every
 completion declared by that skill's `SKILL.md` frontmatter.
 `@exp` toggles EXP for the current conversation. EXP view requests such as
-`@exp history` run locally; other forms such as `@exp score this task` enable
+`@exp history`, `@exp check`, and `@exp pending` run locally; other forms such as `@exp score this task` enable
 the skill and send the remaining request. `/skill <name>` remains available
 for explicit activation, and `/skill exp history` is an EXP-view alias.
 
@@ -133,6 +136,20 @@ progress, `@exp history` pages through the ledger, `@exp review` checks score
 distribution and confidence, `@exp task` inspects one task, and
 `@exp calibrate` starts a rubric-guided scoring session.
 
+Completion detection is opt-in. Brain debounces TaskNotes and Markdown metadata
+changes, establishes a baseline before first enabling the watcher, and records
+each non-recurring completion once or each unique recurring
+`complete_instances` occurrence once. `@exp check` reconciles changes missed
+while Brain was closed. Existing planned EXP is reused without another model
+call; unscored completions either use the background model or remain
+`needs-score`, according to `/config`.
+
+When automatic award writes are disabled, `@exp pending` opens a CLI checklist.
+Use arrows to navigate, Space to select ready proposals, and Enter to show one
+batch approval preview. `/approve` records the selected awards; `/deny` leaves
+their readable queue notes under `Brain/Queue/EXP/Pending/`. Focusing a
+`needs-score` row inserts an `@exp score` request for that task.
+
 Brain stores scored TaskNotes as `[200] Task title`; an existing prefix is
 replaced, and titles longer than the configured limit are shortened at a word
 boundary. With EXP active, a task created through Brain gets a planned-score
@@ -149,6 +166,15 @@ workflow on demand. Existing time fields are left intact.
 Task queries also accept a `completed_on` date, including recurring
 `complete_instances`, so the agent can reliably find and score the outputs
 completed on a particular daily note.
+
+Portable preferences are stored in `Brain/Settings/config.md`, including model
+choices, favorites, retrieval scopes, spend caps, exclusions, and completion
+detection. The OpenRouter secret, explicit consent for automatic writes or
+sensitive disclosure, local completion baseline, and database identifiers stay
+in plugin data. Embeddings, lexical indexes, and model catalogs remain
+rebuildable IndexedDB caches. Each AI-generated EXP ledger event records its
+model and available usage/cost metadata without saving the model prompt or full
+task contents.
 
 `/config`, `/setting`, and `/settings` open the terminal settings menu. Use
 the arrow keys to select an item, `Space` to toggle its checkbox, and `Enter`

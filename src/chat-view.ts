@@ -28,6 +28,7 @@ import {
 } from "./model-rankings";
 import { parseSkillInvocation } from "./skill-invocation";
 import { extractFileMentions, fileMention, findAtQuery } from "./file-mentions";
+import type { ExpCompletionProposal } from "./exp-completion-core";
 
 export const BRAIN_VIEW_TYPE = "obsidian-brain-chat";
 
@@ -63,7 +64,7 @@ interface HandledToolCall {
 
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
-const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate"]);
+const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate", "check", "pending"]);
 const EMBEDDING_MANAGEMENT_ACTIONS = new Set(["status", "refresh", "delete", "pause", "resume", "cancel"]);
 const TRANSCRIPT_INITIAL_MESSAGES = 40;
 const TRANSCRIPT_PAGE_MESSAGES = 40;
@@ -114,6 +115,7 @@ const createSystemMessage = (): ChatMessage => ({
     "You can use the EXP tools to plan, award, review, and persist accomplishment-first task EXP. Use record_task_exp instead of generic frontmatter writes for EXP.",
     "When EXP is recorded, the task's actual title is stored as [EXP] Task title. Use displayTitle and do not add a second prefix.",
     "Before proposing EXP after task creation, call get_environment. If automaticTaskExp is enabled, the background queue owns that write and you must not propose a duplicate score.",
+    "Completed-task EXP detection and automatic award behavior are separately configured. Use @exp check for reconciliation and @exp pending for approval-ready completion proposals.",
     "A user message beginning @skill selects that active skill; treat the text after the skill name as the user's request.",
     "Use tools whenever the answer depends on the vault instead of guessing or merely describing safety.",
     "When the OpenRouter web search server tool is available, use it for current or external information instead of relying on potentially stale training knowledge.",
@@ -255,11 +257,18 @@ export class BrainChatView extends ItemView {
   private configMenuBusy = false;
   private sensitiveConsentPending = false;
   private autoExpConsentPending = false;
+  private completionAwardConsentPending = false;
+  private completionScoreConsentPending = false;
   private folderPickerEl: HTMLElement | null = null;
   private folderPickerSelection = 0;
   private folderPickerFolders: string[] = [];
   private folderPickerSelected = new Set<string>();
   private folderPickerEnableAfterConfirm = false;
+  private expPendingPickerEl: HTMLElement | null = null;
+  private expPendingItems: ExpCompletionProposal[] = [];
+  private expPendingSelection = 0;
+  private expPendingSelected = new Set<string>();
+  private expPendingBusy = false;
   private unsubscribeSemantic: (() => void) | null = null;
   private semanticProgressEl: HTMLElement | null = null;
   private transcriptVisibleStart: number | null = null;
@@ -379,6 +388,10 @@ export class BrainChatView extends ItemView {
       text: "enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop"
     });
     const submit = async () => {
+      if (this.expPendingPickerEl) {
+        await this.confirmExpPendingPicker();
+        return;
+      }
       if (this.folderPickerEl) {
         await this.confirmFolderPicker();
         return;
@@ -415,6 +428,30 @@ export class BrainChatView extends ItemView {
       this.updateCommandSuggestions();
     });
     this.inputEl.addEventListener("keydown", (event) => {
+      if (this.expPendingPickerEl) {
+        if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+          event.preventDefault();
+          this.moveExpPendingSelection(event.key === "ArrowUp" ? -1 : 1);
+          return;
+        }
+        if (event.code === "Space" || event.key === " ") {
+          event.preventDefault();
+          this.toggleSelectedExpPending();
+          return;
+        }
+        if (event.key === "Enter" && !event.isComposing) {
+          event.preventDefault();
+          void this.confirmExpPendingPicker();
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          this.closeExpPendingPicker();
+          return;
+        }
+        event.preventDefault();
+        return;
+      }
       if (this.folderPickerEl) {
         if (event.key === "ArrowUp" || event.key === "ArrowDown") {
           event.preventDefault();
@@ -642,6 +679,7 @@ export class BrainChatView extends ItemView {
           const retrieval = this.plugin.retrievalIndex.getStatus();
           const semantic = retrieval.semantic;
           const autoExp = this.plugin.expAutoScorer.getStatus();
+          const completionExp = await this.plugin.expCompletion.getStatus();
           const skills = this.plugin.skillRegistry.list();
           const tasks = this.plugin.taskService.getStatus();
           await this.addTerminalOutput([
@@ -658,6 +696,7 @@ export class BrainChatView extends ItemView {
             `web        ${this.plugin.settings.useWebSearch ? "enabled · OpenRouter server tool" : "disabled"}`,
             `tasks      ${tasks.active.provider}${tasks.tasknotes.available ? ` · TaskNotes API v${tasks.tasknotes.apiVersion}` : " · Markdown fallback"}`,
             `auto EXP   ${this.plugin.settings.autoScoreTaskExp ? `enabled · ${autoExp.running ? "running" : `${autoExp.queued} queued`} · $${autoExp.estimatedSpendUsd.toFixed(4)} / $${autoExp.capUsd.toFixed(2)} cap` : "disabled"}`,
+            `complete   ${completionExp.enabled ? `${completionExp.automaticAwards ? "auto award" : "approval"} · ${completionExp.automaticScoring ? "AI score" : "manual score"} · ${completionExp.pending} pending` : "detection disabled"}`,
             `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
             `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
             `pending    ${this.pendingApproval ? "approval" : "none"}`,
@@ -1356,6 +1395,7 @@ export class BrainChatView extends ItemView {
     const action = parts[0]?.toLocaleLowerCase() ?? "status";
     if (action === "status") {
       const progress = await this.plugin.expService.progress();
+      const completion = await this.plugin.expCompletion.getStatus();
       const filled = Math.round(progress.levelProgress / 100);
       const bar = `${"█".repeat(filled)}${"░".repeat(10 - filled)}`;
       await this.addTerminalOutput([
@@ -1372,10 +1412,47 @@ export class BrainChatView extends ItemView {
         "",
         `Current streak: **${progress.currentStreak} day${progress.currentStreak === 1 ? "" : "s"}** · longest: ${progress.longestStreak} · ${progress.awards} award${progress.awards === 1 ? "" : "s"}`,
         "",
+        `Completion detection: **${completion.enabled ? "enabled" : "disabled"}** · ${completion.automaticAwards ? "automatic awards" : "approval queue"} · ${completion.automaticScoring ? "automatic AI scoring" : "manual scoring"} · ${completion.pending} pending (${completion.needsScore} need scores)`,
+        "",
         progress.recent.length
           ? `Recent: ${progress.recent.map((entry) => `${entry.value} EXP — ${entry.taskTitle}`).join(" · ")}`
           : "No earned EXP yet. Use `@exp score my completed task`."
       ].join("\n"));
+      return;
+    }
+    if (action === "check") {
+      if (parts.length > 1) {
+        await this.addTerminalOutput("usage: `@exp check`", "error");
+        return;
+      }
+      this.statusEl.setText("checking completed tasks…");
+      const result = await this.plugin.expCompletion.reconcileAll();
+      this.statusEl.setText("ready");
+      await this.addTerminalOutput([
+        "## EXP completion check",
+        "",
+        "| Result | Count |",
+        "| --- | ---: |",
+        `| Tasks scanned | ${result.scanned} |`,
+        `| New completions | ${result.discovered} |`,
+        `| Awarded automatically | ${result.awarded} |`,
+        `| Ready for approval | ${result.queued} |`,
+        `| Need manual scores | ${result.needsScore} |`,
+        `| Already handled or skipped | ${result.skipped} |`,
+        `| Failed | ${result.failed} |`,
+        "",
+        result.queued + result.needsScore > 0
+          ? "Open the review queue with `@exp pending`."
+          : "No completion reviews are waiting."
+      ].join("\n"));
+      return;
+    }
+    if (action === "pending") {
+      if (parts.length > 1) {
+        await this.addTerminalOutput("usage: `@exp pending`", "error");
+        return;
+      }
+      await this.openExpPendingPicker();
       return;
     }
     if (action === "history") {
@@ -1469,7 +1546,7 @@ export class BrainChatView extends ItemView {
       return;
     }
     await this.addTerminalOutput(
-      "usage: `@exp [status|history [page]|review [days]|task <path>|calibrate]`",
+      "usage: `@exp [status|check|pending|history [page]|review [days]|task <path>|calibrate]`",
       "error"
     );
   }
@@ -1572,6 +1649,66 @@ export class BrainChatView extends ItemView {
         }
       },
       {
+        id: "completion-detection",
+        label: "Detect completed task EXP",
+        description: "Watch TaskNotes and fallback Markdown tasks for newly completed work.",
+        checked: () => this.plugin.settings.detectCompletedTaskExp,
+        detail: () => this.plugin.settings.detectCompletedTaskExp
+          ? "enabled · event detection · @exp check reconciles"
+          : "disabled",
+        toggle: async () => {
+          await this.plugin.setCompletionDetectionEnabled(!this.plugin.settings.detectCompletedTaskExp);
+        }
+      },
+      {
+        id: "completion-awards",
+        label: "Automatically commit completion awards",
+        description: "Write detected awards immediately instead of keeping approval-ready Markdown proposals.",
+        checked: () => this.plugin.settings.autoAwardCompletedTaskExp,
+        detail: () => this.completionAwardConsentPending
+          ? "press Space again to confirm automatic task and ledger writes"
+          : this.plugin.settings.autoAwardCompletedTaskExp
+            ? "enabled · explicit local consent active"
+            : "disabled · approval queue",
+        toggle: async () => {
+          if (this.plugin.settings.autoAwardCompletedTaskExp) {
+            this.completionAwardConsentPending = false;
+            await this.plugin.setAutomaticCompletionAwards(false);
+            return;
+          }
+          if (!this.completionAwardConsentPending) {
+            this.completionAwardConsentPending = true;
+            return;
+          }
+          this.completionAwardConsentPending = false;
+          await this.plugin.setAutomaticCompletionAwards(true);
+        }
+      },
+      {
+        id: "completion-scoring",
+        label: "Automatically score unscored completions",
+        description: "Send completed non-sensitive tasks without planned EXP to the background model.",
+        checked: () => this.plugin.settings.autoScoreCompletedTaskExp,
+        detail: () => this.completionScoreConsentPending
+          ? "press Space again to confirm OpenRouter disclosure and usage"
+          : this.plugin.settings.autoScoreCompletedTaskExp
+            ? "enabled · background model · spend cap applies"
+            : "disabled · needs-score queue",
+        toggle: async () => {
+          if (this.plugin.settings.autoScoreCompletedTaskExp) {
+            this.completionScoreConsentPending = false;
+            await this.plugin.setAutomaticCompletionScoring(false);
+            return;
+          }
+          if (!this.completionScoreConsentPending) {
+            this.completionScoreConsentPending = true;
+            return;
+          }
+          this.completionScoreConsentPending = false;
+          await this.plugin.setAutomaticCompletionScoring(true);
+        }
+      },
+      {
         id: "semantic",
         label: "Enable hybrid semantic search",
         description: "Embed selected folders through OpenRouter and fuse semantic results with lexical search.",
@@ -1626,6 +1763,193 @@ export class BrainChatView extends ItemView {
         }
       }
     ];
+  }
+
+  private async openExpPendingPicker(): Promise<void> {
+    if (this.expPendingPickerEl) return;
+    this.expPendingItems = await this.plugin.expCompletion.pending();
+    if (this.expPendingItems.length === 0) {
+      await this.addTerminalOutput("no completion EXP proposals are waiting");
+      return;
+    }
+    this.transcriptEl.querySelector(".obsidian-brain-empty")?.remove();
+    const output = this.transcriptEl.createDiv({
+      cls: "obsidian-brain-terminal-output obsidian-brain-config-output is-system"
+    });
+    output.createSpan({ cls: "obsidian-brain-line-prefix", text: "›" });
+    this.expPendingPickerEl = output.createDiv({
+      cls: "obsidian-brain-terminal-output-body obsidian-brain-config-menu"
+    });
+    this.expPendingSelection = 0;
+    this.expPendingSelected.clear();
+    this.expPendingBusy = false;
+    this.inputEl.value = "";
+    this.inputEl.readOnly = true;
+    this.inputEl.placeholder = "EXP review queue active";
+    this.commandHintEl.setText("↑/↓ select  ·  space toggle  ·  enter review  ·  esc close");
+    this.statusEl.setText("EXP pending");
+    this.hideCommandSuggestions();
+    this.renderExpPendingPicker();
+    output.scrollIntoView({ block: "end" });
+    this.inputEl.focus();
+  }
+
+  private renderExpPendingPicker(): void {
+    if (!this.expPendingPickerEl) return;
+    this.expPendingSelection = Math.max(
+      0,
+      Math.min(this.expPendingSelection, this.expPendingItems.length - 1)
+    );
+    this.expPendingPickerEl.empty();
+    this.expPendingPickerEl.createDiv({ cls: "obsidian-brain-config-title", text: "pending EXP completions" });
+    this.expPendingPickerEl.createDiv({
+      cls: "obsidian-brain-config-section",
+      text: "award-ready rows can be selected; needs-score rows open the EXP skill"
+    });
+    this.expPendingItems.forEach((proposal, index) => {
+      const selectable = proposal.state === "ready" && Boolean(proposal.input);
+      const selected = this.expPendingSelected.has(proposal.id);
+      const row = this.expPendingPickerEl!.createDiv({
+        cls: `obsidian-brain-config-item${index === this.expPendingSelection ? " is-selected" : ""}`,
+        attr: {
+          role: "checkbox",
+          "aria-checked": String(selected),
+          "aria-label": proposal.title
+        }
+      });
+      row.createSpan({ cls: "obsidian-brain-config-cursor", text: index === this.expPendingSelection ? ">" : " " });
+      row.createSpan({
+        cls: "obsidian-brain-config-checkbox",
+        text: selectable ? (selected ? "[x]" : "[ ]") : "[!]"
+      });
+      const copy = row.createDiv({ cls: "obsidian-brain-config-copy" });
+      copy.createDiv({ cls: "obsidian-brain-config-label", text: proposal.title || proposal.path });
+      copy.createDiv({
+        cls: "obsidian-brain-config-description",
+        text: proposal.input
+          ? `${proposal.input.value} EXP · ${proposal.input.scoringSource ?? "manual"} · ${proposal.completionAt}`
+          : `needs score · ${proposal.completionAt}`
+      });
+      row.createSpan({
+        cls: "obsidian-brain-config-detail",
+        text: proposal.state === "ready" ? "Ready" : proposal.state === "failed" ? "Failed" : "Needs score"
+      });
+      row.addEventListener("mouseenter", () => {
+        this.expPendingSelection = index;
+        this.renderExpPendingPicker();
+      });
+      row.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        this.expPendingSelection = index;
+        if (selectable) this.toggleSelectedExpPending();
+        else void this.confirmExpPendingPicker();
+      });
+    });
+    this.expPendingPickerEl.createDiv({
+      cls: "obsidian-brain-config-footer",
+      text: this.expPendingBusy
+        ? "working…"
+        : `${this.expPendingSelected.size} selected · space toggle · enter review`
+    });
+  }
+
+  private moveExpPendingSelection(direction: number): void {
+    if (this.expPendingItems.length === 0) return;
+    this.expPendingSelection = (
+      this.expPendingSelection + direction + this.expPendingItems.length
+    ) % this.expPendingItems.length;
+    this.renderExpPendingPicker();
+  }
+
+  private toggleSelectedExpPending(): void {
+    const proposal = this.expPendingItems[this.expPendingSelection];
+    if (!proposal || proposal.state !== "ready" || !proposal.input) {
+      this.statusEl.setText("this completion needs a score first");
+      return;
+    }
+    if (this.expPendingSelected.has(proposal.id)) this.expPendingSelected.delete(proposal.id);
+    else this.expPendingSelected.add(proposal.id);
+    this.renderExpPendingPicker();
+  }
+
+  private async confirmExpPendingPicker(): Promise<void> {
+    if (!this.expPendingPickerEl || this.expPendingBusy) return;
+    const focused = this.expPendingItems[this.expPendingSelection];
+    const selected = this.expPendingItems.filter((proposal) =>
+      this.expPendingSelected.has(proposal.id) && proposal.state === "ready" && proposal.input
+    );
+    if (selected.length === 0 && focused?.state === "needs-score") {
+      this.closeExpPendingPicker(false);
+      this.inputEl.value = `@exp score @[[${focused.path}]]`;
+      this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
+      this.resizeInput();
+      this.updateCommandSuggestions();
+      return;
+    }
+    if (selected.length === 0) {
+      this.statusEl.setText("select at least one award-ready completion");
+      return;
+    }
+    this.expPendingBusy = true;
+    this.renderExpPendingPicker();
+    this.closeExpPendingPicker(false);
+    const total = selected.reduce((sum, proposal) => sum + (proposal.input?.value ?? 0), 0);
+    const call: ToolCall = {
+      id: `completion_batch_${Date.now()}`,
+      type: "function",
+      function: {
+        name: "record_completion_exp_batch",
+        arguments: JSON.stringify({ proposals: selected.map((proposal) => proposal.id) })
+      }
+    };
+    const card = this.addToolCard(call, "high-write");
+    card.setPreview({
+      title: `Award ${selected.length} completed task${selected.length === 1 ? "" : "s"}`,
+      before: selected.map((proposal) => `${proposal.title}: pending`).join("\n"),
+      after: selected.map((proposal) =>
+        `${proposal.title}: ${proposal.input?.value ?? 0} EXP earned`
+      ).join("\n"),
+      details: `${total.toLocaleString()} total EXP · immutable ledger entries · pending queue notes removed after successful writes`
+    });
+    card.setStatus("approval required", "pending");
+    const controller = new AbortController();
+    const approved = await card.requestApproval(controller.signal);
+    if (!approved) {
+      card.setStatus("denied · proposals remain pending", "error");
+      return;
+    }
+    card.setStatus("recording", "pending");
+    const result = await this.plugin.expCompletion.approve(selected);
+    card.setStatus(
+      result.failed.length === 0
+        ? `${result.awarded} award${result.awarded === 1 ? "" : "s"} recorded`
+        : `${result.awarded} recorded · ${result.failed.length} failed`,
+      result.failed.length === 0 ? "success" : "error"
+    );
+    await this.addTerminalOutput([
+      `Recorded **${result.awarded}** completion award${result.awarded === 1 ? "" : "s"}.`,
+      ...(result.failed.length > 0
+        ? ["", ...result.failed.map((failure) => `- ${failure.proposal.title}: ${failure.error}`)]
+        : [])
+    ].join("\n"), result.failed.length > 0 ? "warning" : "system");
+  }
+
+  private closeExpPendingPicker(showClosedState = true): void {
+    if (!this.expPendingPickerEl) return;
+    const picker = this.expPendingPickerEl;
+    this.expPendingPickerEl = null;
+    this.expPendingBusy = false;
+    if (showClosedState) {
+      picker.empty();
+      picker.createDiv({ cls: "obsidian-brain-config-closed", text: "EXP review queue closed" });
+    } else {
+      picker.parentElement?.remove();
+    }
+    this.inputEl.readOnly = false;
+    this.inputEl.placeholder = "ask the vault or type /help";
+    this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
+    this.statusEl.setText("ready");
+    this.inputEl.focus();
   }
 
   private openConfigMenu(): void {
@@ -2660,7 +2984,7 @@ export class BrainChatView extends ItemView {
       return;
     }
     this.commandSuggestionsEl.addClass("is-visible");
-    if (!this.pendingApproval && !this.configMenuEl && !this.folderPickerEl) {
+    if (!this.pendingApproval && !this.configMenuEl && !this.folderPickerEl && !this.expPendingPickerEl) {
       this.commandHintEl.setText("enter insert  ·  esc close  ·  ↑/↓ navigate  ·  tab insert");
     }
     this.visibleSuggestions.forEach((command, index) => {
@@ -2686,7 +3010,7 @@ export class BrainChatView extends ItemView {
     if (!this.commandSuggestionsEl) return;
     this.commandSuggestionsEl.empty();
     this.commandSuggestionsEl.removeClass("is-visible");
-    if (!this.pendingApproval && !this.configMenuEl && !this.folderPickerEl) {
+    if (!this.pendingApproval && !this.configMenuEl && !this.folderPickerEl && !this.expPendingPickerEl) {
       this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
     }
   }

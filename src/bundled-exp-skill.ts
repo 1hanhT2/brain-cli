@@ -6,6 +6,10 @@ completions:
     description: Show EXP totals, level, and streaks
   - value: history
     description: Browse the EXP ledger
+  - value: check
+    description: Reconcile completed tasks and process their EXP
+  - value: pending
+    description: Review pending completion awards
   - value: review
     description: Review scoring consistency
   - value: task
@@ -90,7 +94,7 @@ export const EXP_SCHEMA = `# EXP storage schema
 The task note stores its current EXP state in flat frontmatter:
 
 - \`title: "[EXP] Task title"\` (existing numeric prefixes are replaced)
-- \`exp_schema: 1\`
+- \`exp_schema: 2\`
 - \`exp: 25..1000\`, rounded to 25
 - \`exp_state: planned|earned\`
 - \`exp_confidence: 0..1\`
@@ -99,9 +103,13 @@ The task note stores its current EXP state in flat frontmatter:
 - \`exp_scored_at: ISO timestamp\`
 - \`exp_awarded_at: ISO timestamp or null\`
 - \`exp_revision: positive integer\`
+- \`exp_task_id: stable task identifier\`
+- \`exp_last_completion_id: most recently awarded completion or null\`
 
 Every plan, award, and recalibration also creates an immutable ordinary Markdown
 event under \`Brain/EXP/Ledger/YYYY-MM/\` (or the configured Brain folder).
+Version 2 award events can include a completion identifier, actual completion
+time, scoring source, originating model, token usage, cost, and rubric version.
 Totals and streaks count only events whose action is \`award\`. This keeps
 recurring-task awards, adjustments, and calibration history reproducible without
 a SQL database. Time-tracking fields are never removed or rewritten.
