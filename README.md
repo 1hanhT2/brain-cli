@@ -159,7 +159,7 @@ show a readable approval preview. Approved changes store the current score in
 flat task frontmatter and add an immutable event under
 `Brain/EXP/Ledger/YYYY-MM/`. `plan`, `award`, and `recalibrate` events remain
 auditable; only awards count toward totals and streaks. `@exp status` shows
-progress, `@exp history` pages through the ledger, `@exp review` checks score
+progress, `@exp cutoff today` ignores completions before the current date for both automatic detection and reconciliation, `@exp history` pages through the ledger, `@exp review` checks score
 distribution and confidence, `@exp task` inspects one task, and
 `@exp calibrate` starts a rubric-guided scoring session. `@exp analytics [days]`
 breaks earned EXP down by task tag and project; `@exp goals` shows active goals.

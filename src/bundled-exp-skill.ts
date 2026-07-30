@@ -6,6 +6,8 @@ completions:
     description: Show EXP totals, level, and streaks
   - value: history
     description: Browse the EXP ledger
+  - value: cutoff
+    description: Ignore task completions before a chosen date
   - value: check
     description: Reconcile completed tasks and process their EXP
   - value: pending
@@ -43,7 +45,7 @@ Evaluate meaningful output while retaining time only as supporting context.
 9. Let the approval preview show the exact change. Never bypass the EXP tool with a generic frontmatter write.
 10. Use \`get_exp_progress\` and \`review_exp_calibration\` for progress and consistency reviews.
 
-The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event. Never award the same completion twice. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion.
+The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event. Never award the same completion twice. The completion cutoff applies to automatic detection and \`@exp check\`; completions before it are ignored while the cutoff date itself is included. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion.
 
 When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.
 `;

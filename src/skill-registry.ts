@@ -41,7 +41,7 @@ const EXP_COMPLETIONS_YAML = EXP_COMPLETIONS
   .join("\n");
 const LEGACY_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created. This remains a separate approval. Tasks created directly in TaskNotes are not sent to a model automatically; score them when the user invokes this skill or asks for unscored tasks.";
 const CURRENT_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.";
-const BUNDLED_SKILLS_VERSION = 6;
+const BUNDLED_SKILLS_VERSION = 7;
 const WRITING_COACH_COMPLETIONS: SkillCompletion[] = [
   { value: "Coach ", description: "Add a draft file, interval, and writing goal" },
   { value: "status", description: "Show the current coaching session" },

@@ -1,7 +1,7 @@
 import type { BrainTask } from "./task-provider";
 import type { ExpAutoScorer } from "./exp-auto-scorer";
 import type { ExpCompletionQueueStore } from "./exp-completion-queue";
-import { completionProposalId, type ExpCompletionProposal } from "./exp-completion-core";
+import { completionMeetsCutoff, completionProposalId, type ExpCompletionProposal } from "./exp-completion-core";
 import type { ExpRecordInput, TaskExpState } from "./exp-core";
 import type { ExpService } from "./exp-service";
 import type { BrainSettings } from "./settings";
@@ -10,6 +10,7 @@ import type { TaskService } from "./task-service";
 interface CompletionObservation {
   token: string;
   at: string;
+  dated: boolean;
 }
 
 type ProcessOutcome = "awarded" | "queued" | "needs-score" | "skipped";
@@ -30,6 +31,7 @@ export interface ExpCompletionStatus {
   automaticScoring: boolean;
   pending: number;
   needsScore: number;
+  cutoffDate: string;
 }
 
 const cancelled = (task: BrainTask): boolean =>
@@ -38,10 +40,10 @@ const cancelled = (task: BrainTask): boolean =>
 const observationsFor = (task: BrainTask, now = new Date()): CompletionObservation[] => {
   const instances = [...new Set(task.completedInstances.map((value) => value.trim()).filter(Boolean))];
   if (instances.length > 0) {
-    return instances.map((value) => ({ token: `instance:${value}`, at: value }));
+    return instances.map((value) => ({ token: `instance:${value}`, at: value, dated: true }));
   }
   if (!task.completed || cancelled(task)) return [];
-  return [{ token: "once", at: task.completedDate || now.toISOString() }];
+  return [{ token: "once", at: task.completedDate || now.toISOString(), dated: Boolean(task.completedDate) }];
 };
 
 export class ExpCompletionCoordinator {
@@ -79,11 +81,15 @@ export class ExpCompletionCoordinator {
   async establishBaseline(): Promise<void> {
     const tasks = await this.taskService.list({ includeCompleted: true, limit: 10_000, internalUnbounded: true });
     const seen = this.getSettings().completionExpSeen;
+    const cutoff = this.cutoff();
     for (const task of tasks) {
-      const tokens = observationsFor(task).map((item) => item.token);
+      const tokens = observationsFor(task)
+        .filter((item) => !cutoff || !this.eligible(item, false))
+        .map((item) => item.token);
       if (tokens.length > 0) seen[task.path] = [...new Set([...(seen[task.path] ?? []), ...tokens])];
     }
     this.getSettings().completionExpBaselineReady = true;
+    await this.pruneResolved();
     await this.persistLocalState();
   }
 
@@ -101,7 +107,8 @@ export class ExpCompletionCoordinator {
     };
     for (const task of tasks) {
       const unseen = observationsFor(task).filter((item) =>
-        !(this.getSettings().completionExpSeen[task.path] ?? []).includes(item.token)
+        this.eligible(item, false)
+        && !(this.getSettings().completionExpSeen[task.path] ?? []).includes(item.token)
       );
       for (const observation of unseen) {
         result.discovered += 1;
@@ -159,7 +166,8 @@ export class ExpCompletionCoordinator {
       automaticAwards: this.getSettings().autoAwardCompletedTaskExp,
       automaticScoring: this.getSettings().autoScoreCompletedTaskExp,
       pending: pending.length,
-      needsScore: pending.filter((item) => item.state === "needs-score").length
+      needsScore: pending.filter((item) => item.state === "needs-score").length,
+      cutoffDate: this.cutoff()
     };
   }
 
@@ -202,7 +210,7 @@ export class ExpCompletionCoordinator {
     let changed = false;
     for (const observation of observationsFor(task)) {
       if (seen.has(observation.token)) continue;
-      await this.process(task, observation);
+      if (this.eligible(observation, true)) await this.process(task, observation);
       this.markSeen(path, observation.token);
       changed = true;
     }
@@ -286,6 +294,17 @@ export class ExpCompletionCoordinator {
     };
   }
 
+  private cutoff(): string {
+    return this.getSettings().completionExpCutoffDate?.trim() ?? "";
+  }
+
+  private eligible(observation: CompletionObservation, allowUndated: boolean): boolean {
+    const cutoff = this.cutoff();
+    if (!cutoff) return true;
+    if (!observation.dated) return allowUndated;
+    return completionMeetsCutoff(observation.at, cutoff);
+  }
+
   private markSeen(path: string, token: string): void {
     this.getSettings().completionExpSeen[path] = [
       ...new Set([...(this.getSettings().completionExpSeen[path] ?? []), token])
@@ -294,6 +313,11 @@ export class ExpCompletionCoordinator {
 
   private async pruneResolved(): Promise<void> {
     for (const proposal of await this.queueStore.list()) {
+      if (!completionMeetsCutoff(proposal.completionAt, this.cutoff())) {
+        await this.queueStore.remove(proposal);
+        this.markSeen(proposal.path, proposal.completionToken);
+        continue;
+      }
       const state = await this.expService.taskState(proposal.path).catch(() => null);
       if (!state?.taskId) continue;
       if (await this.expService.hasCompletion(`${state.taskId}:${proposal.completionToken}`)) {

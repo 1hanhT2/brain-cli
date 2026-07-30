@@ -29,6 +29,7 @@ import { ExpService } from "./exp-service";
 import { ExpAutoScorer } from "./exp-auto-scorer";
 import { ExpCompletionQueueStore } from "./exp-completion-queue";
 import { ExpCompletionCoordinator } from "./exp-completion";
+import { isExpCompletionCutoff } from "./exp-completion-core";
 import { PortableSettingsStore } from "./portable-settings";
 import { MemoryService } from "./memory-service";
 import { WritingCoachService } from "./writing-coach";
@@ -198,7 +199,8 @@ export default class BrainCliPlugin extends Plugin {
         () => ({
           enabled: this.settings.detectCompletedTaskExp,
           automaticAwards: this.settings.autoAwardCompletedTaskExp,
-          automaticScoring: this.settings.autoScoreCompletedTaskExp
+          automaticScoring: this.settings.autoScoreCompletedTaskExp,
+          cutoffDate: this.settings.completionExpCutoffDate
         })
       );
       this.chatStore = new ChatStore(this.app, () => this.settings, this.performance);
@@ -371,6 +373,18 @@ export default class BrainCliPlugin extends Plugin {
       await this.expCompletion.establishBaseline();
     }
     this.settings.detectCompletedTaskExp = enabled;
+    await this.saveSettings();
+  }
+
+  async setCompletionExpCutoff(value: string): Promise<void> {
+    const cutoff = value.trim();
+    if (!isExpCompletionCutoff(cutoff)) {
+      throw new Error("EXP completion cutoff must be blank or a real date in YYYY-MM-DD format.");
+    }
+    if (cutoff === this.settings.completionExpCutoffDate) return;
+    this.settings.completionExpCutoffDate = cutoff;
+    this.settings.completionExpBaselineReady = false;
+    await this.expCompletion.establishBaseline();
     await this.saveSettings();
   }
 
@@ -554,6 +568,9 @@ export default class BrainCliPlugin extends Plugin {
           }];
         })
       : [];
+    if (!isExpCompletionCutoff(this.settings.completionExpCutoffDate)) {
+      this.settings.completionExpCutoffDate = "";
+    }
     this.settings.completionExpSeen = this.settings.completionExpSeen
       && typeof this.settings.completionExpSeen === "object"
       && !Array.isArray(this.settings.completionExpSeen)
@@ -591,6 +608,7 @@ export default class BrainCliPlugin extends Plugin {
   private async reloadPortableSettings(): Promise<void> {
     const previousOmnisearch = this.settings.useOmnisearch;
     const previousCompletionDetection = this.settings.detectCompletedTaskExp;
+    const previousCompletionCutoff = this.settings.completionExpCutoffDate;
     const previousSemantic = JSON.stringify([
       this.settings.semanticSearchEnabled,
       this.settings.embeddingModel,
@@ -602,7 +620,14 @@ export default class BrainCliPlugin extends Plugin {
       this.settings.semanticSearchEnabled = false;
       new Notice("Brain portable settings requested semantic search without a model and folder scope; it remains disabled.");
     }
-    if (
+    if (!isExpCompletionCutoff(this.settings.completionExpCutoffDate)) {
+      this.settings.completionExpCutoffDate = previousCompletionCutoff;
+      new Notice("Brain portable settings contain an invalid EXP completion cutoff; the previous cutoff remains active.");
+    }
+    if (previousCompletionCutoff !== this.settings.completionExpCutoffDate) {
+      this.settings.completionExpBaselineReady = false;
+      await this.expCompletion.establishBaseline();
+    } else if (
       !previousCompletionDetection
       && this.settings.detectCompletedTaskExp
       && !this.settings.completionExpBaselineReady

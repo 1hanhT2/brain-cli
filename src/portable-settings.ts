@@ -1,6 +1,7 @@
 import { normalizePath, parseYaml, TFile, type App } from "obsidian";
 import { brainPath } from "./data-layout";
 import type { BrainSettings } from "./settings";
+import { isExpCompletionCutoff } from "./exp-completion-core";
 
 const CONFIG_SCHEMA = 1;
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
@@ -22,6 +23,7 @@ export type PortableBrainSettings = Pick<BrainSettings,
   | "excludedPaths"
   | "sensitiveTags"
   | "detectCompletedTaskExp"
+  | "completionExpCutoffDate"
 >;
 
 const portableKeys: Array<keyof PortableBrainSettings> = [
@@ -40,7 +42,8 @@ const portableKeys: Array<keyof PortableBrainSettings> = [
   "semanticSpendCapUsd",
   "excludedPaths",
   "sensitiveTags",
-  "detectCompletedTaskExp"
+  "detectCompletedTaskExp",
+  "completionExpCutoffDate"
 ];
 
 const aliases: Record<keyof PortableBrainSettings, string> = {
@@ -59,7 +62,8 @@ const aliases: Record<keyof PortableBrainSettings, string> = {
   semanticSpendCapUsd: "semantic_spend_cap_usd",
   excludedPaths: "excluded_paths",
   sensitiveTags: "sensitive_tags",
-  detectCompletedTaskExp: "detect_completed_task_exp"
+  detectCompletedTaskExp: "detect_completed_task_exp",
+  completionExpCutoffDate: "completion_exp_cutoff_date"
 };
 
 const stringArray = (value: unknown): string[] | null =>
@@ -127,6 +131,8 @@ export class PortableSettingsStore {
       if (value === undefined) continue;
       if (key === "fallbackTaskFolder") {
         if (typeof value === "string" && value.trim()) result[key] = normalizePath(value.trim());
+      } else if (key === "completionExpCutoffDate") {
+        if (typeof value === "string" && isExpCompletionCutoff(value.trim())) result[key] = value.trim();
       } else if (key === "interactiveModel" || key === "backgroundModel" || key === "embeddingModel") {
         if (typeof value === "string") result[key] = value.trim();
       } else if (

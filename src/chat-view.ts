@@ -65,11 +65,16 @@ interface HandledToolCall {
 
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
-const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate", "check", "pending", "score-completed", "analytics", "goals"]);
+const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate", "check", "pending", "score-completed", "analytics", "goals", "cutoff"]);
 const WRITING_COACH_LOCAL_ACTIONS = new Set(["status", "check", "stop"]);
 const EMBEDDING_MANAGEMENT_ACTIONS = new Set(["status", "refresh", "delete", "pause", "resume", "cancel"]);
 const TRANSCRIPT_INITIAL_MESSAGES = 40;
 const TRANSCRIPT_PAGE_MESSAGES = 40;
+const localDateKey = (date = new Date()): string => [
+  date.getFullYear(),
+  String(date.getMonth() + 1).padStart(2, "0"),
+  String(date.getDate()).padStart(2, "0")
+].join("-");
 
 const commandTokens = (value: string): string[] =>
   [...value.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)]
@@ -726,7 +731,7 @@ export class BrainChatView extends ItemView {
             `web        ${this.plugin.settings.useWebSearch ? "enabled · OpenRouter server tool" : "disabled"}`,
             `tasks      ${tasks.active.provider}${tasks.tasknotes.available ? ` · TaskNotes API v${tasks.tasknotes.apiVersion}` : " · Markdown fallback"}`,
             `auto EXP   ${this.plugin.settings.autoScoreTaskExp ? `enabled · ${autoExp.running ? "running" : `${autoExp.queued} queued`} · $${autoExp.estimatedSpendUsd.toFixed(4)} / $${autoExp.capUsd.toFixed(2)} cap` : "disabled"}`,
-            `complete   ${completionExp.enabled ? `${completionExp.automaticAwards ? "auto award" : "approval"} · ${completionExp.automaticScoring ? "AI score" : "manual score"} · ${completionExp.pending} pending` : "detection disabled"}`,
+            `complete   ${completionExp.enabled ? `${completionExp.automaticAwards ? "auto award" : "approval"} · ${completionExp.automaticScoring ? "AI score" : "manual score"} · ${completionExp.pending} pending` : "detection disabled"} · cutoff ${completionExp.cutoffDate || "baseline only"}`,
             `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
             `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
             `pending    ${this.pendingApproval ? "approval" : "none"}`,
@@ -1458,11 +1463,43 @@ export class BrainChatView extends ItemView {
         "",
         `Current streak: **${progress.currentStreak} day${progress.currentStreak === 1 ? "" : "s"}** · longest: ${progress.longestStreak} · ${progress.awards} award${progress.awards === 1 ? "" : "s"}`,
         "",
-        `Completion detection: **${completion.enabled ? "enabled" : "disabled"}** · ${completion.automaticAwards ? "automatic awards" : "approval queue"} · ${completion.automaticScoring ? "automatic AI scoring" : "manual scoring"} · ${completion.pending} pending (${completion.needsScore} need scores)`,
+        `Completion detection: **${completion.enabled ? "enabled" : "disabled"}** · cutoff: **${completion.cutoffDate || "baseline only"}** · ${completion.automaticAwards ? "automatic awards" : "approval queue"} · ${completion.automaticScoring ? "automatic AI scoring" : "manual scoring"} · ${completion.pending} pending (${completion.needsScore} need scores)`,
         "",
         progress.recent.length
           ? `Recent: ${progress.recent.map((entry) => `${entry.value} EXP — ${entry.taskTitle}`).join(" · ")}`
           : "No earned EXP yet. Use `@exp score my completed task`."
+      ].join("\n"));
+      return;
+    }
+    if (action === "cutoff") {
+      if (parts.length === 1) {
+        await this.addTerminalOutput([
+          "## EXP completion cutoff",
+          "",
+          `Current: **${this.plugin.settings.completionExpCutoffDate || "baseline only"}**`,
+          "",
+          "Set it with `@exp cutoff today` or `@exp cutoff YYYY-MM-DD`. Use `@exp cutoff off` to clear it."
+        ].join("\n"));
+        return;
+      }
+      if (parts.length > 2) {
+        await this.addTerminalOutput("usage: `@exp cutoff [today|YYYY-MM-DD|off]`", "error");
+        return;
+      }
+      const requested = parts[1].toLocaleLowerCase();
+      const cutoff = requested === "today" ? localDateKey() : ["off", "none", "clear"].includes(requested) ? "" : parts[1];
+      this.statusEl.setText("updating EXP cutoff…");
+      await this.plugin.setCompletionExpCutoff(cutoff);
+      const completion = await this.plugin.expCompletion.getStatus();
+      this.statusEl.setText("ready");
+      await this.addTerminalOutput([
+        "## EXP completion cutoff updated",
+        "",
+        cutoff
+          ? `Completions before **${cutoff}** are ignored. The cutoff date itself is included.`
+          : "The date cutoff is disabled; the existing completion baseline still prevents duplicate backfills.",
+        `Pending after cleanup: **${completion.pending}** (${completion.needsScore} need scores).`,
+        "Previously awarded EXP and the original TaskNotes were not changed. Pre-cutoff queue notes were moved to Obsidian's recoverable vault trash."
       ].join("\n"));
       return;
     }
@@ -1660,7 +1697,7 @@ export class BrainChatView extends ItemView {
       return;
     }
     await this.addTerminalOutput(
-      "usage: `@exp [status|check|pending|score-completed|analytics [days]|goals|history [page]|review [days]|task <path>|calibrate]`",
+      "usage: `@exp [status|cutoff [today|YYYY-MM-DD|off]|check|pending|score-completed|analytics [days]|goals|history [page]|review [days]|task <path>|calibrate]`",
       "error"
     );
   }
@@ -1875,9 +1912,7 @@ export class BrainChatView extends ItemView {
         label: "Detect completed task EXP",
         description: "Watch TaskNotes and fallback Markdown tasks for newly completed work.",
         checked: () => this.plugin.settings.detectCompletedTaskExp,
-        detail: () => this.plugin.settings.detectCompletedTaskExp
-          ? "enabled · event detection · @exp check reconciles"
-          : "disabled",
+        detail: () => `${this.plugin.settings.detectCompletedTaskExp ? "enabled · event detection" : "disabled"} · cutoff ${this.plugin.settings.completionExpCutoffDate || "baseline only"} · @exp check reconciles`,
         toggle: async () => {
           await this.plugin.setCompletionDetectionEnabled(!this.plugin.settings.detectCompletedTaskExp);
         }

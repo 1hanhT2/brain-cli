@@ -19,6 +19,7 @@ export interface BrainSettings {
   detectCompletedTaskExp: boolean;
   autoAwardCompletedTaskExp: boolean;
   autoScoreCompletedTaskExp: boolean;
+  completionExpCutoffDate: string;
   completionExpSeen: Record<string, string[]>;
   completionExpBaselineReady: boolean;
   expTitleMaxLength: number;
@@ -49,6 +50,7 @@ export const DEFAULT_SETTINGS: BrainSettings = {
   detectCompletedTaskExp: false,
   autoAwardCompletedTaskExp: false,
   autoScoreCompletedTaskExp: false,
+  completionExpCutoffDate: "",
   completionExpSeen: {},
   completionExpBaselineReady: false,
   expTitleMaxLength: 100,
@@ -171,7 +173,7 @@ export class BrainSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Detect completed task EXP")
-      .setDesc("Watch TaskNotes and fallback Markdown tasks for newly completed work. Existing completions are baselined when first enabled.")
+      .setDesc("Watch TaskNotes and fallback Markdown tasks for newly completed work. Completions before the cutoff below are ignored.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.detectCompletedTaskExp)
         .onChange(async (value) => {
@@ -182,6 +184,22 @@ export class BrainSettingTab extends PluginSettingTab {
             this.plugin.reportError(error);
           }
         }));
+
+    new Setting(containerEl)
+      .setName("EXP completion cutoff")
+      .setDesc("Ignore completed tasks before this date. The selected date itself is included. Leave blank to use the original baseline-only behavior.")
+      .addText((text) => {
+        text.inputEl.type = "date";
+        text.setValue(this.plugin.settings.completionExpCutoffDate);
+        text.onChange(async (value) => {
+          try {
+            await this.plugin.setCompletionExpCutoff(value);
+          } catch (error) {
+            text.setValue(this.plugin.settings.completionExpCutoffDate);
+            this.plugin.reportError(error);
+          }
+        });
+      });
 
     new Setting(containerEl)
       .setName("Automatically commit completion awards")

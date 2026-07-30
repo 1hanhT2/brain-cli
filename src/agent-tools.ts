@@ -313,7 +313,8 @@ export class AgentToolRegistry {
       enabled: boolean;
       automaticAwards: boolean;
       automaticScoring: boolean;
-    } = () => ({ enabled: false, automaticAwards: false, automaticScoring: false })
+      cutoffDate: string;
+    } = () => ({ enabled: false, automaticAwards: false, automaticScoring: false, cutoffDate: "" })
   ) {
     const registered: RegisteredTool[] = [
       {

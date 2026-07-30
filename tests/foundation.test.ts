@@ -56,7 +56,12 @@ import { parseSkillInvocation } from "../src/skill-invocation";
 import { parseExpScoringResponse, type ExpAutoScorer } from "../src/exp-auto-scorer";
 import { extractFileMentions, fileMention, findAtQuery } from "../src/file-mentions";
 import { ExpCompletionCoordinator } from "../src/exp-completion";
-import { completionProposalId, type ExpCompletionProposal } from "../src/exp-completion-core";
+import {
+  completionMeetsCutoff,
+  completionProposalId,
+  isExpCompletionCutoff,
+  type ExpCompletionProposal
+} from "../src/exp-completion-core";
 import { chooseWritingCoachInterval } from "../src/writing-coach-core";
 
 const call = (name: string, input: unknown) => ({
@@ -1412,6 +1417,74 @@ test("automatic EXP scoring rejects malformed numeric model output", () => {
   }), "TaskNotes/Tasks/a.md", "plan"), /invalid numeric/);
 });
 
+test("EXP completion cutoffs validate calendar dates and include the cutoff day", () => {
+  assert.equal(isExpCompletionCutoff(""), true);
+  assert.equal(isExpCompletionCutoff("2026-07-30"), true);
+  assert.equal(isExpCompletionCutoff("2026-02-29"), false);
+  assert.equal(isExpCompletionCutoff("30-07-2026"), false);
+  assert.equal(completionMeetsCutoff("2026-07-29", "2026-07-30"), false);
+  assert.equal(completionMeetsCutoff("2026-07-30", "2026-07-30"), true);
+  assert.equal(completionMeetsCutoff("2026-07-30T00:15:00+07:00", "2026-07-30"), true);
+});
+
+test("completion cutoff baselines old instances and preserves today for reconciliation", async () => {
+  const task = {
+    path: "TaskNotes/Tasks/recurring.md",
+    title: "Recurring",
+    status: "done",
+    recurrence: "RRULE:FREQ=DAILY",
+    completedDate: "2026-07-30",
+    completedInstances: ["2026-07-29", "2026-07-30"],
+    completed: true
+  };
+  const settings = {
+    detectCompletedTaskExp: true,
+    completionExpBaselineReady: false,
+    completionExpCutoffDate: "2026-07-30",
+    completionExpSeen: {} as Record<string, string[]>,
+    autoAwardCompletedTaskExp: false,
+    autoScoreCompletedTaskExp: false,
+    autoExpSpendCapUsd: 0.1
+  };
+  let saved: ExpCompletionProposal | null = null;
+  const coordinator = new ExpCompletionCoordinator(
+    {
+      list: async () => [task],
+      get: async () => task,
+      inspectSensitivity: async () => ({ sensitive: false, reasons: [] })
+    } as unknown as TaskService,
+    {
+      taskState: async () => null,
+      hasCompletion: async () => false,
+      latestEvent: async () => null
+    } as unknown as ExpService,
+    {
+      proposeAward: async () => { throw new Error("automatic scoring is disabled"); }
+    } as unknown as ExpAutoScorer,
+    {
+      list: async () => saved ? [saved] : [],
+      getByCompletion: async (_path: string, token: string) =>
+        saved?.completionToken === token ? saved : null,
+      save: async (proposal: ExpCompletionProposal) => {
+        saved = proposal;
+        return proposal;
+      },
+      remove: async () => { saved = null; },
+      renameTask: async () => undefined
+    } as never,
+    () => settings,
+    async () => undefined,
+    () => undefined,
+    () => undefined
+  );
+
+  await coordinator.establishBaseline();
+  assert.deepEqual(settings.completionExpSeen[task.path], ["instance:2026-07-29"]);
+  const result = await coordinator.reconcileAll();
+  assert.equal(result.discovered, 1);
+  assert.equal(result.needsScore, 1);
+  assert.equal(saved?.completionToken, "instance:2026-07-30");
+});
 test("completion reconciliation reuses planned EXP, persists approval proposals, and is idempotent", async () => {
   const task = {
     path: "TaskNotes/Tasks/read.md",
