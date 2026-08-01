@@ -152,6 +152,15 @@ in-process runtime API and uses its configured status and recurrence behavior.
 If TaskNotes API v1 is unavailable, the same stable tool contract operates on
 ordinary frontmatter tasks in the configured fallback task folder.
 
+Calendar scheduling is task-backed. Brain searches active tasks first, updates
+one clear match or creates a new TaskNotes task, and stores date-only schedules
+as all-day values or local datetimes plus `timeEstimate` for timed blocks.
+TaskNotes remains the sole owner of its Google OAuth connection and performs
+calendar export in the background. Brain does not inspect external conflicts,
+edit unrelated Google events, or claim that a successful TaskNotes mutation
+verifies the external event. Markdown fallback remains available for ordinary
+task capture but is never represented as Google Calendar scheduling.
+
 `/skill exp` or `@exp <request>` activates the accomplishment-first scoring
 workflow. The model reads the complete task note and relevant context, applies
 the six-factor rubric, and uses `record_task_exp` to

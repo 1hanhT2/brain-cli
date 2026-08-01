@@ -84,13 +84,17 @@ export class TaskNotesProvider implements TaskProvider {
         reason: `TaskNotes API v${api.apiVersion} is unsupported; Brain requires v1.`
       };
     }
-    if (api.hasCapability && !api.hasCapability("tasks.read")) {
-      return {
-        provider: "tasknotes",
-        available: false,
-        apiVersion: api.apiVersion,
-        reason: "TaskNotes does not expose the tasks.read capability."
-      };
+    if (api.hasCapability) {
+      for (const capability of ["tasks.read", "tasks.write"]) {
+        if (!api.hasCapability(capability)) {
+          return {
+            provider: "tasknotes",
+            available: false,
+            apiVersion: api.apiVersion,
+            reason: `TaskNotes does not expose the ${capability} capability.`
+          };
+        }
+      }
     }
     return {
       provider: "tasknotes",

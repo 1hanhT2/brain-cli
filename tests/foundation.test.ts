@@ -93,6 +93,15 @@ test("transcript content explicitly restores native text selection", () => {
   assert.match(styles, /\.brain-cli-message-body,[\s\S]*?cursor:\s*text;/);
 });
 
+test("calendar scheduling guidance stays TaskNotes-backed and honest about Google sync", () => {
+  const chatView = readFileSync("src/chat-view.ts", "utf8");
+  assert.match(chatView, /Calendar scheduling is task-backed/);
+  assert.match(chatView, /call query_tasks first/);
+  assert.match(chatView, /tasks\.active\.provider is tasknotes/);
+  assert.match(chatView, /Never claim the external calendar event was verified/);
+  assert.doesNotMatch(chatView, /Google Calendar API key/i);
+});
+
 const makeRegistry = (vaultTools: VaultTools): AgentToolRegistry =>
   new AgentToolRegistry(
     vaultTools,
@@ -329,6 +338,12 @@ test("registry exposes the complete foundational tool surface", () => {
   assert.equal(registry.riskFor("record_task_exp"), "high-write");
   assert.equal(registry.riskFor("create_note"), "high-write");
   assert.equal(registry.riskFor("missing"), null);
+  const createTask = registry.definitions().find((tool) => tool.function.name === "create_task");
+  const updateTask = registry.definitions().find((tool) => tool.function.name === "update_task");
+  assert.match(createTask?.function.description ?? "", /configured Google Calendar connection/);
+  assert.match(updateTask?.function.description ?? "", /verifies the TaskNotes mutation, not the external event/);
+  assert.match(JSON.stringify(createTask?.function.parameters), /YYYY-MM-DDTHH:mm/);
+  assert.match(JSON.stringify(createTask?.function.parameters), /exported calendar duration/);
 });
 
 test("registry executes environment reads and note creation", async () => {
@@ -346,6 +361,9 @@ test("registry executes environment reads and note creation", async () => {
   const environment = await registry.execute(call("get_environment", {}));
   assert.equal(environment.ok, true);
   assert.equal((environment.result as { vault: string }).vault, "test-vault");
+  const environmentResult = environment.result as { capabilities: string[]; limitations: string[] };
+  assert.ok(environmentResult.capabilities.some((value) => value.includes("task-backed calendar blocks")));
+  assert.ok(environmentResult.limitations.some((value) => value.includes("Markdown fallback")));
 
   const creation = await registry.execute(call("create_note", {
     path: "Notes/new.md",
@@ -457,8 +475,15 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
   assert.equal(taskDisplayTitle(studyTasks[0]!), "[200] Read 15 pages");
   const completedToday = await provider.list({ includeCompleted: true, completedOn: "2026-07-28" });
   assert.deepEqual(completedToday.map((task) => task.title), ["Finished"]);
-  const created = await provider.create({ title: "Created task", priority: "high" });
+  const created = await provider.create({
+    title: "Created task",
+    priority: "high",
+    scheduled: "2026-08-01T09:00",
+    timeEstimate: 90
+  });
   assert.equal(created.path, "TaskNotes/Tasks/created.md");
+  assert.equal(created.scheduled, "2026-08-01T09:00");
+  assert.equal(created.timeEstimate, 90);
   assert.equal((await provider.update(created.path, { due: "2026-08-01" })).due, "2026-08-01");
   assert.equal((await provider.addDependency(created.path, {
     uid: "TaskNotes/Tasks/read.md"
@@ -468,6 +493,31 @@ test("TaskNotes provider uses runtime API v1 and verifies task mutations", async
   assert.equal((await provider.stopTimer(created.path)).timeTrackingActive, false);
   assert.equal((await provider.complete(created.path)).completed, true);
   assert.ok(readyCalls >= 8);
+});
+
+test("TaskNotes provider fails closed for unsupported API versions and missing task capabilities", async () => {
+  const providerFor = (api: Record<string, unknown>): TaskNotesProvider => new TaskNotesProvider({
+    metadataCache: { getCache: () => null },
+    plugins: { getPlugin: () => ({ api }) }
+  } as unknown as App);
+
+  const unsupported = providerFor({ apiVersion: 2 });
+  assert.equal(unsupported.status().available, false);
+  assert.match(unsupported.status().reason, /API v2 is unsupported/);
+
+  const missingRead = providerFor({
+    apiVersion: 1,
+    hasCapability: (name: string) => name !== "tasks.read"
+  });
+  assert.equal(missingRead.status().available, false);
+  assert.match(missingRead.status().reason, /tasks\.read capability/);
+
+  const missingWrite = providerFor({
+    apiVersion: 1,
+    hasCapability: (name: string) => name !== "tasks.write"
+  });
+  assert.equal(missingWrite.status().available, false);
+  assert.match(missingWrite.status().reason, /tasks\.write capability/);
 });
 
 test("task service uses full-note sensitivity checks and fails closed while listing", async () => {

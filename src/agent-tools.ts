@@ -493,7 +493,7 @@ export class AgentToolRegistry {
             "discover and load traditional SKILL.md skills",
             "search and propose approval-gated durable memory fragments",
             "run opt-in continual writing coaching on one changing Markdown draft",
-            "query, inspect, create, update, and complete TaskNotes tasks",
+            "query, inspect, create, update, complete, and schedule task-backed calendar blocks through TaskNotes",
             "score, award, review, and track accomplishment-first task EXP",
             "analyze EXP by task tag or project and track immutable-ledger EXP goals",
             "detect and reconcile completed-task EXP when the user enables it",
@@ -505,6 +505,8 @@ export class AgentToolRegistry {
             "direct sensitive note reads require approval; semantic retrieval follows the user's global semantic consent",
             "chat-requested writes require explicit approval; automatic task EXP writes occur only under the user's global opt-in",
             "completion detection, automatic completion scoring, and automatic award writes are separately configurable",
+            "calendar scheduling requires the TaskNotes provider; Markdown fallback does not provide Google Calendar synchronization",
+            "calendar scheduling does not inspect conflicts or modify unrelated external calendar events",
             "continual writing checks run only after explicit session approval, while the target draft is active, and after it changes"
           ]
         })
@@ -872,19 +874,19 @@ export class AgentToolRegistry {
           type: "function",
           function: {
             name: "create_task",
-            description: "Create a task through TaskNotes, or as a generic Markdown task if TaskNotes is unavailable. Requires approval. When EXP is active, propose planned EXP unless automatic task scoring is enabled; the automatic queue handles it in that mode.",
+            description: "Create a task through TaskNotes, or as a generic Markdown task if TaskNotes is unavailable. Requires approval. A scheduled TaskNotes task may be exported by TaskNotes through its configured Google Calendar connection; Markdown fallback is not calendar synchronization. When EXP is active, propose planned EXP unless automatic task scoring is enabled; the automatic queue handles it in that mode.",
             parameters: {
               type: "object",
               properties: {
                 title: { type: "string" },
                 status: { type: "string" },
                 priority: { type: "string" },
-                due: { type: ["string", "null"] },
-                scheduled: { type: ["string", "null"] },
+                due: { type: ["string", "null"], description: "Task deadline, separate from its calendar start." },
+                scheduled: { type: ["string", "null"], description: "TaskNotes scheduled value: YYYY-MM-DD for all-day or local YYYY-MM-DDTHH:mm for a timed calendar block." },
                 tags: { type: "array", items: { type: "string" } },
                 contexts: { type: "array", items: { type: "string" } },
                 projects: { type: "array", items: { type: "string" } },
-                time_estimate: { type: ["number", "null"], minimum: 0 },
+                time_estimate: { type: ["number", "null"], minimum: 0, description: "Estimated minutes; for a timed scheduled task, TaskNotes uses this as the exported calendar duration." },
                 recurrence: { type: ["string", "null"] },
                 blocked_by: {
                   type: "array",
@@ -918,7 +920,7 @@ export class AgentToolRegistry {
           type: "function",
           function: {
             name: "update_task",
-            description: "Update selected task fields through the active task provider. Requires approval with a before/after preview.",
+            description: "Update selected task fields through the active task provider. Requires approval with a before/after preview. Rescheduling through TaskNotes may update its linked Google event in the background; success verifies the TaskNotes mutation, not the external event.",
             parameters: {
               type: "object",
               properties: {
@@ -929,12 +931,12 @@ export class AgentToolRegistry {
                     title: { type: "string" },
                     status: { type: "string" },
                     priority: { type: "string" },
-                    due: { type: ["string", "null"] },
-                    scheduled: { type: ["string", "null"] },
+                    due: { type: ["string", "null"], description: "Task deadline, separate from its calendar start." },
+                    scheduled: { type: ["string", "null"], description: "TaskNotes scheduled value: YYYY-MM-DD for all-day or local YYYY-MM-DDTHH:mm for a timed calendar block." },
                     tags: { type: "array", items: { type: "string" } },
                     contexts: { type: "array", items: { type: "string" } },
                     projects: { type: "array", items: { type: "string" } },
-                    time_estimate: { type: ["number", "null"], minimum: 0 },
+                    time_estimate: { type: ["number", "null"], minimum: 0, description: "Estimated minutes; for a timed scheduled task, TaskNotes uses this as the exported calendar duration." },
                     recurrence: { type: ["string", "null"] },
                     blocked_by: {
                       type: "array",
