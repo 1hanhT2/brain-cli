@@ -1,7 +1,7 @@
 import { normalizePath, parseYaml, TFile, type App } from "obsidian";
 import { brainPath } from "./data-layout";
 import type { BrainSettings } from "./settings";
-import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SCHEMA, EXP_SKILL } from "./bundled-exp-skill";
+import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_GOALS, EXP_RUBRIC, EXP_SCHEMA, EXP_SKILL } from "./bundled-exp-skill";
 import { ensureFolders, type LayoutPathKind } from "./folder-layout";
 import WRITING_COACH_SKILL from "../skills/continual-writing-coach/SKILL.md";
 import WRITING_COACH_PILLARS from "../skills/continual-writing-coach/references/pillars.md";
@@ -41,7 +41,7 @@ const EXP_COMPLETIONS_YAML = EXP_COMPLETIONS
   .join("\n");
 const LEGACY_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created. This remains a separate approval. Tasks created directly in TaskNotes are not sent to a model automatically; score them when the user invokes this skill or asks for unscored tasks.";
 const CURRENT_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.";
-const BUNDLED_SKILLS_VERSION = 7;
+const BUNDLED_SKILLS_VERSION = 8;
 const WRITING_COACH_COMPLETIONS: SkillCompletion[] = [
   { value: "Coach ", description: "Add a draft file, interval, and writing goal" },
   { value: "status", description: "Show the current coaching session" },
@@ -194,6 +194,7 @@ export class SkillRegistry {
       { path: `${expRoot}/references/rubric.md`, content: EXP_RUBRIC },
       { path: `${expRoot}/references/examples.md`, content: EXP_EXAMPLES },
       { path: `${expRoot}/references/schema.md`, content: EXP_SCHEMA },
+      { path: `${expRoot}/references/goals.md`, content: EXP_GOALS },
       { path: `${coachRoot}/SKILL.md`, content: WRITING_COACH_SKILL },
       { path: `${coachRoot}/agents/openai.yaml`, content: WRITING_COACH_AGENT_METADATA },
       { path: `${coachRoot}/references/pillars.md`, content: WRITING_COACH_PILLARS }
@@ -289,6 +290,12 @@ export class SkillRegistry {
       ].join("\n");
       const expanded = latestFrontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
       migrated = `${expanded}${migrated.slice(latestFrontmatter.length)}`;
+    }
+    if (!migrated.includes("references/goals.md")) {
+      migrated = migrated.replace(
+        "10. Use `get_exp_progress` and `review_exp_calibration` for progress and consistency reviews.",
+        "10. Use `get_exp_progress` and `review_exp_calibration` for progress and consistency reviews.\n11. Read `references/goals.md` before creating or reviewing a balanced EXP goal. Report both overall progress and every required lane."
+      );
     }
     return migrated;
   }

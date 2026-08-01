@@ -1,13 +1,14 @@
 {
   "name": "brain-cli",
-  "version": "0.13.4",
+  "version": "0.13.5",
   "private": true,
   "description": "An OpenRouter-powered, Obsidian-native vault agent.",
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
     "test": "node test.config.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "npm test && npm run typecheck && npm run build"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -101,7 +101,7 @@ export class ChatStore {
   async remove(state: ChatState): Promise<void> {
     const file = this.requireChatFile(state.path, state.id);
     this.summaryCache.delete(file.path);
-    await this.app.vault.trash(file, false);
+    await this.app.fileManager.trashFile(file);
   }
 
   private requireChatFile(path: string, chatId?: string): TFile {

@@ -33,6 +33,8 @@ import { isExpCompletionCutoff } from "./exp-completion-core";
 import { PortableSettingsStore } from "./portable-settings";
 import { MemoryService } from "./memory-service";
 import { WritingCoachService } from "./writing-coach";
+import { effectivePrivacyExclusions } from "./privacy-policy";
+import { runAfterLayoutReady } from "./layout-ready";
 
 interface CatalogCache {
   models?: { fetchedAt: number; rows: OpenRouterModel[] };
@@ -231,7 +233,7 @@ export default class BrainCliPlugin extends Plugin {
       stage = "registering settings";
       this.addSettingTab(new BrainSettingTab(this.app, this));
       stage = "scheduling vault layout";
-      this.app.workspace.onLayoutReady(() => {
+      runAfterLayoutReady(this.app.workspace, () => {
         this.registerVaultIndexEvents();
         this.deferStartup(100, async () => {
           await this.ensureDataLayout();
@@ -767,12 +769,6 @@ export default class BrainCliPlugin extends Plugin {
   }
 
   private effectiveExcludedPaths(): string[] {
-    return [...new Set([
-      ...this.settings.excludedPaths,
-      brainPath(this.settings, "Chats"),
-      brainPath(this.settings, "Memory"),
-      brainPath(this.settings, "Skills"),
-      brainPath(this.settings, "Coaching")
-    ])];
+    return effectivePrivacyExclusions(this.settings.excludedPaths, brainPath(this.settings));
   }
 }

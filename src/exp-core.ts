@@ -118,6 +118,17 @@ export interface ExpGoal {
   active: boolean;
   earned: number;
   progress: number;
+  lanes: ExpGoalLane[];
+  flexibleTarget: number;
+}
+
+export interface ExpGoalLane {
+  name: string;
+  target: number;
+  tags: string[];
+  projects: string[];
+  earned: number;
+  progress: number;
 }
 
 export const expRecord = (value: unknown): Record<string, unknown> =>

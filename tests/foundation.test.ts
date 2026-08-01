@@ -17,7 +17,7 @@ import type { SkillRegistry } from "../src/skill-registry";
 import { canonicalSkillName, skillAliases } from "../src/skill-aliases";
 import type { App, TFile } from "obsidian";
 import type { SensitiveContentGuard } from "../src/sensitive-content";
-import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_RUBRIC, EXP_SCHEMA, EXP_SKILL } from "../src/bundled-exp-skill";
+import { EXP_AGENT_METADATA, EXP_EXAMPLES, EXP_GOALS, EXP_RUBRIC, EXP_SCHEMA, EXP_SKILL } from "../src/bundled-exp-skill";
 import { ensureFolders } from "../src/folder-layout";
 import {
   OmnisearchProvider,
@@ -64,6 +64,12 @@ import {
 } from "../src/exp-completion-core";
 import { chooseWritingCoachInterval } from "../src/writing-coach-core";
 import { parseBufferedChatCompletion } from "../src/openrouter-response";
+import { raceWithAbort } from "../src/abort";
+import { effectivePrivacyExclusions, frontmatterSensitivityReasons } from "../src/privacy-policy";
+import { isMemoryFrontmatter, isMemoryMarkdownPath } from "../src/memory-policy";
+import { runAfterLayoutReady } from "../src/layout-ready";
+import { validateExpGoalLanes } from "../src/exp-goals-core";
+import { normalizeTextAsset } from "../build-text.mjs";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -128,31 +134,57 @@ test("buffered OpenRouter completions preserve content and function calls", () =
   );
 });
 
-test("privacy and startup guards remain wired into the plugin source", () => {
-  const main = readFileSync("src/main.ts", "utf8");
-  const layoutReady = main.indexOf("this.app.workspace.onLayoutReady(() => {");
-  const registerEvents = main.indexOf("this.registerVaultIndexEvents();");
-  assert.ok(layoutReady >= 0 && registerEvents > layoutReady);
-  assert.match(main, /brainPath\(this\.settings, "Memory"\)/);
+test("privacy and startup policies enforce behavior instead of source shape", () => {
+  let readyCallback: (() => void) | null = null;
+  let registered = false;
+  runAfterLayoutReady({ onLayoutReady: (callback) => { readyCallback = callback; } }, () => {
+    registered = true;
+  });
+  assert.equal(registered, false);
+  assert.ok(readyCallback);
+  (readyCallback as () => void)();
+  assert.equal(registered, true);
 
-  const sensitivity = readFileSync("src/sensitive-content.ts", "utf8");
-  assert.match(sensitivity, /frontmatter\?\.sensitivity === "review"/);
+  assert.deepEqual(effectivePrivacyExclusions(
+    [".obsidian", "Brain/Chats", "Custom\\Private"],
+    "Brain/"
+  ), [
+    ".obsidian",
+    "Brain/Chats",
+    "Custom/Private",
+    "Brain/Memory",
+    "Brain/Skills",
+    "Brain/Coaching"
+  ]);
+  assert.deepEqual(frontmatterSensitivityReasons({ sensitivity: "Review" }), [
+    "frontmatter marks the note as review-only"
+  ]);
+  assert.equal(isMemoryMarkdownPath("Brain/Memory/one.md", "Brain/Memory"), true);
+  assert.equal(isMemoryMarkdownPath("Brain/Memory.txt", "Brain/Memory"), false);
+  assert.equal(isMemoryMarkdownPath("Brain/Other/one.md", "Brain/Memory"), false);
+  assert.equal(isMemoryFrontmatter({ type: "memory" }), true);
+  assert.equal(isMemoryFrontmatter({ type: "task" }), false);
+});
 
-  const memory = readFileSync("src/memory-service.ts", "utf8");
-  assert.match(memory, /normalized\.startsWith\(`\$\{memoryRoot\}\/`\)/);
-  assert.match(memory, /if \(!await this\.read\(file\)\)/);
-  assert.match(memory, /frontmatter\.type !== "memory"/);
+test("abort races reject promptly while consuming late request completion", async () => {
+  let finish!: (value: string) => void;
+  const operation = new Promise<string>((resolve) => { finish = resolve; });
+  const controller = new AbortController();
+  const raced = raceWithAbort(operation, controller.signal);
+  controller.abort();
+  await assert.rejects(raced, (error: unknown) =>
+    error instanceof DOMException && error.name === "AbortError"
+  );
+  finish("late result");
+  await operation;
 
-  const vaultTools = readFileSync("src/vault-tools.ts", "utf8");
-  assert.match(vaultTools, /async snapshotMarkdown[\s\S]*?this\.app\.vault\.read\(file\)/);
-  assert.match(vaultTools, /async replaceMarkdown[\s\S]*?this\.app\.vault\.process\(file/);
-  assert.match(vaultTools, /async appendMarkdown[\s\S]*?this\.app\.vault\.process\(file/);
-  assert.match(vaultTools, /async applyPatch[\s\S]*?this\.app\.vault\.process\(file/);
+  const alreadyAborted = new AbortController();
+  alreadyAborted.abort();
+  await assert.rejects(raceWithAbort(Promise.resolve("unused"), alreadyAborted.signal), /aborted/i);
+});
 
-  const openRouter = readFileSync("src/openrouter.ts", "utf8");
-  assert.doesNotMatch(openRouter, /\bfetch\s*\(/);
-  assert.match(openRouter, /requestUrl\(request\)/);
-  assert.match(openRouter, /stream:\s*false/);
+test("bundled text normalization is platform-independent", () => {
+  assert.equal(normalizeTextAsset("one\r\ntwo\rthree\n"), "one\ntwo\nthree\n");
 });
 
 test("transcript content explicitly restores native text selection", () => {
@@ -170,13 +202,16 @@ test("calendar scheduling guidance stays TaskNotes-backed and honest about Googl
   assert.doesNotMatch(chatView, /Google Calendar API key/i);
 });
 
-const makeRegistry = (vaultTools: VaultTools): AgentToolRegistry =>
+const makeRegistry = (
+  vaultTools: VaultTools,
+  retrievalIndex: VaultRetrievalIndex = {
+    getStatus: () => ({ ready: true, indexedNotes: 0, chunks: 0, sensitiveNotes: 0 }),
+    search: async () => ({ results: [], indexedNotes: 0, skippedSensitiveNotes: 0 })
+  } as VaultRetrievalIndex
+): AgentToolRegistry =>
   new AgentToolRegistry(
     vaultTools,
-    {
-      getStatus: () => ({ ready: true, indexedNotes: 0, chunks: 0, sensitiveNotes: 0 }),
-      search: async () => ({ results: [], indexedNotes: 0, skippedSensitiveNotes: 0 })
-    } as VaultRetrievalIndex,
+    retrievalIndex,
     {
       list: () => [],
       load: async () => { throw new Error("not configured"); },
@@ -412,6 +447,8 @@ test("registry exposes the complete foundational tool surface", () => {
   assert.match(updateTask?.function.description ?? "", /verifies the TaskNotes mutation, not the external event/);
   assert.match(JSON.stringify(createTask?.function.parameters), /YYYY-MM-DDTHH:mm/);
   assert.match(JSON.stringify(createTask?.function.parameters), /exported calendar duration/);
+  const createGoal = registry.definitions().find((tool) => tool.function.name === "create_exp_goal");
+  assert.match(JSON.stringify(createGoal?.function.parameters), /balanced minimums/);
 });
 
 test("registry executes environment reads and note creation", async () => {
@@ -707,6 +744,67 @@ test("whole-note replacement binds approval to the previewed snapshot", async ()
   });
 });
 
+test("tool execution propagates cancellation into ranked retrieval", async () => {
+  let started!: () => void;
+  const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+  let receivedSignal: AbortSignal | undefined;
+  const registry = makeRegistry({} as VaultTools, {
+    getStatus: () => ({ ready: true, indexedNotes: 0, chunks: 0, sensitiveNotes: 0 }),
+    search: async (_query, _limit, _options, signal) => {
+      receivedSignal = signal;
+      started();
+      return new Promise((resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(
+          new DOMException("The operation was aborted.", "AbortError")
+        ), { once: true });
+        void resolve;
+      });
+    }
+  } as unknown as VaultRetrievalIndex);
+  const controller = new AbortController();
+  const execution = registry.execute(call("retrieve_context", { query: "cancel me" }), {
+    allowSensitive: false,
+    signal: controller.signal
+  });
+  await requestStarted;
+  controller.abort();
+  await assert.rejects(execution, (error: unknown) =>
+    error instanceof DOMException && error.name === "AbortError"
+  );
+  assert.equal(receivedSignal, controller.signal);
+});
+
+test("tool execution propagates cancellation into literal note search", async () => {
+  let started!: () => void;
+  const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+  let receivedSignal: AbortSignal | undefined;
+  const vaultTools = {
+    searchMarkdown: async (_query: string, _limit: number, signal?: AbortSignal) => {
+      receivedSignal = signal;
+      started();
+      return new Promise((resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(
+          new DOMException("The operation was aborted.", "AbortError")
+        ), { once: true });
+        void resolve;
+      });
+    }
+  } as unknown as VaultTools;
+  const registry = makeRegistry(vaultTools);
+  const controller = new AbortController();
+  const execution = registry.execute(call("search_notes", { query: "cancel me" }), {
+    allowSensitive: false,
+    signal: controller.signal
+  });
+  await requestStarted;
+  controller.abort();
+  await assert.rejects(
+    execution,
+    (error: unknown) => error instanceof DOMException && error.name === "AbortError"
+  );
+  assert.equal(receivedSignal, controller.signal);
+});
+
 test("task tools expose readable intent and result previews instead of raw JSON", async () => {
   const registry = makeRegistry({} as VaultTools);
   const queryCall = call("query_tasks", {
@@ -995,6 +1093,45 @@ test("semantic store performs exact cosine search and respects filters", async (
   const results = await store.nearest(Float32Array.from([0.9, 0.1]), { tags: ["study"] }, 5);
   assert.deepEqual(results.map((result) => result.chunk.id), ["a"]);
   assert.ok(cosineSimilarity(Float32Array.from([1, 0]), Float32Array.from([1, 0])) > 0.999);
+});
+
+test("semantic query embeddings honor the caller abort signal", async () => {
+  let started!: () => void;
+  const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+  let receivedSignal: AbortSignal | undefined;
+  const settings = {
+    semanticSearchEnabled: true,
+    embeddingModel: "embedding/test"
+  } as BrainSettings;
+  const coordinator = new SemanticIndexCoordinator(
+    {} as App,
+    () => settings,
+    () => [],
+    {} as SensitiveContentGuard,
+    new MemorySemanticStore(),
+    {
+      listEmbeddingModels: async () => [],
+      embed: async (_model: string, _inputs: string[], signal: AbortSignal) => {
+        receivedSignal = signal;
+        started();
+        return new Promise((resolve, reject) => {
+          signal.addEventListener("abort", () => reject(
+            new DOMException("The operation was aborted.", "AbortError")
+          ), { once: true });
+          void resolve;
+        });
+      }
+    },
+    () => []
+  );
+  const controller = new AbortController();
+  const search = coordinator.search("cancel query", {}, 5, controller.signal);
+  await requestStarted;
+  controller.abort();
+  await assert.rejects(search, (error: unknown) =>
+    error instanceof DOMException && error.name === "AbortError"
+  );
+  assert.equal(receivedSignal, controller.signal);
 });
 
 test("semantic coordinator checkpoints vectors and re-embeds only changed chunks", async () => {
@@ -1459,14 +1596,33 @@ test("bundled EXP skill has valid metadata, workflow, references, and calibratio
   assert.match(EXP_SKILL, /25 to 1000/);
   assert.match(EXP_SKILL, /references\/rubric\.md/);
   assert.match(EXP_SKILL, /references\/examples\.md/);
+  assert.match(EXP_SKILL, /references\/goals\.md/);
   assert.match(EXP_SKILL, /record_task_exp/);
   assert.match(EXP_RUBRIC, /Round to the nearest 25/);
   assert.match(EXP_EXAMPLES, /Read 15 pages of the Bible: 200 EXP/);
   assert.match(EXP_SCHEMA, /immutable ordinary Markdown/);
   assert.match(EXP_SCHEMA, /exp_schema: 2/);
   assert.match(EXP_SCHEMA, /model, token usage, cost/);
+  assert.match(EXP_GOALS, /overall target and every lane minimum/);
   assert.match(EXP_AGENT_METADATA, /default_prompt: "Use \$exp/);
-  assert.doesNotMatch(`${EXP_SKILL}${EXP_RUBRIC}${EXP_EXAMPLES}${EXP_SCHEMA}`, /TODO/);
+  assert.doesNotMatch(`${EXP_SKILL}${EXP_RUBRIC}${EXP_EXAMPLES}${EXP_SCHEMA}${EXP_GOALS}`, /TODO/);
+});
+
+test("balanced EXP goals validate scoped lane minimums", () => {
+  assert.deepEqual(validateExpGoalLanes([
+    { name: " Math ", target: 400, tags: ["#math"], projects: [] },
+    { name: "Software", target: 400, tags: [], projects: ["UIT"] }
+  ], 1000), [
+    { name: "Math", target: 400, tags: ["math"], projects: [] },
+    { name: "Software", target: 400, tags: [], projects: ["UIT"] }
+  ]);
+  assert.throws(() => validateExpGoalLanes([
+    { name: "Math", target: 300, tags: ["math"], projects: [] },
+    { name: "Coding", target: 300, tags: ["coding"], projects: [] }
+  ], 500), /cannot exceed the overall target/);
+  assert.throws(() => validateExpGoalLanes([
+    { name: "Unscoped", target: 100, tags: [], projects: [] }
+  ], 500), /tag or project filter/);
 });
 
 test("EXP validation enforces calibrated scores and complete factor evidence", () => {

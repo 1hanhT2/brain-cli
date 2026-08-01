@@ -1,5 +1,6 @@
 import { normalizePath, parseYaml, TFile, type App } from "obsidian";
 import type { MemoryFragment } from "./types";
+import { isMemoryFrontmatter, isMemoryMarkdownPath } from "./memory-policy";
 
 export interface StoredMemory extends MemoryFragment {
   path: string;
@@ -114,14 +115,14 @@ export class MemoryService {
     if (!["active", "superseded", "revoked"].includes(status)) throw new Error("Memory status is invalid.");
     const normalized = normalizePath(path);
     const memoryRoot = normalizePath(`${this.root()}/Memory`);
-    if (!normalized.startsWith(`${memoryRoot}/`) || !normalized.toLocaleLowerCase().endsWith(".md")) {
+    if (!isMemoryMarkdownPath(normalized, memoryRoot)) {
       throw new Error(`Memory must be a Markdown file inside ${memoryRoot}.`);
     }
     const file = this.app.vault.getAbstractFileByPath(normalized);
     if (!(file instanceof TFile)) throw new Error(`Memory not found: ${path}`);
     if (!await this.read(file)) throw new Error(`Memory not found: ${path}`);
     await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-      if (frontmatter.type !== "memory") throw new Error(`Memory not found: ${path}`);
+      if (!isMemoryFrontmatter(frontmatter)) throw new Error(`Memory not found: ${path}`);
       frontmatter.status = status;
     });
     const updated = await this.read(file);

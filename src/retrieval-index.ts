@@ -15,6 +15,7 @@ import type {
   RetrievalMode,
   ScoredSemanticChunk
 } from "./semantic-types";
+import { raceWithAbort, throwIfAborted } from "./abort";
 
 export interface RetrievalResult {
   chunkId?: string;
@@ -194,7 +195,8 @@ export class VaultRetrievalIndex {
   async search(
     query: string,
     limit = 8,
-    options: RetrievalSearchOptions = {}
+    options: RetrievalSearchOptions = {},
+    signal?: AbortSignal
   ): Promise<{
     results: RetrievalResult[];
     indexedNotes: number;
@@ -210,13 +212,14 @@ export class VaultRetrievalIndex {
 
     let lexicalSearch = requestedMode === "semantic"
       ? { rows: [], skippedSensitiveNotes: 0 }
-      : await this.lexicalSearch(query, engineLimit, options);
+      : await this.lexicalSearch(query, engineLimit, options, signal);
     let lexical = lexicalSearch.rows;
     let semantic: RankedChunk[] = [];
     if (requestedMode !== "lexical" && this.semanticIndex?.getStatus().enabled) {
       try {
-        semantic = this.semanticRanks(await this.semanticIndex.search(query, options, engineLimit));
+        semantic = this.semanticRanks(await this.semanticIndex.search(query, options, engineLimit, signal));
       } catch (error) {
+        if (signal?.aborted) throw error;
         semanticFailed = true;
         console.warn("[Brain CLI] Semantic retrieval failed; using lexical fallback.", error);
       }
@@ -224,7 +227,7 @@ export class VaultRetrievalIndex {
       semanticFailed = true;
     }
     if (semanticFailed && lexical.length === 0) {
-      lexicalSearch = await this.lexicalSearch(query, engineLimit, options);
+      lexicalSearch = await this.lexicalSearch(query, engineLimit, options, signal);
       lexical = lexicalSearch.rows;
     }
 
@@ -280,13 +283,20 @@ export class VaultRetrievalIndex {
   private async lexicalSearch(
     query: string,
     limit: number,
-    filters: RetrievalFilters
+    filters: RetrievalFilters,
+    signal?: AbortSignal
   ): Promise<{ rows: RankedChunk[]; skippedSensitiveNotes: number }> {
-    const omnisearch = await this.omnisearchProvider?.search(query, limit);
+    throwIfAborted(signal);
+    const omnisearchRequest = this.omnisearchProvider?.search(query, limit);
+    const omnisearch = omnisearchRequest
+      ? await raceWithAbort(omnisearchRequest, signal)
+      : undefined;
     if (omnisearch) {
       const rows: RankedChunk[] = [];
       for (const [index, result] of omnisearch.results.entries()) {
+        throwIfAborted(signal);
         await this.loadOmnisearchResult(result.path);
+        throwIfAborted(signal);
         const chunk = this.findChunk(result.path, result.lineStart);
         if (!chunk) {
           if (filters.folders?.length || filters.tags?.length || Object.keys(filters.properties ?? {}).length) continue;
@@ -314,7 +324,8 @@ export class VaultRetrievalIndex {
       };
     }
 
-    if (!this.builtinReady) await this.ensureBuiltinIndex();
+    if (!this.builtinReady) await raceWithAbort(this.ensureBuiltinIndex(), signal);
+    throwIfAborted(signal);
     const queryTokens = [...new Set(tokenize(query))];
     if (queryTokens.length === 0) return { rows: [], skippedSensitiveNotes: this.sensitivePaths.size };
     const chunks = [...this.chunksByPath.values()].flat().filter((chunk) =>

@@ -44,6 +44,7 @@ Evaluate meaningful output while retaining time only as supporting context.
 8. Use \`record_task_exp\` with action \`plan\` for upcoming work, \`award\` for completed work, or \`recalibrate\` when replacing a planned score.
 9. Let the approval preview show the exact change. Never bypass the EXP tool with a generic frontmatter write.
 10. Use \`get_exp_progress\` and \`review_exp_calibration\` for progress and consistency reviews.
+11. Read \`references/goals.md\` before creating or reviewing a balanced EXP goal. Report both overall progress and every required lane.
 
 The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event. Never award the same completion twice. The completion cutoff applies to automatic detection and \`@exp check\`; completions before it are ignored while the cutoff date itself is included. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion.
 
@@ -121,6 +122,30 @@ time, scoring source, originating model, token usage, cost, and rubric version.
 Totals and streaks count only events whose action is \`award\`. This keeps
 recurring-task awards, adjustments, and calibration history reproducible without
 a SQL database. Time-tracking fields are never removed or rewritten.
+`;
+
+export const EXP_GOALS = `# EXP goals
+
+EXP goals measure earned accomplishment from immutable award events. Time is
+useful context, but it does not satisfy an EXP target by itself.
+
+## Balanced goals
+
+A goal may define optional \`lanes\` in its frontmatter. Each lane has a name,
+\`target_exp\`, and a tag or project scope. A balanced goal succeeds only when
+the overall target and every lane minimum are satisfied. Any difference between
+the overall target and the sum of lane targets is flexible EXP.
+
+When scoring work for a balanced goal:
+
+1. Read the active goal and its lane definitions.
+2. Ensure the TaskNote has at least one accurate lane tag before awarding EXP.
+3. Score the actual output with the normal rubric; do not inflate an award to fill a weak lane.
+4. Prefer durable evidence such as notes, corrected problems, drafts, explanations, tests, or working software over passive consumption.
+5. Report overall progress and every lane, calling out the weakest lane without treating extra EXP elsewhere as a substitute.
+
+Use \`get_exp_analytics\` to inspect active goals. Use \`create_exp_goal\` for a
+new ordinary or balanced goal.
 `;
 
 export const EXP_AGENT_METADATA = `interface:

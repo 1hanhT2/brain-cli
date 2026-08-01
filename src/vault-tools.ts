@@ -3,6 +3,7 @@ import { isVaultPathSafe } from "./permissions";
 import { SensitiveContentGuard, type SensitivityReport } from "./sensitive-content";
 import { ensureFolders, type LayoutPathKind } from "./folder-layout";
 import type { OmnisearchProvider } from "./omnisearch-provider";
+import { raceWithAbort, throwIfAborted } from "./abort";
 
 export interface NoteSearchResult {
   matches: Array<{ path: string; excerpt: string; citation: string }>;
@@ -62,8 +63,12 @@ export class VaultTools {
     return content;
   }
 
-  async searchMarkdown(query: string, limit = 20): Promise<NoteSearchResult> {
-    const omnisearch = await this.omnisearchProvider?.search(query, limit);
+  async searchMarkdown(query: string, limit = 20, signal?: AbortSignal): Promise<NoteSearchResult> {
+    throwIfAborted(signal);
+    const omnisearchRequest = this.omnisearchProvider?.search(query, limit);
+    const omnisearch = omnisearchRequest
+      ? await raceWithAbort(omnisearchRequest, signal)
+      : undefined;
     if (omnisearch) {
       return {
         matches: omnisearch.results.map((result) => ({
@@ -79,8 +84,9 @@ export class VaultTools {
     const results: NoteSearchResult["matches"] = [];
     let skippedSensitive = 0;
     for (const file of this.app.vault.getMarkdownFiles()) {
+      throwIfAborted(signal);
       if (this.isExcluded(file.path)) continue;
-      const content = await this.app.vault.cachedRead(file);
+      const content = await raceWithAbort(this.app.vault.cachedRead(file), signal);
       const index = content.toLocaleLowerCase().indexOf(needle);
       if (index < 0) continue;
       if (this.sensitiveGuard.inspectFile(file, content).sensitive) {
@@ -192,7 +198,7 @@ export class VaultTools {
   async trashMarkdown(path: string): Promise<{ path: string; trashed: true }> {
     const file = this.requireFile(path);
     const originalPath = file.path;
-    await this.app.vault.trash(file, false);
+    await this.app.fileManager.trashFile(file);
     return { path: originalPath, trashed: true };
   }
 

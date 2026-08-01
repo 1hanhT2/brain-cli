@@ -5,6 +5,7 @@ import { isVaultPathSafe } from "./permissions";
 import {
   calculateExpStreaks,
   expNumber,
+  expRecord,
   expString,
   localDateKey,
   parseExpFactors,
@@ -13,12 +14,14 @@ import {
   type ExpCalibrationReview,
   type ExpAnalytics,
   type ExpGoal,
+  type ExpGoalLane,
   type ExpLedgerEntry,
   type ExpProgress,
   type ExpRecordInput,
   type TaskExpState
 } from "./exp-core";
 import { formatExpTaskTitle, stripExpTitlePrefix } from "./task-provider";
+import { validateExpGoalLanes, type ExpGoalLaneDefinition } from "./exp-goals-core";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const EXP_SCHEMA_VERSION = 2;
@@ -36,6 +39,26 @@ const uniqueId = (): string =>
 const stringArray = (value: unknown): string[] => Array.isArray(value)
   ? value.filter((entry): entry is string => typeof entry === "string").map((entry) => entry.trim()).filter(Boolean)
   : [];
+
+const parseGoalLanes = (value: unknown): ExpGoalLaneDefinition[] => Array.isArray(value)
+  ? value.map((entry) => {
+      const row = expRecord(entry);
+      return {
+        name: expString(row.name).trim(),
+        target: expNumber(row.target_exp, Number.NaN),
+        tags: stringArray(row.tags).map((tag) => tag.replace(/^#/, "")),
+        projects: stringArray(row.projects)
+      };
+    }).filter((lane) => lane.name && Number.isFinite(lane.target) && lane.target >= 25)
+  : [];
+
+const awardMatchesScope = (award: ExpLedgerEntry, tags: string[], projects: string[]): boolean => {
+  const awardTags = new Set((award.tags ?? []).map((value) => value.replace(/^#/, "").toLocaleLowerCase()));
+  const awardProjects = new Set((award.projects ?? []).map((value) => value.toLocaleLowerCase()));
+  if (tags.length && !tags.some((tag) => awardTags.has(tag.replace(/^#/, "").toLocaleLowerCase()))) return false;
+  if (projects.length && !projects.some((project) => awardProjects.has(project.toLocaleLowerCase()))) return false;
+  return true;
+};
 
 const goalPeriodStart = (period: ExpGoal["period"], now: Date): Date | null => {
   if (period === "all-time") return null;
@@ -374,13 +397,25 @@ export class ExpService {
       if (!Number.isFinite(target) || target <= 0 || !["daily", "weekly", "monthly", "all-time"].includes(period)) return null;
       const tags = stringArray(frontmatter.tags).map((value) => value.replace(/^#/, ""));
       const projects = stringArray(frontmatter.projects);
+      const laneInputs = parseGoalLanes(frontmatter.lanes);
       const start = goalPeriodStart(period, now);
-      const earned = awards.filter((award) => {
-        if (start && new Date(award.completionAt || award.recordedAt) < start) return false;
-        if (tags.length && !tags.some((tag) => award.tags?.map((value) => value.replace(/^#/, "")).includes(tag))) return false;
-        if (projects.length && !projects.some((project) => award.projects?.includes(project))) return false;
-        return true;
-      }).reduce((sum, award) => sum + award.value, 0);
+      const periodAwards = awards.filter((award) =>
+        !start || new Date(award.completionAt || award.recordedAt) >= start
+      );
+      const earned = periodAwards
+        .filter((award) => awardMatchesScope(award, tags, projects))
+        .reduce((sum, award) => sum + award.value, 0);
+      const lanes: ExpGoalLane[] = laneInputs.map((lane) => {
+        const laneEarned = periodAwards
+          .filter((award) => awardMatchesScope(award, lane.tags, lane.projects))
+          .reduce((sum, award) => sum + award.value, 0);
+        return {
+          ...lane,
+          earned: laneEarned,
+          progress: Math.min(1, laneEarned / lane.target)
+        };
+      });
+      const overallProgress = Math.min(1, earned / target);
       return {
         path: file.path,
         citation: `[[${file.path.replace(/\.md$/i, "")}]]`,
@@ -391,7 +426,11 @@ export class ExpService {
         projects,
         active: true,
         earned,
-        progress: Math.min(1, earned / target)
+        progress: lanes.length
+          ? Math.min(overallProgress, ...lanes.map((lane) => lane.progress))
+          : overallProgress,
+        lanes,
+        flexibleTarget: Math.max(0, target - lanes.reduce((sum, lane) => sum + lane.target, 0))
       } satisfies ExpGoal;
     }));
     const activeGoals: ExpGoal[] = goals.filter((goal) => goal !== null).map((goal) => ({
@@ -407,11 +446,19 @@ export class ExpService {
     period: ExpGoal["period"];
     tags?: string[];
     projects?: string[];
+    lanes?: ExpGoalLaneDefinition[];
   }): Promise<ExpGoal> {
     const name = input.name.trim();
     if (!name) throw new Error("EXP goal name cannot be empty.");
     if (!Number.isInteger(input.target) || input.target < 25) throw new Error("EXP goal target must be a whole number of at least 25.");
     if (!["daily", "weekly", "monthly", "all-time"].includes(input.period)) throw new Error("EXP goal period is invalid.");
+    const lanes = validateExpGoalLanes(input.lanes ?? [], input.target);
+    const goalTags = input.tags?.length
+      ? input.tags
+      : [...new Set(lanes.flatMap((lane) => lane.tags))];
+    const goalProjects = input.projects?.length
+      ? input.projects
+      : [...new Set(lanes.flatMap((lane) => lane.projects))];
     const slug = name.toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/(^-|-$)/g, "").slice(0, 72) || "goal";
     const path = normalizePath(`${this.getExpRoot()}/Goals/${slug}.md`);
     if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`An EXP goal already exists at ${path}.`);
@@ -421,8 +468,14 @@ export class ExpService {
       `name: ${JSON.stringify(name)}`,
       `target_exp: ${input.target}`,
       `period: ${input.period}`,
-      `tags: ${JSON.stringify(input.tags ?? [])}`,
-      `projects: ${JSON.stringify(input.projects ?? [])}`,
+      `tags: ${JSON.stringify(goalTags)}`,
+      `projects: ${JSON.stringify(goalProjects)}`,
+      `lanes: ${JSON.stringify(lanes.map((lane) => ({
+        name: lane.name,
+        target_exp: lane.target,
+        tags: lane.tags,
+        projects: lane.projects
+      })))}`,
       "active: true",
       "---",
       "",

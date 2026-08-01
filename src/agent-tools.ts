@@ -16,6 +16,8 @@ import type { ExpService } from "./exp-service";
 import type { MemoryService } from "./memory-service";
 import type { WritingCoachService } from "./writing-coach";
 import type { ExpAction, ExpFactors, ExpRecordInput, TaskExpState } from "./exp-core";
+import { throwIfAborted } from "./abort";
+import { validateExpGoalLanes } from "./exp-goals-core";
 
 export interface ToolExecutionResult {
   ok: boolean;
@@ -42,6 +44,7 @@ export interface ToolInspection {
 interface ToolExecutionOptions {
   allowSensitive: boolean;
   expectedContent?: string;
+  signal?: AbortSignal;
 }
 
 interface RegisteredTool {
@@ -82,6 +85,28 @@ const stringArrayArg = (input: Record<string, unknown>, name: string): string[] 
     throw new Error(`Tool argument "${name}" must be an array of strings.`);
   }
   return value.map((item) => String(item).trim()).filter(Boolean);
+};
+
+const expGoalLanesArg = (input: Record<string, unknown>): Array<{
+  name: string;
+  target: number;
+  tags: string[];
+  projects: string[];
+}> | undefined => {
+  if (input.lanes === undefined) return undefined;
+  if (!Array.isArray(input.lanes)) throw new Error('Tool argument "lanes" must be an array.');
+  const lanes = input.lanes.map((value, index) => {
+    const lane = objectInput(value);
+    const target = numberArg(lane, "target_exp", Number.NaN);
+    if (!Number.isInteger(target)) throw new Error(`Tool argument "lanes[${index}].target_exp" must be an integer.`);
+    return {
+      name: stringArg(lane, "name"),
+      target,
+      tags: stringArrayArg(lane, "tags") ?? [],
+      projects: stringArrayArg(lane, "projects") ?? []
+    };
+  });
+  return validateExpGoalLanes(lanes, numberArg(input, "target_exp", Number.NaN));
 };
 
 const nullableStringArg = (input: Record<string, unknown>, name: string): string | null | undefined => {
@@ -376,7 +401,10 @@ export class AgentToolRegistry {
           }
         },
         risk: "low-write",
-        execute: async () => ({ ...await this.writingCoach.checkNow(), verified: true })
+        execute: async (_input, options) => ({
+          ...await this.writingCoach.checkNow(options.signal),
+          verified: true
+        })
       },
       {
         definition: {
@@ -577,9 +605,10 @@ export class AgentToolRegistry {
           }
         },
         risk: "read",
-        execute: async (input) => this.vaultTools.searchMarkdown(
+        execute: async (input, options) => this.vaultTools.searchMarkdown(
           stringArg(input, "query"),
-          Math.min(numberArg(input, "limit", 20), 50)
+          Math.min(numberArg(input, "limit", 20), 50),
+          options.signal
         )
       },
       {
@@ -612,7 +641,7 @@ export class AgentToolRegistry {
           }
         },
         risk: "read",
-        execute: async (input) => {
+        execute: async (input, options) => {
           const mode = typeof input.mode === "string" ? input.mode : "hybrid";
           if (!["hybrid", "semantic", "lexical"].includes(mode)) {
             throw new Error('Tool argument "mode" must be hybrid, semantic, or lexical.');
@@ -629,7 +658,8 @@ export class AgentToolRegistry {
               folders: stringArrayArg(input, "folders"),
               tags: stringArrayArg(input, "tags"),
               properties: properties as Record<string, string | number | boolean> | undefined
-            }
+            },
+            options.signal
           );
         }
       },
@@ -788,7 +818,7 @@ export class AgentToolRegistry {
           type: "function",
           function: {
             name: "create_exp_goal",
-            description: "Create an EXP goal backed by immutable ledger awards. Optionally filter the goal by task tags or projects. Requires approval.",
+            description: "Create an EXP goal backed by immutable ledger awards. Optionally filter the goal by task tags or projects and define balanced lanes with minimum targets. Requires approval.",
             parameters: {
               type: "object",
               properties: {
@@ -796,7 +826,22 @@ export class AgentToolRegistry {
                 target_exp: { type: "integer", minimum: 25 },
                 period: { type: "string", enum: ["daily", "weekly", "monthly", "all-time"] },
                 tags: { type: "array", items: { type: "string" } },
-                projects: { type: "array", items: { type: "string" } }
+                projects: { type: "array", items: { type: "string" } },
+                lanes: {
+                  type: "array",
+                  description: "Optional balanced minimums. Every lane needs a tag or project scope; lane targets may not exceed the overall target.",
+                  items: {
+                    type: "object",
+                    properties: {
+                      name: { type: "string" },
+                      target_exp: { type: "integer", minimum: 25 },
+                      tags: { type: "array", items: { type: "string" } },
+                      projects: { type: "array", items: { type: "string" } }
+                    },
+                    required: ["name", "target_exp"],
+                    additionalProperties: false
+                  }
+                }
               },
               required: ["name", "target_exp", "period"],
               additionalProperties: false
@@ -810,7 +855,8 @@ export class AgentToolRegistry {
             target: numberArg(input, "target_exp", Number.NaN),
             period: stringArg(input, "period") as "daily" | "weekly" | "monthly" | "all-time",
             tags: stringArrayArg(input, "tags"),
-            projects: stringArrayArg(input, "projects")
+            projects: stringArrayArg(input, "projects"),
+            lanes: expGoalLanesArg(input)
           }),
           verified: true
         })
@@ -1436,13 +1482,19 @@ export class AgentToolRegistry {
     } else if (call.function.name === "create_exp_goal") {
       const tags = stringArrayArg(input, "tags") ?? [];
       const projects = stringArrayArg(input, "projects") ?? [];
+      const lanes = expGoalLanesArg(input) ?? [];
+      const scopedTags = tags.length ? tags : [...new Set(lanes.flatMap((lane) => lane.tags))];
+      const scopedProjects = projects.length ? projects : [...new Set(lanes.flatMap((lane) => lane.projects))];
       preview = {
         title: `Create EXP goal: ${stringArg(input, "name")}`,
         before: "No goal exists yet.",
         after: [
           `Target: ${numberArg(input, "target_exp", 0).toLocaleString()} EXP`,
           `Period: ${stringArg(input, "period")}`,
-          `Scope: ${[...tags.map((tag) => `#${tag.replace(/^#/, "")}`), ...projects].join(" · ") || "all awards"}`
+          `Scope: ${[...scopedTags.map((tag) => `#${tag.replace(/^#/, "")}`), ...scopedProjects].join(" · ") || "all awards"}`,
+          ...(lanes.length ? [
+            `Lanes: ${lanes.map((lane) => `${lane.name} ${lane.target.toLocaleString()} EXP`).join(" · ")}`
+          ] : [])
         ].join("\n"),
         beforeLabel: "Current state",
         afterLabel: "Proposed goal",
@@ -1737,8 +1789,10 @@ export class AgentToolRegistry {
     const tool = this.tools.get(call.function.name);
     if (!tool) return { ok: false, error: `Unknown tool: ${call.function.name}` };
     try {
+      throwIfAborted(options.signal);
       return { ok: true, result: await tool.execute(this.parseArguments(call), options) };
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }

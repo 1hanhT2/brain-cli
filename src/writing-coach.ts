@@ -1,6 +1,7 @@
 import { normalizePath, parseYaml, TFile, type App } from "obsidian";
 import type { OpenRouterClient } from "./openrouter";
 import { chooseWritingCoachInterval } from "./writing-coach-core";
+import { throwIfAborted } from "./abort";
 
 export type WritingPillar = "cohesion" | "grammar" | "task achievement" | "content" | "organisation";
 
@@ -136,9 +137,9 @@ export class WritingCoachService {
     return this.publicStatus(this.session);
   }
 
-  async checkNow(): Promise<{ pillar: WritingPillar; feedback: string; status: WritingCoachStatus }> {
+  async checkNow(signal?: AbortSignal): Promise<{ pillar: WritingPillar; feedback: string; status: WritingCoachStatus }> {
     if (!this.session?.active) throw new Error("No active writing-coach session.");
-    return this.check(true);
+    return this.check(true, signal);
   }
 
   touch(path: string): void {
@@ -167,13 +168,18 @@ export class WritingCoachService {
     this.controller = null;
   }
 
-  private async check(force: boolean): Promise<{ pillar: WritingPillar; feedback: string; status: WritingCoachStatus }> {
+  private async check(
+    force: boolean,
+    signal?: AbortSignal
+  ): Promise<{ pillar: WritingPillar; feedback: string; status: WritingCoachStatus }> {
+    throwIfAborted(signal);
     if (!this.session?.active) throw new Error("No active writing-coach session.");
     if (this.running) throw new Error("A writing-coach check is already running.");
     const session = this.session;
     const file = this.app.vault.getAbstractFileByPath(session.targetPath);
     if (!(file instanceof TFile)) throw new Error(`Writing note not found: ${session.targetPath}`);
     const content = await this.app.vault.cachedRead(file);
+    throwIfAborted(signal);
     const contentHash = hash(content);
     if (!force && contentHash === session.lastHash) {
       await this.reschedule();
@@ -182,6 +188,9 @@ export class WritingCoachService {
 
     this.running = true;
     this.controller = new AbortController();
+    const onAbort = (): void => this.controller?.abort();
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
     try {
       if (session.pillarBag.length === 0) session.pillarBag = shuffledPillars();
       const pillar = session.pillarBag[0]!;
@@ -222,6 +231,7 @@ export class WritingCoachService {
       this.onNudge(pillar, feedback, status);
       return { pillar, feedback, status };
     } finally {
+      signal?.removeEventListener("abort", onAbort);
       this.running = false;
       this.controller = null;
     }

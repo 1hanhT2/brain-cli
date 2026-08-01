@@ -18,6 +18,7 @@ import {
   type ChatCompletionResult,
   type ToolCall
 } from "./openrouter-response";
+import { abortError, raceWithAbort, throwIfAborted } from "./abort";
 
 export type { FunctionToolDefinition as ToolDefinition } from "./openrouter-tools";
 export type { ChatCompletionResult, ToolCall } from "./openrouter-response";
@@ -382,35 +383,16 @@ export class OpenRouterClient {
     request: RequestUrlParam,
     signal: AbortSignal
   ): Promise<RequestUrlResponse> {
-    if (signal.aborted) {
-      return Promise.reject(new DOMException("The operation was aborted.", "AbortError"));
-    }
-
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (callback: () => void): void => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        callback();
-      };
-      const onAbort = (): void => {
-        finish(() => reject(new DOMException("The operation was aborted.", "AbortError")));
-      };
-
-      signal.addEventListener("abort", onAbort, { once: true });
-      void requestUrl(request).then(
-        (response) => finish(() => resolve(response)),
-        (error: unknown) => finish(() => reject(error))
-      );
-    });
+    if (signal.aborted) return Promise.reject(abortError());
+    return raceWithAbort(requestUrl(request), signal);
   }
 
   private retryDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     return new Promise((resolve, reject) => {
       const onAbort = (): void => {
         window.clearTimeout(timeout);
-        reject(new DOMException("The operation was aborted.", "AbortError"));
+        reject(abortError());
       };
       const timeout = window.setTimeout(() => {
         signal.removeEventListener("abort", onAbort);

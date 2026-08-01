@@ -67,7 +67,7 @@ export class ExpCompletionQueueStore {
     const path = proposal.queuePath
       ?? normalizePath(`${this.root()}/${proposal.id || completionProposalId(proposal.path, proposal.completionToken)}.md`);
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (file instanceof TFile) await this.app.vault.trash(file, false);
+    if (file instanceof TFile) await this.app.fileManager.trashFile(file);
   }
 
   async renameTask(oldPath: string, newPath: string): Promise<void> {
@@ -83,7 +83,7 @@ export class ExpCompletionQueueStore {
       });
       if (previous && previous !== moved.queuePath) {
         const old = this.app.vault.getAbstractFileByPath(previous);
-        if (old instanceof TFile) await this.app.vault.trash(old, false);
+        if (old instanceof TFile) await this.app.fileManager.trashFile(old);
       }
     }
   }

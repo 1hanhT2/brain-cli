@@ -77,8 +77,6 @@ export class BrainSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Brain CLI" });
-
     new Setting(containerEl)
       .setName("Brain folder")
       .setDesc("Synced conversations, memories, calibration, and non-secret preferences live here.")

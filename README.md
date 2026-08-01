@@ -7,7 +7,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Obsidian chat `ItemView` with a command-first terminal interface.
 - Slash-command completion, combined `@` skill/file completion, keyboard history, and command-operated chats, models, skills, memory, indexing, and approvals.
 - Real multi-turn OpenRouter chat completions using Obsidian's cross-platform HTTP API and buffered rendering.
-- Stop-generation control that immediately ends the UI operation and ignores late network results.
+- Stop-generation control that reaches model-invoked tools and ignores late network results.
 - Native OpenRouter tool calling with iterative tool-result feedback.
 - Human-readable tool cards with persistent verified results, inline errors, explicit approval intent, and collapsible technical arguments.
 - Environment inspection plus Markdown listing, reading, and searching.
@@ -35,6 +35,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Event-driven task-completion detection with idempotent recurring awards, `@exp check` reconciliation, and an approval-ready Markdown queue.
 - Durable, approval-gated memory fragments with review-only handling, local search, revocation, and ephemeral automatic retrieval for relevant chats.
 - EXP analytics by TaskNotes tag/project plus ledger-backed daily, weekly, monthly, and all-time EXP goals.
+- Balanced EXP goals with scoped lane minimums, flexible remaining EXP, and lane-aware progress.
 - Audited EXP ledger metadata for completion identity, scoring source, model, token usage, cost, and rubric version.
 - Versioned portable non-secret configuration under `Brain/Settings/config.md`; secrets, consent grants, and rebuildable caches remain device-local.
 - Markdown-backed chats with command-operated new/open/continue/rename/trash session controls.
@@ -79,6 +80,9 @@ catalog, install it from **Settings → Community plugins → Browse** instead.
   note/tool context included by retrieval or explicit approval, and optional
   embedding inputs are sent to OpenRouter and the selected model provider.
 - Model calls, embeddings, and optional web search may incur OpenRouter charges.
+- Stopping returns control immediately, but Obsidian's `requestUrl` cannot cancel
+  a request already accepted by the provider, so that request may still finish
+  and be billed.
 - The OpenRouter key is selected through Obsidian `SecretStorage`; configure the
   secret on every device where it is unavailable.
 - Brain CLI does not add telemetry. Rebuildable indexes remain local, while
@@ -94,7 +98,12 @@ npm install
 npm test
 npm run typecheck
 npm run build
+# Or run the complete gate:
+npm run check
 ```
+
+Before expanding a beta, complete the [mobile acceptance checklist](docs/MOBILE_ACCEPTANCE.md)
+on at least one real phone.
 
 Copy `main.js`, `manifest.json`, and `styles.css` to the target vault plugin directory.
 

@@ -13,6 +13,7 @@ import type {
   SemanticIndexStatus,
   SemanticProgressListener
 } from "./semantic-types";
+import { throwIfAborted } from "./abort";
 
 const INDEX_VERSION = 1;
 const CHUNKER_VERSION = 1;
@@ -224,8 +225,10 @@ export class SemanticIndexCoordinator {
   async search(
     query: string,
     filters: RetrievalFilters = {},
-    limit = 30
+    limit = 30,
+    signal?: AbortSignal
   ): Promise<ScoredSemanticChunk[]> {
+    throwIfAborted(signal);
     const settings = this.getSettings();
     if (!settings.semanticSearchEnabled || !settings.embeddingModel) return [];
     const trimmed = query.trim();
@@ -233,8 +236,9 @@ export class SemanticIndexCoordinator {
     const cacheKey = `${settings.embeddingModel}\u0000${trimmed}`;
     let vector = this.queryCache.get(cacheKey);
     if (!vector) {
-      const controller = new AbortController();
-      const embedded = await this.embeddings.embed(settings.embeddingModel, [trimmed], controller.signal);
+      const controller = signal ? null : new AbortController();
+      const embedded = await this.embeddings.embed(settings.embeddingModel, [trimmed], signal ?? controller!.signal);
+      throwIfAborted(signal);
       vector = embedded.vectors[0];
       if (!vector) throw new Error("The embedding provider returned no query vector.");
       this.queryCache.set(cacheKey, vector);
@@ -244,6 +248,7 @@ export class SemanticIndexCoordinator {
         this.queryCache.delete(oldest);
       }
     }
+    throwIfAborted(signal);
     return this.store.nearest(vector, filters, limit);
   }
 

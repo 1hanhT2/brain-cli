@@ -449,7 +449,6 @@ export class BrainChatView extends ItemView {
     };
     this.sendButton.addEventListener("click", () => void submit());
     this.inputEl.addEventListener("input", () => {
-      this.resizeInput();
       this.updateCommandSuggestions();
     });
     this.inputEl.addEventListener("keydown", (event) => {
@@ -1342,14 +1341,29 @@ export class BrainChatView extends ItemView {
       } else throw new Error(`Unknown search option: ${flag}.`);
       index += 1;
     }
+    const controller = new AbortController();
+    this.abortController = controller;
+    this.setGenerating(true);
     this.statusEl.setText("searching…");
-    const search = await this.plugin.retrievalIndex.search(query, limit, {
-      mode,
-      folders: folders.length ? folders : undefined,
-      tags: tags.length ? tags : undefined,
-      properties: Object.keys(properties).length ? properties : undefined
-    });
-    this.statusEl.setText("ready");
+    let search;
+    try {
+      search = await this.plugin.retrievalIndex.search(query, limit, {
+        mode,
+        folders: folders.length ? folders : undefined,
+        tags: tags.length ? tags : undefined,
+        properties: Object.keys(properties).length ? properties : undefined
+      }, controller.signal);
+      this.statusEl.setText("ready");
+    } catch (error) {
+      if (!this.isAbortError(error)) throw error;
+      this.statusEl.setText("stopped");
+      await this.addTerminalOutput("search stopped");
+      return;
+    } finally {
+      if (this.abortController === controller) this.abortController = null;
+      this.setGenerating(false);
+      this.inputEl.focus();
+    }
     if (search.results.length === 0) {
       await this.addTerminalOutput(
         `no ${mode} results${search.fallback ? ` · ${search.fallback} fallback active` : ""}`
@@ -2144,7 +2158,6 @@ export class BrainChatView extends ItemView {
       this.closeExpPendingPicker(false);
       this.inputEl.value = `@exp score @[[${focused.path}]]`;
       this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
-      this.resizeInput();
       this.updateCommandSuggestions();
       return;
     }
@@ -2665,7 +2678,8 @@ export class BrainChatView extends ItemView {
     card.setStatus("running", "pending");
     const result = await this.plugin.agentTools.execute(call, {
       allowSensitive: inspection.sensitive,
-      expectedContent: inspection.expectedContent
+      expectedContent: inspection.expectedContent,
+      signal
     });
     card.setStatus(result.ok ? "completed" : result.error ?? "failed", result.ok ? "success" : "error");
     if (result.ok) {
@@ -2797,7 +2811,8 @@ export class BrainChatView extends ItemView {
           actions.empty();
           this.inputEl.value = "";
           this.inputEl.placeholder = "ask the vault or type /help";
-          this.inputEl.disabled = Boolean(this.abortController);
+          this.inputEl.disabled = false;
+          this.inputEl.readOnly = Boolean(this.abortController);
           this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
           this.sendButton.setText(this.abortController ? "^C" : "↵");
           resolve(approved);
@@ -2807,6 +2822,7 @@ export class BrainChatView extends ItemView {
         deny.addEventListener("click", () => finish(false));
         this.pendingApproval = { finish };
         this.inputEl.disabled = false;
+        this.inputEl.readOnly = false;
         this.inputEl.placeholder = "/approve or /deny";
         this.commandHintEl.setText("approval pending  ·  type /approve or /deny");
         this.sendButton.setText("↵");
@@ -3187,11 +3203,6 @@ export class BrainChatView extends ItemView {
     this.contextModelEl.title = this.plugin.settings.interactiveModel;
   }
 
-  private resizeInput(): void {
-    this.inputEl.style.height = "auto";
-    this.inputEl.style.height = `${Math.min(this.inputEl.scrollHeight, 160)}px`;
-  }
-
   private rememberInput(text: string): void {
     if (this.commandHistory.at(-1) !== text) this.commandHistory.push(text);
     if (this.commandHistory.length > 100) this.commandHistory.shift();
@@ -3205,7 +3216,6 @@ export class BrainChatView extends ItemView {
       ? ""
       : this.commandHistory[this.historyIndex] ?? "";
     this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
-    this.resizeInput();
     this.updateCommandSuggestions();
   }
 
@@ -3425,7 +3435,6 @@ export class BrainChatView extends ItemView {
     }
     if (expandSkillCompletions) this.updateCommandSuggestions();
     else this.hideCommandSuggestions();
-    this.resizeInput();
   }
 
   private refreshModelOptions(): void {
@@ -3628,7 +3637,7 @@ export class BrainChatView extends ItemView {
     this.chatSelect.disabled = generating;
     this.newChatButton.disabled = generating;
     this.updateSessionControls();
-    this.inputEl.disabled = generating && !this.pendingApproval;
+    this.inputEl.readOnly = generating && !this.pendingApproval;
     if (!generating) {
       this.inputEl.placeholder = "ask the vault or type /help";
       this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
