@@ -112,9 +112,18 @@ export class MemoryService {
 
   async setStatus(path: string, status: MemoryFragment["status"]): Promise<StoredMemory> {
     if (!["active", "superseded", "revoked"].includes(status)) throw new Error("Memory status is invalid.");
-    const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
+    const normalized = normalizePath(path);
+    const memoryRoot = normalizePath(`${this.root()}/Memory`);
+    if (!normalized.startsWith(`${memoryRoot}/`) || !normalized.toLocaleLowerCase().endsWith(".md")) {
+      throw new Error(`Memory must be a Markdown file inside ${memoryRoot}.`);
+    }
+    const file = this.app.vault.getAbstractFileByPath(normalized);
     if (!(file instanceof TFile)) throw new Error(`Memory not found: ${path}`);
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => { frontmatter.status = status; });
+    if (!await this.read(file)) throw new Error(`Memory not found: ${path}`);
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      if (frontmatter.type !== "memory") throw new Error(`Memory not found: ${path}`);
+      frontmatter.status = status;
+    });
     const updated = await this.read(file);
     if (!updated || updated.status !== status) throw new Error("Memory status could not be verified after writing.");
     return updated;

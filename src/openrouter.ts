@@ -1,4 +1,9 @@
-import { requestUrl, type App } from "obsidian";
+import {
+  requestUrl,
+  type App,
+  type RequestUrlParam,
+  type RequestUrlResponse
+} from "obsidian";
 import type { OpenRouterModel } from "./types";
 import {
   legacyWebPluginFor,
@@ -8,8 +13,14 @@ import {
 import type { DailyModelRanking } from "./model-rankings";
 import type { EmbeddingBatchResult, EmbeddingModel } from "./semantic-types";
 import { compactEmbeddingModel, compactOpenRouterModel } from "./catalog-models";
+import {
+  parseBufferedChatCompletion,
+  type ChatCompletionResult,
+  type ToolCall
+} from "./openrouter-response";
 
 export type { FunctionToolDefinition as ToolDefinition } from "./openrouter-tools";
+export type { ChatCompletionResult, ToolCall } from "./openrouter-response";
 
 interface ModelListResponse {
   data?: OpenRouterModel[];
@@ -31,15 +42,6 @@ interface EmbeddingResponse extends OpenRouterErrorBody {
   };
 }
 
-export interface ToolCall {
-  id: string;
-  type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
 export type ChatMessage =
   | {
       role: "system" | "user";
@@ -56,28 +58,6 @@ export type ChatMessage =
       tool_call_id: string;
       name?: string;
     };
-
-interface StreamChunk {
-  choices?: Array<{
-    delta?: {
-      content?: string | null;
-      tool_calls?: Array<{
-        index: number;
-        id?: string;
-        type?: "function";
-        function?: {
-          name?: string;
-          arguments?: string;
-        };
-      }>;
-    };
-    finish_reason?: string | null;
-  }>;
-  error?: {
-    code?: number | string;
-    message?: string;
-  };
-}
 
 interface OpenRouterErrorBody {
   error?: {
@@ -108,12 +88,6 @@ export interface TextCompletionResult {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-}
-
-export interface ChatCompletionResult {
-  content: string;
-  finishReason: string | null;
-  toolCalls: ToolCall[];
 }
 
 const CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -195,7 +169,8 @@ export class OpenRouterClient {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       let retryable = true;
       try {
-        const response = await fetch(EMBEDDINGS_URL, {
+        const response = await this.requestWithAbort({
+          url: EMBEDDINGS_URL,
           method: "POST",
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -208,9 +183,9 @@ export class OpenRouterClient {
             encoding_format: "float",
             truncate: "END"
           }),
-          signal
-        });
-        if (!response.ok) {
+          throw: false
+        }, signal);
+        if (response.status < 200 || response.status >= 300) {
           const message = await this.readHttpError(response);
           if ((response.status === 429 || response.status >= 500) && attempt < 2) {
             lastError = new Error(message);
@@ -220,7 +195,7 @@ export class OpenRouterClient {
           retryable = false;
           throw new Error(message);
         }
-        const body = await response.json() as EmbeddingResponse;
+        const body = response.json as EmbeddingResponse;
         if (body.error) {
           retryable = false;
           throw new Error(`OpenRouter embedding error: ${body.error.message ?? "Unknown provider error."}`);
@@ -289,7 +264,8 @@ export class OpenRouterClient {
     if (!model.trim()) throw new Error("Choose an OpenRouter model first.");
     if (messages.length === 0) throw new Error("A chat completion requires at least one message.");
     const apiKey = await this.getApiKey();
-    const request = (body: Record<string, unknown>) => fetch(CHAT_COMPLETIONS_URL, {
+    const request = (body: Record<string, unknown>) => this.requestWithAbort({
+      url: CHAT_COMPLETIONS_URL,
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -297,8 +273,8 @@ export class OpenRouterClient {
         "X-OpenRouter-Title": "Brain CLI"
       },
       body: JSON.stringify(body),
-      signal
-    });
+      throw: false
+    }, signal);
 
     const baseBody = {
       model,
@@ -306,10 +282,10 @@ export class OpenRouterClient {
       tools,
       tool_choice: "auto",
       parallel_tool_calls: false,
-      stream: true
+      stream: false
     };
     let response = await request(baseBody);
-    if (!response.ok) {
+    if (response.status < 200 || response.status >= 300) {
       const primaryStatus = response.status;
       const primaryError = await this.readHttpError(response);
       const { functionTools, webSearchTool } = splitOpenRouterTools(tools);
@@ -323,7 +299,7 @@ export class OpenRouterClient {
           tools: functionTools,
           plugins: [legacyWebPluginFor(webSearchTool)]
         });
-        if (!response.ok) {
+        if (response.status < 200 || response.status >= 300) {
           const fallbackError = await this.readHttpError(response);
           throw new Error(`${fallbackError} Legacy web-search retry followed: ${primaryError}`);
         }
@@ -331,95 +307,8 @@ export class OpenRouterClient {
         throw new Error(primaryError);
       }
     }
-    if (!response.body) throw new Error("This Obsidian runtime did not expose the OpenRouter response stream.");
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let content = "";
-    let finishReason: string | null = null;
-    const streamedToolCalls = new Map<number, {
-      id: string;
-      name: string;
-      arguments: string;
-    }>();
-
-    const consumeLine = (rawLine: string): boolean => {
-      const line = rawLine.trim();
-      if (!line.startsWith("data:")) return false;
-      const data = line.slice(5).trimStart();
-      if (data === "[DONE]") return true;
-      if (!data) return false;
-
-      let chunk: StreamChunk;
-      try {
-        chunk = JSON.parse(data) as StreamChunk;
-      } catch {
-        throw new Error("OpenRouter returned a malformed streaming event.");
-      }
-      if (chunk.error) {
-        const code = chunk.error.code ? ` (${chunk.error.code})` : "";
-        throw new Error(`OpenRouter stream error${code}: ${chunk.error.message ?? "Unknown provider error."}`);
-      }
-
-      const choice = chunk.choices?.[0];
-      const delta = choice?.delta?.content;
-      if (typeof delta === "string" && delta.length > 0) {
-        content += delta;
-        onDelta(delta);
-      }
-      for (const toolDelta of choice?.delta?.tool_calls ?? []) {
-        const accumulated = streamedToolCalls.get(toolDelta.index) ?? {
-          id: "",
-          name: "",
-          arguments: ""
-        };
-        if (toolDelta.id) accumulated.id = toolDelta.id;
-        if (toolDelta.function?.name) accumulated.name += toolDelta.function.name;
-        if (toolDelta.function?.arguments) accumulated.arguments += toolDelta.function.arguments;
-        streamedToolCalls.set(toolDelta.index, accumulated);
-      }
-      if (choice?.finish_reason) finishReason = choice.finish_reason;
-      return false;
-    };
-
-    const result = (): ChatCompletionResult => ({
-      content,
-      finishReason,
-      toolCalls: [...streamedToolCalls.entries()]
-        .sort(([left], [right]) => left - right)
-        .map(([index, call]) => ({
-          id: call.id || `brain_tool_${Date.now()}_${index}`,
-          type: "function",
-          function: {
-            name: call.name,
-            arguments: call.arguments || "{}"
-          }
-        }))
-    });
-
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-
-        let newline = buffer.indexOf("\n");
-        while (newline >= 0) {
-          const line = buffer.slice(0, newline);
-          buffer = buffer.slice(newline + 1);
-          if (consumeLine(line)) return result();
-          newline = buffer.indexOf("\n");
-        }
-
-        if (done) {
-          if (buffer.trim() && consumeLine(buffer)) return result();
-          break;
-        }
-      }
-      return result();
-    } finally {
-      await reader.cancel().catch(() => undefined);
-    }
+    if (signal.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+    return parseBufferedChatCompletion(response.json, onDelta);
   }
 
   async completeText(
@@ -438,7 +327,8 @@ export class OpenRouterClient {
     signal: AbortSignal
   ): Promise<TextCompletionResult> {
     const apiKey = await this.getApiKey();
-    const response = await fetch(CHAT_COMPLETIONS_URL, {
+    const response = await this.requestWithAbort({
+      url: CHAT_COMPLETIONS_URL,
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -454,10 +344,12 @@ export class OpenRouterClient {
         max_tokens: 1_024,
         stream: false
       }),
-      signal
-    });
-    if (!response.ok) throw new Error(await this.readHttpError(response));
-    const body = await response.json() as TextCompletionResponse;
+      throw: false
+    }, signal);
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(await this.readHttpError(response));
+    }
+    const body = response.json as TextCompletionResponse;
     if (body.error) {
       throw new Error(`OpenRouter completion error: ${body.error.message ?? "Unknown provider error."}`);
     }
@@ -486,21 +378,53 @@ export class OpenRouterClient {
     return body.data.filter((model) => Boolean(model.id)).map(compactOpenRouterModel);
   }
 
-  private retryDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  private requestWithAbort(
+    request: RequestUrlParam,
+    signal: AbortSignal
+  ): Promise<RequestUrlResponse> {
+    if (signal.aborted) {
+      return Promise.reject(new DOMException("The operation was aborted.", "AbortError"));
+    }
+
     return new Promise((resolve, reject) => {
-      const timeout = window.setTimeout(resolve, milliseconds);
-      signal.addEventListener("abort", () => {
-        window.clearTimeout(timeout);
-        reject(new DOMException("The operation was aborted.", "AbortError"));
-      }, { once: true });
+      let settled = false;
+      const finish = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        callback();
+      };
+      const onAbort = (): void => {
+        finish(() => reject(new DOMException("The operation was aborted.", "AbortError")));
+      };
+
+      signal.addEventListener("abort", onAbort, { once: true });
+      void requestUrl(request).then(
+        (response) => finish(() => resolve(response)),
+        (error: unknown) => finish(() => reject(error))
+      );
     });
   }
 
-  private async readHttpError(response: Response): Promise<string> {
-    let message = response.statusText || "Request failed";
+  private retryDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const onAbort = (): void => {
+        window.clearTimeout(timeout);
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+      };
+      const timeout = window.setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, milliseconds);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  private async readHttpError(response: RequestUrlResponse): Promise<string> {
+    let message = "Request failed";
     let details = "";
     try {
-      const body = await response.json() as OpenRouterErrorBody;
+      const body = JSON.parse(response.text) as OpenRouterErrorBody;
       if (body.error?.message) message = body.error.message;
       const provider = body.error?.metadata?.provider_name;
       const raw = body.error?.metadata?.raw;

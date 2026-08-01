@@ -63,6 +63,7 @@ import {
   type ExpCompletionProposal
 } from "../src/exp-completion-core";
 import { chooseWritingCoachInterval } from "../src/writing-coach-core";
+import { parseBufferedChatCompletion } from "../src/openrouter-response";
 
 const call = (name: string, input: unknown) => ({
   id: `call_${name}`,
@@ -71,7 +72,11 @@ const call = (name: string, input: unknown) => ({
 });
 
 test("release metadata versions stay aligned", () => {
-  const manifest = JSON.parse(readFileSync("manifest.json", "utf8")) as { id: string; version: string };
+  const manifest = JSON.parse(readFileSync("manifest.json", "utf8")) as {
+    id: string;
+    version: string;
+    minAppVersion: string;
+  };
   const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { name: string; version: string };
   const packageLock = JSON.parse(readFileSync("package-lock.json", "utf8")) as {
     name: string;
@@ -85,6 +90,69 @@ test("release metadata versions stay aligned", () => {
   assert.equal(packageJson.version, manifest.version);
   assert.equal(packageLock.version, manifest.version);
   assert.equal(packageLock.packages[""]?.version, manifest.version);
+  const versions = JSON.parse(readFileSync("versions.json", "utf8")) as Record<string, string>;
+  assert.equal(versions[manifest.version], manifest.minAppVersion);
+});
+
+test("buffered OpenRouter completions preserve content and function calls", () => {
+  const rendered: string[] = [];
+  const result = parseBufferedChatCompletion({
+    choices: [{
+      finish_reason: "tool_calls",
+      message: {
+        content: "I will inspect that note.",
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "read_note", arguments: { path: "Notes/example.md" } }
+        }]
+      }
+    }]
+  }, (content) => rendered.push(content));
+
+  assert.deepEqual(rendered, ["I will inspect that note."]);
+  assert.equal(result.content, "I will inspect that note.");
+  assert.equal(result.finishReason, "tool_calls");
+  assert.deepEqual(result.toolCalls, [{
+    id: "call_1",
+    type: "function",
+    function: { name: "read_note", arguments: '{"path":"Notes/example.md"}' }
+  }]);
+  assert.throws(
+    () => parseBufferedChatCompletion({ choices: [{ message: { tool_calls: [{ function: {} }] } }] }),
+    /without a function name/
+  );
+  assert.throws(
+    () => parseBufferedChatCompletion({ error: { message: "provider unavailable" } }),
+    /provider unavailable/
+  );
+});
+
+test("privacy and startup guards remain wired into the plugin source", () => {
+  const main = readFileSync("src/main.ts", "utf8");
+  const layoutReady = main.indexOf("this.app.workspace.onLayoutReady(() => {");
+  const registerEvents = main.indexOf("this.registerVaultIndexEvents();");
+  assert.ok(layoutReady >= 0 && registerEvents > layoutReady);
+  assert.match(main, /brainPath\(this\.settings, "Memory"\)/);
+
+  const sensitivity = readFileSync("src/sensitive-content.ts", "utf8");
+  assert.match(sensitivity, /frontmatter\?\.sensitivity === "review"/);
+
+  const memory = readFileSync("src/memory-service.ts", "utf8");
+  assert.match(memory, /normalized\.startsWith\(`\$\{memoryRoot\}\/`\)/);
+  assert.match(memory, /if \(!await this\.read\(file\)\)/);
+  assert.match(memory, /frontmatter\.type !== "memory"/);
+
+  const vaultTools = readFileSync("src/vault-tools.ts", "utf8");
+  assert.match(vaultTools, /async snapshotMarkdown[\s\S]*?this\.app\.vault\.read\(file\)/);
+  assert.match(vaultTools, /async replaceMarkdown[\s\S]*?this\.app\.vault\.process\(file/);
+  assert.match(vaultTools, /async appendMarkdown[\s\S]*?this\.app\.vault\.process\(file/);
+  assert.match(vaultTools, /async applyPatch[\s\S]*?this\.app\.vault\.process\(file/);
+
+  const openRouter = readFileSync("src/openrouter.ts", "utf8");
+  assert.doesNotMatch(openRouter, /\bfetch\s*\(/);
+  assert.match(openRouter, /requestUrl\(request\)/);
+  assert.match(openRouter, /stream:\s*false/);
 });
 
 test("transcript content explicitly restores native text selection", () => {
@@ -613,6 +681,30 @@ test("tool inspection returns patch diffs and sensitive-read warnings", async ()
   const read = await registry.inspect(call("read_note", { path: "Private.md" }));
   assert.equal(read.sensitive, true);
   assert.deepEqual(read.sensitivityReasons, ["#private"]);
+});
+
+test("whole-note replacement binds approval to the previewed snapshot", async () => {
+  let replacement: { path: string; content: string; expected?: string } | null = null;
+  const registry = makeRegistry({
+    snapshotMarkdown: async () => "original contents",
+    replaceMarkdown: async (path: string, content: string, expected?: string) => {
+      replacement = { path, content, expected };
+    }
+  } as VaultTools);
+  const replace = call("replace_note", { path: "Note.md", content: "new contents" });
+  const inspection = await registry.inspect(replace);
+  assert.equal(inspection.expectedContent, "original contents");
+  assert.equal(inspection.preview?.before, "original contents");
+  const result = await registry.execute(replace, {
+    allowSensitive: false,
+    expectedContent: inspection.expectedContent
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(replacement, {
+    path: "Note.md",
+    content: "new contents",
+    expected: "original contents"
+  });
 });
 
 test("task tools expose readable intent and result previews instead of raw JSON", async () => {

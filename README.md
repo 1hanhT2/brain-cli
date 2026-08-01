@@ -6,8 +6,8 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 
 - Obsidian chat `ItemView` with a command-first terminal interface.
 - Slash-command completion, combined `@` skill/file completion, keyboard history, and command-operated chats, models, skills, memory, indexing, and approvals.
-- Real multi-turn OpenRouter chat completions with incremental SSE rendering.
-- Stop-generation control backed by request cancellation.
+- Real multi-turn OpenRouter chat completions using Obsidian's cross-platform HTTP API and buffered rendering.
+- Stop-generation control that immediately ends the UI operation and ignores late network results.
 - Native OpenRouter tool calling with iterative tool-result feedback.
 - Human-readable tool cards with persistent verified results, inline errors, explicit approval intent, and collapsible technical arguments.
 - Environment inspection plus Markdown listing, reading, and searching.
@@ -46,6 +46,46 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 - Safe Markdown read/search/create/frontmatter-update primitives.
 - Mobile-safe build: no Node filesystem, shell, or desktop-only dependencies at runtime.
 - Keyboard-only approval and autocomplete flows, screen-reader live regions, visible focus states, and stacked mobile tool previews.
+
+## Installation
+
+### Beta with BRAT
+
+This is the easiest route for personal devices and beta testers while Brain CLI
+is awaiting review in Obsidian's community catalog:
+
+1. Install and enable the **BRAT** community plugin in Obsidian.
+2. In BRAT, choose **Add Beta plugin**.
+3. Enter `1hanhT2/brain-cli` and enable **Brain CLI** when installation finishes.
+
+Repeat this on each desktop or mobile device. BRAT can install future GitHub
+releases from the same repository.
+
+### Manual developer installation
+
+Download `main.js`, `manifest.json`, and `styles.css` from a GitHub release and
+place them in `<vault>/.obsidian/plugins/brain-cli/`, then reload Obsidian and
+enable **Brain CLI**. On mobile, using BRAT is normally simpler than managing
+the hidden `.obsidian` directory manually.
+
+Once Brain CLI is accepted into the official Obsidian Community Plugins
+catalog, install it from **Settings → Community plugins → Browse** instead.
+
+## Mobile and data disclosure
+
+- Desktop and mobile use the same plugin bundle; `manifest.json` declares
+  `isDesktopOnly: false` and runtime code avoids Node, shell, and filesystem APIs.
+- An OpenRouter account and API key are required for AI responses. Prompt text,
+  note/tool context included by retrieval or explicit approval, and optional
+  embedding inputs are sent to OpenRouter and the selected model provider.
+- Model calls, embeddings, and optional web search may incur OpenRouter charges.
+- The OpenRouter key is selected through Obsidian `SecretStorage`; configure the
+  secret on every device where it is unavailable.
+- Brain CLI does not add telemetry. Rebuildable indexes remain local, while
+  ordinary `Brain/` Markdown can sync through whatever vault-sync method you
+  already use.
+- TaskNotes and Omnisearch are optional integrations. Their own sync, accounts,
+  and privacy behavior remain outside Brain CLI.
 
 ## Development
 

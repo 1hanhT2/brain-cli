@@ -51,6 +51,7 @@ export class SensitiveContentGuard {
     const matchedTags = [...new Set(rawTags.filter((tag) => configuredTags.has(tag)))];
     if (matchedTags.length > 0) reasons.push(`sensitive tag: ${matchedTags.map((tag) => `#${tag}`).join(", ")}`);
     if (frontmatter?.sensitive === true) reasons.push("frontmatter marks the note as sensitive");
+    if (frontmatter?.sensitivity === "review") reasons.push("frontmatter marks the note as review-only");
     if (["private", "confidential", "secret"].includes(String(frontmatter?.privacy ?? "").toLocaleLowerCase())) {
       reasons.push(`privacy: ${String(frontmatter?.privacy)}`);
     }

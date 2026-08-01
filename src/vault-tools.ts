@@ -45,14 +45,19 @@ export class VaultTools {
   }
 
   async readMarkdown(path: string, allowSensitive = false): Promise<string> {
+    const content = await this.snapshotMarkdown(path, allowSensitive);
+    if (content.length > 100_000) {
+      return `${content.slice(0, 100_000)}\n\n[Brain CLI truncated this note at 100,000 characters.]`;
+    }
+    return content;
+  }
+
+  async snapshotMarkdown(path: string, allowSensitive = false): Promise<string> {
     const file = this.requireFile(path);
-    const content = await this.app.vault.cachedRead(file);
+    const content = await this.app.vault.read(file);
     const sensitivity = this.sensitiveGuard.inspectFile(file, content);
     if (sensitivity.sensitive && !allowSensitive) {
       throw new Error(`Sensitive note approval required: ${sensitivity.reasons.join("; ")}`);
-    }
-    if (content.length > 100_000) {
-      return `${content.slice(0, 100_000)}\n\n[Brain CLI truncated this note at 100,000 characters.]`;
     }
     return content;
   }
@@ -122,28 +127,35 @@ export class VaultTools {
     });
   }
 
-  async replaceMarkdown(path: string, content: string): Promise<void> {
+  async replaceMarkdown(path: string, content: string, expectedContent?: string): Promise<void> {
     const file = this.requireFile(path);
-    await this.app.vault.modify(file, content);
+    await this.app.vault.process(file, (current) => {
+      if (expectedContent !== undefined && current !== expectedContent) {
+        throw new Error("The note changed after the replacement preview. Review the current note and approve again.");
+      }
+      return content;
+    });
   }
 
   async appendMarkdown(path: string, content: string): Promise<void> {
     const file = this.requireFile(path);
-    await this.app.vault.modify(file, `${await this.app.vault.cachedRead(file)}${content}`);
+    await this.app.vault.process(file, (current) => `${current}${content}`);
   }
 
   async applyPatch(path: string, oldText: string, newText: string, replaceAll = false): Promise<{ replacements: number }> {
     const file = this.requireFile(path);
-    const content = await this.app.vault.cachedRead(file);
     if (!oldText) throw new Error("Patch old_text cannot be empty.");
-    const occurrences = content.split(oldText).length - 1;
-    if (occurrences === 0) throw new Error("The exact old_text was not found in the note.");
-    if (occurrences > 1 && !replaceAll) {
-      throw new Error(`The exact old_text occurs ${occurrences} times; set replace_all=true or provide more context.`);
-    }
-    const updated = replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText);
-    await this.app.vault.modify(file, updated);
-    return { replacements: replaceAll ? occurrences : 1 };
+    let replacements = 0;
+    await this.app.vault.process(file, (content) => {
+      const occurrences = content.split(oldText).length - 1;
+      if (occurrences === 0) throw new Error("The exact old_text was not found in the note.");
+      if (occurrences > 1 && !replaceAll) {
+        throw new Error(`The exact old_text occurs ${occurrences} times; set replace_all=true or provide more context.`);
+      }
+      replacements = replaceAll ? occurrences : 1;
+      return replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText);
+    });
+    return { replacements };
   }
 
   async previewPatch(path: string, oldText: string, newText: string, replaceAll = false): Promise<{

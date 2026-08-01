@@ -231,8 +231,8 @@ export default class BrainCliPlugin extends Plugin {
       stage = "registering settings";
       this.addSettingTab(new BrainSettingTab(this.app, this));
       stage = "scheduling vault layout";
-      this.registerVaultIndexEvents();
       this.app.workspace.onLayoutReady(() => {
+        this.registerVaultIndexEvents();
         this.deferStartup(100, async () => {
           await this.ensureDataLayout();
           await this.portableSettings.save(this.settings);
@@ -770,6 +770,7 @@ export default class BrainCliPlugin extends Plugin {
     return [...new Set([
       ...this.settings.excludedPaths,
       brainPath(this.settings, "Chats"),
+      brainPath(this.settings, "Memory"),
       brainPath(this.settings, "Skills"),
       brainPath(this.settings, "Coaching")
     ])];

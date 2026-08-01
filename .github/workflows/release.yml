@@ -1,0 +1,62 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+
+      - name: Validate release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+          const versions = JSON.parse(fs.readFileSync("versions.json", "utf8"));
+          const tag = process.env.RELEASE_TAG;
+          if (!/^\d+\.\d+\.\d+$/.test(tag)) throw new Error(`Release tag must be x.y.z, got ${tag}`);
+          for (const [label, version] of [
+            ["manifest", manifest.version],
+            ["package", pkg.version],
+            ["package-lock", lock.version],
+            ["package-lock root", lock.packages?.[""]?.version]
+          ]) {
+            if (version !== tag) throw new Error(`${label} version ${version} does not match tag ${tag}`);
+          }
+          if (versions[tag] !== manifest.minAppVersion) {
+            throw new Error(`versions.json must map ${tag} to ${manifest.minAppVersion}`);
+          }
+          for (const artifact of ["main.js", "manifest.json", "styles.css"]) {
+            if (!fs.existsSync(artifact)) throw new Error(`Missing release artifact: ${artifact}`);
+          }
+          NODE
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          main.js manifest.json styles.css
+          --title "$GITHUB_REF_NAME"
+          --generate-notes

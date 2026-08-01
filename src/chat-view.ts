@@ -2663,7 +2663,10 @@ export class BrainChatView extends ItemView {
     }
 
     card.setStatus("running", "pending");
-    const result = await this.plugin.agentTools.execute(call, { allowSensitive: inspection.sensitive });
+    const result = await this.plugin.agentTools.execute(call, {
+      allowSensitive: inspection.sensitive,
+      expectedContent: inspection.expectedContent
+    });
     card.setStatus(result.ok ? "completed" : result.error ?? "failed", result.ok ? "success" : "error");
     if (result.ok) {
       const resultPreview = this.plugin.agentTools.resultPreview(call, result.result);

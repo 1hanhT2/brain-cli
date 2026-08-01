@@ -36,10 +36,12 @@ export interface ToolInspection {
   sensitive: boolean;
   sensitivityReasons: string[];
   preview?: ToolPreview;
+  expectedContent?: string;
 }
 
 interface ToolExecutionOptions {
   allowSensitive: boolean;
+  expectedContent?: string;
 }
 
 interface RegisteredTool {
@@ -1176,9 +1178,13 @@ export class AgentToolRegistry {
           }
         },
         risk: "high-write",
-        execute: async (input) => {
+        execute: async (input, options) => {
           const path = stringArg(input, "path");
-          await this.vaultTools.replaceMarkdown(path, stringArg(input, "content", false));
+          await this.vaultTools.replaceMarkdown(
+            path,
+            stringArg(input, "content", false),
+            options.expectedContent
+          );
           return { path, citation: citationForPath(path), replaced: true };
         }
       },
@@ -1340,6 +1346,7 @@ export class AgentToolRegistry {
     let sensitive = false;
     let sensitivityReasons: string[] = [];
     let preview: ToolPreview | undefined;
+    let expectedContent: string | undefined;
     if (call.function.name === "get_writing_coach") {
       preview = { title: "Inspect writing coach", details: "Current target, goals, interval, and feedback cycle" };
     } else if (call.function.name === "start_writing_coach") {
@@ -1556,9 +1563,10 @@ export class AgentToolRegistry {
         details: `${result.occurrences} exact occurrence${result.occurrences === 1 ? "" : "s"}`
       };
     } else if (call.function.name === "replace_note") {
+      expectedContent = await this.vaultTools.snapshotMarkdown(stringArg(input, "path"), true);
       preview = {
         title: `Replace all content in ${stringArg(input, "path")}`,
-        before: previewText(await this.vaultTools.readMarkdown(stringArg(input, "path"), true)),
+        before: previewText(expectedContent),
         after: previewText(stringArg(input, "content", false))
       };
     } else if (call.function.name === "update_frontmatter") {
@@ -1573,7 +1581,12 @@ export class AgentToolRegistry {
     } else if (call.function.name === "trash_note") {
       preview = { title: "Move note to vault trash", details: stringArg(input, "path") };
     }
-    return { sensitive, sensitivityReasons, preview };
+    return {
+      sensitive,
+      sensitivityReasons,
+      preview,
+      ...(expectedContent !== undefined ? { expectedContent } : {})
+    };
   }
 
   resultPreview(call: ToolCall, value: unknown): ToolPreview | undefined {
