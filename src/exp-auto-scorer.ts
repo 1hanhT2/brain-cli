@@ -50,6 +50,33 @@ const objectValue = (value: unknown): Record<string, unknown> =>
 const textValue = (value: unknown): string =>
   typeof value === "string" ? value.trim() : "";
 
+const factorText = (value: unknown, label: string, overallReason: string): string => {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return `${label} rating: ${value}.`;
+  }
+  if (typeof value === "boolean") return `${label}: ${value ? "present" : "limited"}.`;
+  if (Array.isArray(value)) {
+    const parts = value.map((item) => factorText(item, label, "")).filter(Boolean);
+    if (parts.length > 0) return parts.join(" ");
+  }
+  const row = objectValue(value);
+  for (const key of ["explanation", "reason", "reasoning", "assessment", "description", "text"]) {
+    const nested = textValue(row[key]);
+    if (nested) return nested;
+  }
+  for (const key of ["value", "score", "rating"]) {
+    const nested = row[key];
+    if (typeof nested === "number" && Number.isFinite(nested)) {
+      return `${label} rating: ${nested}.`;
+    }
+    if (typeof nested === "string" && nested.trim()) return nested.trim();
+  }
+  return overallReason
+    ? `${label} was considered in the overall assessment: ${overallReason}`
+    : `${label} was considered in the EXP score.`;
+};
+
 const abortError = (): DOMException =>
   new DOMException("The operation was aborted.", "AbortError");
 
@@ -68,6 +95,10 @@ export const parseExpScoringResponse = (
   if (start < 0 || end <= start) throw new Error("The EXP model did not return a JSON score.");
   const parsed = objectValue(JSON.parse(candidate.slice(start, end + 1)));
   const factors = objectValue(parsed.factors);
+  const reason = textValue(parsed.reason)
+    || textValue(parsed.rationale)
+    || textValue(parsed.explanation)
+    || "Score based on the task context and EXP rubric.";
   const rawValue = typeof parsed.value === "number" ? parsed.value : Number(parsed.value);
   const rawConfidence = typeof parsed.confidence === "number"
     ? parsed.confidence
@@ -76,19 +107,19 @@ export const parseExpScoringResponse = (
     throw new Error("The EXP model returned an invalid numeric score or confidence.");
   }
   const normalizedFactors: ExpFactors = {
-    output: textValue(factors.output),
-    difficulty: textValue(factors.difficulty),
-    rigor: textValue(factors.rigor),
-    friction: textValue(factors.friction),
-    independence: textValue(factors.independence),
-    significance: textValue(factors.significance)
+    output: factorText(factors.output ?? parsed.output, "Output", reason),
+    difficulty: factorText(factors.difficulty ?? parsed.difficulty, "Difficulty", reason),
+    rigor: factorText(factors.rigor ?? parsed.rigor, "Rigor", reason),
+    friction: factorText(factors.friction ?? parsed.friction, "Friction", reason),
+    independence: factorText(factors.independence ?? parsed.independence, "Independence", reason),
+    significance: factorText(factors.significance ?? parsed.significance, "Significance", reason)
   };
   return {
     path,
     action,
     value: Math.min(1_000, Math.max(25, Math.round(rawValue / 25) * 25)),
     confidence: Math.min(1, Math.max(0, rawConfidence)),
-    reason: textValue(parsed.reason),
+    reason,
     factors: normalizedFactors
   };
 };

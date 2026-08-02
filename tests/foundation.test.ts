@@ -1768,6 +1768,28 @@ test("automatic EXP scoring rejects malformed numeric model output", () => {
   }), "TaskNotes/Tasks/a.md", "plan"), /invalid numeric/);
 });
 
+test("automatic EXP scoring normalizes structured and missing factor explanations", () => {
+  const parsed = parseExpScoringResponse(JSON.stringify({
+    value: 150,
+    confidence: 0.7,
+    rationale: "A focused recurring media-limit task.",
+    factors: {
+      output: { reasoning: "Produces a concrete completed habit instance." },
+      difficulty: { score: 2 },
+      rigor: "Requires consistent adherence.",
+      friction: false,
+      independence: ["Self-directed", "without prompting"]
+    }
+  }), "TaskNotes/Tasks/example.md", "plan");
+  assert.equal(parsed.reason, "A focused recurring media-limit task.");
+  assert.equal(parsed.factors.output, "Produces a concrete completed habit instance.");
+  assert.equal(parsed.factors.difficulty, "Difficulty rating: 2.");
+  assert.equal(parsed.factors.friction, "Friction: limited.");
+  assert.equal(parsed.factors.independence, "Self-directed without prompting");
+  assert.match(parsed.factors.significance, /overall assessment/);
+  assert.doesNotThrow(() => validateExpInput(parsed));
+});
+
 test("EXP completion cutoffs validate calendar dates and include the cutoff day", () => {
   assert.equal(isExpCompletionCutoff(""), true);
   assert.equal(isExpCompletionCutoff("2026-07-30"), true);

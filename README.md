@@ -242,6 +242,8 @@ lists accessible tasks with neither planned nor earned EXP, and `@exp sync`
 requeues open unscored tasks while reconciling completed-task awards. Automatic
 planned-score failures are retained locally with their last error until a sync
 retries them or the task is resolved.
+Factor explanations returned as strings, ratings, or structured
+explanation/reasoning objects are normalized before strict EXP validation.
 
 Open tasks receive planned EXP so their expected reward is visible before work
 begins. Completion promotes that planned value to earned EXP. When automatic
