@@ -11,6 +11,7 @@ import {
   parseExpFactors,
   validateExpInput,
   validateExpTransition,
+  inferOneTimeCompletion,
   type ExpCalibrationReview,
   type ExpAnalytics,
   type ExpGoal,
@@ -119,10 +120,19 @@ export class ExpService {
     ledger: ExpLedgerEntry;
     verified: true;
   }> {
-    const clean = this.validate(input);
+    let clean = this.validate(input);
     if (signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
     const task = await this.taskService.get(clean.path, true);
     if (!task) throw new Error(`Task not found: ${clean.path}`);
+    const inferredCompletion = clean.action === "award" && !clean.completionToken
+      ? inferOneTimeCompletion(task)
+      : null;
+    if (inferredCompletion) {
+      clean = this.validate({
+        ...clean,
+        ...inferredCompletion
+      });
+    }
     const existing = await this.taskState(task.path);
     const taskId = existing?.taskId || uniqueId();
     const completionId = clean.completionToken ? `${taskId}:${clean.completionToken}` : undefined;

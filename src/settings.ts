@@ -5,6 +5,9 @@ export interface AutoExpQueueEntry {
   path: string;
   attempts: number;
   readyAt: number;
+  state?: "pending" | "failed";
+  lastError?: string;
+  failedAt?: string;
 }
 
 export interface BrainSettings {

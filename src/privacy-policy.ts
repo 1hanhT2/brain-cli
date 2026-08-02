@@ -1,6 +1,14 @@
 const trimVaultPath = (value: string): string =>
   value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 
+export const pathMatchesExclusion = (path: string, excludedPaths: string[]): boolean => {
+  const normalized = trimVaultPath(path);
+  return excludedPaths.some((candidate) => {
+    const excluded = trimVaultPath(candidate);
+    return Boolean(excluded) && (normalized === excluded || normalized.startsWith(`${excluded}/`));
+  });
+};
+
 export const effectivePrivacyExclusions = (
   excludedPaths: string[],
   brainFolder: string

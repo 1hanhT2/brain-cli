@@ -129,6 +129,8 @@ completion declared by that skill's `SKILL.md` frontmatter.
 `@exp history`, `@exp check`, and `@exp pending` run locally; other forms such as `@exp score this task` enable
 the skill and send the remaining request. `/skill <name>` remains available
 for explicit activation, and `/skill exp history` is an EXP-view alias.
+Exact EXP subcommands stay deterministic, while longer natural-language forms
+such as `@exp status of my latest task` are sent to the active EXP agent.
 
 ```text
 /help [page]
@@ -234,6 +236,12 @@ each non-recurring completion once or each unique recurring
 while Brain was closed. Existing planned EXP is reused without another model
 call; unscored completions either use the background model or remain
 `needs-score`, according to `/config`.
+
+`@exp pending` contains completed-task award proposals only. `@exp unscored`
+lists accessible tasks with neither planned nor earned EXP, and `@exp sync`
+requeues open unscored tasks while reconciling completed-task awards. Automatic
+planned-score failures are retained locally with their last error until a sync
+retries them or the task is resolved.
 
 `@exp score-completed` turns every `needs-score` completion proposal into one
 explicit scoring session. Brain reads each task before scoring it and still

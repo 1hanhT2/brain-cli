@@ -12,6 +12,10 @@ completions:
     description: Reconcile completed tasks and process their EXP
   - value: pending
     description: Review pending completion awards
+  - value: unscored
+    description: List tasks without planned or earned EXP
+  - value: sync
+    description: Reconcile unscored tasks and completed-task EXP
   - value: score-completed
     description: Batch-score completed tasks that need EXP
   - value: review
@@ -41,7 +45,7 @@ Evaluate meaningful output while retaining time only as supporting context.
 5. Ask for missing information only when it could materially change the score.
 6. Propose one score from 25 to 1000, rounded to the nearest 25.
 7. Give a short breakdown for output, difficulty, rigor, friction, independence, and significance, plus confidence from 0 to 1.
-8. Use \`record_task_exp\` with action \`plan\` for upcoming work, \`award\` for completed work, or \`recalibrate\` when replacing a planned score.
+8. Use \`record_task_exp\` with action \`plan\` for upcoming work, \`award\` for completed work, or \`recalibrate\` when replacing a planned score. For a completed task, pass its completion occurrence and timestamp from \`get_task\`: \`once\` for an ordinary completion or \`instance:<value>\` for a recurring occurrence.
 9. Let the approval preview show the exact change. Never bypass the EXP tool with a generic frontmatter write.
 10. Use \`get_exp_progress\` and \`review_exp_calibration\` for progress and consistency reviews.
 11. Read \`references/goals.md\` before creating or reviewing a balanced EXP goal. Report both overall progress and every required lane.

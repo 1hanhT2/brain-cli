@@ -58,7 +58,8 @@ export class ExpCompletionCoordinator {
     private readonly getSettings: () => BrainSettings,
     private readonly persistLocalState: () => Promise<void>,
     private readonly onAward: (title: string, value: number) => void,
-    private readonly onError: (path: string, error: unknown) => void
+    private readonly onError: (path: string, error: unknown) => void,
+    private readonly isExcluded: (path: string) => boolean = () => false
   ) {}
 
   async initialize(): Promise<void> {
@@ -69,7 +70,12 @@ export class ExpCompletionCoordinator {
   }
 
   observe(path: string): void {
-    if (this.disposed || !this.getSettings().detectCompletedTaskExp || !path.toLocaleLowerCase().endsWith(".md")) return;
+    if (
+      this.disposed
+      || !this.getSettings().detectCompletedTaskExp
+      || !path.toLocaleLowerCase().endsWith(".md")
+      || this.isExcluded(path)
+    ) return;
     const previous = this.pendingTimer.get(path);
     if (previous !== undefined) window.clearTimeout(previous);
     this.pendingTimer.set(path, window.setTimeout(() => {
@@ -198,6 +204,7 @@ export class ExpCompletionCoordinator {
   }
 
   private async inspectPath(path: string): Promise<void> {
+    if (this.isExcluded(path)) return;
     const task = await this.taskService.get(path, true);
     if (!task) return;
     const sensitivity = await this.taskService.inspectSensitivity(path);
@@ -320,6 +327,11 @@ export class ExpCompletionCoordinator {
       }
       const state = await this.expService.taskState(proposal.path).catch(() => null);
       if (!state?.taskId) continue;
+      if (proposal.completionToken === "once" && state.state === "earned") {
+        await this.queueStore.remove(proposal);
+        this.markSeen(proposal.path, proposal.completionToken);
+        continue;
+      }
       if (await this.expService.hasCompletion(`${state.taskId}:${proposal.completionToken}`)) {
         await this.queueStore.remove(proposal);
         this.markSeen(proposal.path, proposal.completionToken);

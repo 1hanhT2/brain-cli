@@ -35,6 +35,7 @@ import {
   planModeSystemMessage,
   type InteractionMode
 } from "./plan-mode";
+import { isLocalExpCommand } from "./exp-command";
 
 export const BRAIN_VIEW_TYPE = "brain-cli-chat";
 
@@ -70,7 +71,6 @@ interface HandledToolCall {
 
 const MODEL_FILTERS = new Set(["all", "popular", "trending", "free", "paid", "favorites"]);
 const EMBEDDING_FILTERS = new Set(["all", "favorites"]);
-const EXP_LOCAL_ACTIONS = new Set(["status", "history", "review", "task", "calibrate", "check", "pending", "score-completed", "analytics", "goals", "cutoff"]);
 const WRITING_COACH_LOCAL_ACTIONS = new Set(["status", "check", "stop"]);
 const EMBEDDING_MANAGEMENT_ACTIONS = new Set(["status", "refresh", "delete", "pause", "resume", "cancel"]);
 const TRANSCRIPT_INITIAL_MESSAGES = 40;
@@ -625,7 +625,7 @@ export class BrainChatView extends ItemView {
         return;
       }
       const skillParts = commandTokens(invocation.prompt);
-      if (invocation.name === "exp" && EXP_LOCAL_ACTIONS.has(skillParts[0]?.toLocaleLowerCase() ?? "")) {
+      if (invocation.name === "exp" && isLocalExpCommand(skillParts)) {
         this.addCommandEcho(text);
         await this.activateSkill(invocation.name, false);
         await this.expCommand(skillParts);
@@ -756,7 +756,7 @@ export class BrainChatView extends ItemView {
             `index cost $${(semantic?.estimatedCostUsd ?? 0).toFixed(4)} / $${this.plugin.settings.semanticSpendCapUsd.toFixed(2)} cap`,
             `web        ${this.plugin.settings.useWebSearch ? "enabled · OpenRouter server tool" : "disabled"}`,
             `tasks      ${tasks.active.provider}${tasks.tasknotes.available ? ` · TaskNotes API v${tasks.tasknotes.apiVersion}` : " · Markdown fallback"}`,
-            `auto EXP   ${this.plugin.settings.autoScoreTaskExp ? `enabled · ${autoExp.running ? "running" : `${autoExp.queued} queued`} · $${autoExp.estimatedSpendUsd.toFixed(4)} / $${autoExp.capUsd.toFixed(2)} cap` : "disabled"}`,
+            `auto EXP   ${this.plugin.settings.autoScoreTaskExp ? `enabled · ${autoExp.running ? "running" : `${autoExp.queued} queued`} · ${autoExp.failed} failed · $${autoExp.estimatedSpendUsd.toFixed(4)} / $${autoExp.capUsd.toFixed(2)} cap` : "disabled"}`,
             `complete   ${completionExp.enabled ? `${completionExp.automaticAwards ? "auto award" : "approval"} · ${completionExp.automaticScoring ? "AI score" : "manual score"} · ${completionExp.pending} pending` : "detection disabled"} · cutoff ${completionExp.cutoffDate || "baseline only"}`,
             `sensitive  ${retrieval.sensitiveNotes} excluded notes`,
             `skills     ${skills.map((skill) => skill.name).join(", ") || "none"}`,
@@ -829,7 +829,7 @@ export class BrainChatView extends ItemView {
           await this.plugin.skillRegistry.initialize();
           if (
             parts[0]?.toLocaleLowerCase() === "exp"
-            && EXP_LOCAL_ACTIONS.has(parts[1]?.toLocaleLowerCase() ?? "")
+            && isLocalExpCommand(parts.slice(1))
           ) {
             await this.handleSkillCommand("exp");
             await this.expCommand(parts.slice(1));
@@ -1523,6 +1523,7 @@ export class BrainChatView extends ItemView {
     if (action === "status") {
       const progress = await this.plugin.expService.progress();
       const completion = await this.plugin.expCompletion.getStatus();
+      const automatic = this.plugin.expAutoScorer.getStatus();
       const filled = Math.round(progress.levelProgress / 100);
       const bar = `${"█".repeat(filled)}${"░".repeat(10 - filled)}`;
       await this.addTerminalOutput([
@@ -1540,6 +1541,7 @@ export class BrainChatView extends ItemView {
         `Current streak: **${progress.currentStreak} day${progress.currentStreak === 1 ? "" : "s"}** · longest: ${progress.longestStreak} · ${progress.awards} award${progress.awards === 1 ? "" : "s"}`,
         "",
         `Completion detection: **${completion.enabled ? "enabled" : "disabled"}** · cutoff: **${completion.cutoffDate || "baseline only"}** · ${completion.automaticAwards ? "automatic awards" : "approval queue"} · ${completion.automaticScoring ? "automatic AI scoring" : "manual scoring"} · ${completion.pending} pending (${completion.needsScore} need scores)`,
+        `Planned-task scoring: **${this.plugin.settings.autoScoreTaskExp ? "enabled" : "disabled"}** · ${automatic.queued} queued · ${automatic.failed} failed`,
         "",
         progress.recent.length
           ? `Recent: ${progress.recent.map((entry) => `${entry.value} EXP — ${entry.taskTitle}`).join(" · ")}`
@@ -1612,6 +1614,56 @@ export class BrainChatView extends ItemView {
         return;
       }
       await this.openExpPendingPicker();
+      return;
+    }
+    if (action === "unscored") {
+      const { page, remaining } = readLeadingPage(parts.slice(1));
+      if (remaining.length > 0) {
+        await this.addTerminalOutput("usage: `@exp unscored [page]`", "error");
+        return;
+      }
+      const tasks = (await this.plugin.taskService.list({
+        includeCompleted: true,
+        limit: 10_000,
+        internalUnbounded: true
+      })).filter((task) => task.exp === null);
+      const paged = paginate(tasks, page);
+      if (tasks.length === 0) {
+        await this.addTerminalOutput("all accessible tasks have EXP scores");
+        return;
+      }
+      if (paged.outOfRange) {
+        await this.addPageOutOfRange("unscored task", paged);
+        return;
+      }
+      await this.addTerminalOutput([
+        "| Task | Status | Scheduled / due | Automatic scoring |",
+        "| --- | --- | --- | --- |",
+        ...paged.items.map((task) =>
+          `| ${task.citation} | ${this.escapeTable(task.status)} | ${this.escapeTable(task.scheduled || task.due || "—")} | ${this.escapeTable(this.plugin.expAutoScorer.failureFor(task.path) || "not queued")} |`
+        ),
+        "",
+        "These are tasks without planned or earned EXP; they are separate from pending completion awards.",
+        "",
+        this.paginationLine(paged, "unscored tasks", (target) => `@exp unscored ${target}`)
+      ].join("\n"));
+      return;
+    }
+    if (action === "sync") {
+      this.statusEl.setText("syncing EXP…");
+      const unscored = await this.plugin.expAutoScorer.reconcileUnscored();
+      const completions = await this.plugin.expCompletion.reconcileAll();
+      this.statusEl.setText("ready");
+      await this.addTerminalOutput([
+        "## EXP sync",
+        "",
+        `Open tasks scanned: **${unscored.scanned}** · newly queued for planned scoring: **${unscored.queued}** · not newly queued: **${unscored.existing}**`,
+        `Completions discovered: **${completions.discovered}** · awarded: **${completions.awarded}** · awaiting review: **${completions.queued + completions.needsScore}** · failed: **${completions.failed}**`,
+        "",
+        this.plugin.settings.autoScoreTaskExp
+          ? "Automatic planned-task scoring is enabled. Failed planned scores were requeued."
+          : "Automatic planned-task scoring is disabled; open unscored tasks were listed but not queued."
+      ].join("\n"));
       return;
     }
     if (action === "score-completed") {
@@ -1773,7 +1825,7 @@ export class BrainChatView extends ItemView {
       return;
     }
     await this.addTerminalOutput(
-      "usage: `@exp [status|cutoff [today|YYYY-MM-DD|off]|check|pending|score-completed|analytics [days]|goals|history [page]|review [days]|task <path>|calibrate]`",
+      "usage: `@exp [status|cutoff [today|YYYY-MM-DD|off]|check|pending|unscored [page]|sync|score-completed|analytics [days]|goals|history [page]|review [days]|task <path>|calibrate]`",
       "error"
     );
   }
@@ -1966,7 +2018,7 @@ export class BrainChatView extends ItemView {
           : this.plugin.settings.autoScoreTaskExp
             ? (() => {
                 const status = this.plugin.expAutoScorer.getStatus();
-                return `enabled · ${status.running ? "running" : `${status.queued} queued`} · $${status.estimatedSpendUsd.toFixed(4)} / $${status.capUsd.toFixed(2)}`;
+                return `enabled · ${status.running ? "running" : `${status.queued} queued`} · ${status.failed} failed · $${status.estimatedSpendUsd.toFixed(4)} / $${status.capUsd.toFixed(2)}`;
               })()
             : "disabled · explicit opt-in required",
         toggle: async () => {
@@ -2102,7 +2154,7 @@ export class BrainChatView extends ItemView {
     if (this.expPendingPickerEl) return;
     this.expPendingItems = await this.plugin.expCompletion.pending();
     if (this.expPendingItems.length === 0) {
-      await this.addTerminalOutput("no completion EXP proposals are waiting");
+      await this.addTerminalOutput("no completion EXP proposals are waiting · open tasks without EXP are listed by `@exp unscored`");
       return;
     }
     this.transcriptEl.querySelector(".brain-cli-empty")?.remove();

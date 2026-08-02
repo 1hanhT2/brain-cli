@@ -33,7 +33,7 @@ import { isExpCompletionCutoff } from "./exp-completion-core";
 import { PortableSettingsStore } from "./portable-settings";
 import { MemoryService } from "./memory-service";
 import { WritingCoachService } from "./writing-coach";
-import { effectivePrivacyExclusions } from "./privacy-policy";
+import { effectivePrivacyExclusions, pathMatchesExclusion } from "./privacy-policy";
 import { runAfterLayoutReady } from "./layout-ready";
 
 interface CatalogCache {
@@ -158,7 +158,8 @@ export default class BrainCliPlugin extends Plugin {
           const message = error instanceof Error ? error.message : String(error);
           console.error(`[Brain CLI] Completion EXP failed for ${path}.`, error);
           new Notice(`Completion EXP failed for ${path}: ${message}`, 0);
-        }
+        },
+        (path) => pathMatchesExclusion(path, this.effectiveExcludedPaths())
       );
       const semanticStore = new IndexedDbSemanticStore(`obsidian-brain:${this.settings.semanticVaultId}`);
       this.catalogStore = new IndexedDbCatalogStore(`obsidian-brain-catalogs:${this.settings.semanticVaultId}`);
@@ -368,6 +369,7 @@ export default class BrainCliPlugin extends Plugin {
     this.settings.autoScoreTaskExp = enabled;
     await this.saveSettings();
     if (!enabled) this.expAutoScorer.cancel();
+    else this.expAutoScorer.resumeQueued();
   }
 
   async setCompletionDetectionEnabled(enabled: boolean): Promise<void> {
@@ -568,7 +570,10 @@ export default class BrainCliPlugin extends Plugin {
               : 0,
             readyAt: typeof entry.readyAt === "number" && Number.isFinite(entry.readyAt)
               ? entry.readyAt
-              : Date.now()
+              : Date.now(),
+            state: entry.state === "failed" ? "failed" as const : "pending" as const,
+            lastError: typeof entry.lastError === "string" ? entry.lastError : undefined,
+            failedAt: typeof entry.failedAt === "string" ? entry.failedAt : undefined
           }];
         })
       : [];

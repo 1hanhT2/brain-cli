@@ -17,6 +17,11 @@ interface PendingScore {
   readyAt: number;
 }
 
+interface FailedScore extends PendingScore {
+  lastError: string;
+  failedAt: string;
+}
+
 export interface ExpAutoScoreResult {
   path: string;
   title: string;
@@ -31,6 +36,7 @@ export interface ExpScoreProposal {
 
 export interface ExpAutoScoreStatus {
   queued: number;
+  failed: number;
   running: boolean;
   estimatedSpendUsd: number;
   capUsd: number;
@@ -92,6 +98,7 @@ export class ExpAutoScorer {
   private readonly candidates = new Set<string>();
   private readonly qualifying = new Set<string>();
   private readonly restored = new Map<string, PendingScore>();
+  private readonly failed = new Map<string, FailedScore>();
   private timer: number | null = null;
   private running = false;
   private disposed = false;
@@ -114,6 +121,15 @@ export class ExpAutoScorer {
   resumeQueued(): void {
     if (this.disposed || !this.getSettings().autoScoreTaskExp) return;
     for (const entry of this.getSettings().autoExpQueue) {
+      if (entry.state === "failed") {
+        this.failed.set(entry.path, {
+          attempts: Math.max(1, Math.floor(entry.attempts)),
+          readyAt: entry.readyAt,
+          lastError: entry.lastError || "Automatic EXP scoring failed.",
+          failedAt: entry.failedAt || new Date(entry.readyAt).toISOString()
+        });
+        continue;
+      }
       this.candidates.add(entry.path);
       this.restored.set(entry.path, {
         attempts: Math.min(Math.max(Math.floor(entry.attempts), 0), MAX_ATTEMPTS - 1),
@@ -151,12 +167,15 @@ export class ExpAutoScorer {
     const candidateChanged = this.candidates.delete(path);
     const restoredChanged = this.restored.delete(path);
     const pendingChanged = this.pending.delete(path);
+    const failedChanged = this.failed.delete(path);
     this.qualifying.delete(path);
-    if (candidateChanged || restoredChanged || pendingChanged) this.persist();
+    if (candidateChanged || restoredChanged || pendingChanged || failedChanged) this.persist();
   }
 
   async scoreNow(path: string): Promise<ExpAutoScoreResult> {
-    return this.score(path, "manual");
+    const result = await this.score(path, "manual");
+    if (this.failed.delete(path)) this.persist();
+    return result;
   }
 
   async proposeAward(
@@ -170,10 +189,17 @@ export class ExpAutoScorer {
   getStatus(): ExpAutoScoreStatus {
     return {
       queued: this.pending.size,
+      failed: this.failed.size,
       running: this.running,
       estimatedSpendUsd: this.estimatedSpendUsd,
       capUsd: this.getSettings().autoExpSpendCapUsd
     };
+  }
+
+  failureFor(path: string): string | null {
+    return this.failed.get(path)?.lastError
+      ?? this.getSettings().autoExpQueue.find((entry) => entry.path === path && entry.state === "failed")?.lastError
+      ?? null;
   }
 
   cancel(): void {
@@ -185,6 +211,27 @@ export class ExpAutoScorer {
     this.restored.clear();
     this.clearTimer();
     this.persist();
+  }
+
+  async reconcileUnscored(): Promise<{ scanned: number; queued: number; existing: number }> {
+    const tasks = await this.taskService.list({ includeCompleted: true, limit: 10_000, internalUnbounded: true });
+    const open = tasks.filter((task) => !task.completed && task.exp === null);
+    let queued = 0;
+    let existing = 0;
+    for (const task of open) {
+      if (!this.getSettings().autoScoreTaskExp) continue;
+      if (this.pending.has(task.path) || this.candidates.has(task.path) || this.qualifying.has(task.path)) {
+        existing += 1;
+        continue;
+      }
+      this.failed.delete(task.path);
+      this.candidates.add(task.path);
+      await this.qualify(task.path);
+      if (this.pending.has(task.path)) queued += 1;
+      else existing += 1;
+    }
+    this.persist();
+    return { scanned: open.length, queued, existing };
   }
 
   dispose(): void {
@@ -221,6 +268,7 @@ export class ExpAutoScorer {
         this.persist();
         try {
           const result = await this.score(path, "automatic");
+          this.failed.delete(path);
           if (!this.disposed) this.onResult(result);
         } catch (error) {
           if (isAbortError(error)) break;
@@ -234,6 +282,13 @@ export class ExpAutoScorer {
             });
             this.persist();
           } else {
+            this.failed.set(path, {
+              attempts: item.attempts + 1,
+              readyAt: Date.now(),
+              lastError: error instanceof Error ? error.message : String(error),
+              failedAt: new Date().toISOString()
+            });
+            this.persist();
             this.onError(path, error);
           }
         }
@@ -437,11 +492,20 @@ export class ExpAutoScorer {
   }
 
   private persist(): void {
-    const snapshot = [...this.pending].map(([path, item]) => ({
+    const snapshot: AutoExpQueueEntry[] = [...this.pending].map(([path, item]) => ({
       path,
       attempts: item.attempts,
-      readyAt: item.readyAt
+      readyAt: item.readyAt,
+      state: "pending"
     }));
+    snapshot.push(...[...this.failed].map(([path, item]) => ({
+      path,
+      attempts: item.attempts,
+      readyAt: item.readyAt,
+      state: "failed" as const,
+      lastError: item.lastError,
+      failedAt: item.failedAt
+    })));
     this.persistence = this.persistence.then(() => this.persistQueue(snapshot)).catch((error) =>
       console.error("[Brain CLI] Could not persist the automatic EXP queue.", error)
     );

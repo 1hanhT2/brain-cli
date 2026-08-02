@@ -174,7 +174,9 @@ const expInput = (input: Record<string, unknown>): ExpRecordInput => {
     confidence: numberArg(input, "confidence", Number.NaN),
     reason: stringArg(input, "reason"),
     factors,
-    allowRepeat: booleanArg(input, "allow_repeat")
+    allowRepeat: booleanArg(input, "allow_repeat"),
+    completionToken: typeof input.completion_token === "string" ? input.completion_token : undefined,
+    completionAt: typeof input.completion_at === "string" ? input.completion_at : undefined
   };
 };
 
@@ -901,6 +903,14 @@ export class AgentToolRegistry {
                 allow_repeat: {
                   type: "boolean",
                   description: "Use only for a new recurrence or an intentional additional award on an already-awarded task."
+                },
+                completion_token: {
+                  type: "string",
+                  description: "Completion occurrence from get_task: `once` for an ordinary completed task or `instance:<value>` for a recurring completion. Include it when awarding a detected completion."
+                },
+                completion_at: {
+                  type: "string",
+                  description: "Actual completion date or timestamp corresponding to completion_token."
                 }
               },
               required: ["path", "action", "value", "confidence", "reason", "factors"],

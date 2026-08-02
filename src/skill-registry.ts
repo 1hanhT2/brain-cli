@@ -27,6 +27,8 @@ const EXP_COMPLETIONS: SkillCompletion[] = [
   { value: "status", description: "Show EXP totals, level, and streaks" },
   { value: "check", description: "Reconcile newly completed tasks and process their EXP" },
   { value: "pending", description: "Review pending completion awards" },
+  { value: "unscored", description: "List tasks without planned or earned EXP" },
+  { value: "sync", description: "Reconcile unscored tasks and completed-task EXP" },
   { value: "score-completed", description: "Batch-score completed tasks that need EXP" },
   { value: "history", description: "Browse the EXP ledger" },
   { value: "review", description: "Review scoring consistency" },
@@ -291,10 +293,27 @@ export class SkillRegistry {
       const expanded = latestFrontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
       migrated = `${expanded}${migrated.slice(latestFrontmatter.length)}`;
     }
+    const syncFrontmatter = migrated.match(FRONTMATTER_PATTERN)?.[0] ?? "";
+    if (syncFrontmatter && !syncFrontmatter.includes("value: unscored")) {
+      const additions = [
+        "  - value: unscored",
+        "    description: List tasks without planned or earned EXP",
+        "  - value: sync",
+        "    description: Reconcile unscored tasks and completed-task EXP"
+      ].join("\n");
+      const expanded = syncFrontmatter.replace(/\r?\n---\r?\n?$/, `\n${additions}\n---\n`);
+      migrated = `${expanded}${migrated.slice(syncFrontmatter.length)}`;
+    }
     if (!migrated.includes("references/goals.md")) {
       migrated = migrated.replace(
         "10. Use `get_exp_progress` and `review_exp_calibration` for progress and consistency reviews.",
         "10. Use `get_exp_progress` and `review_exp_calibration` for progress and consistency reviews.\n11. Read `references/goals.md` before creating or reviewing a balanced EXP goal. Report both overall progress and every required lane."
+      );
+    }
+    if (!migrated.includes("pass its completion occurrence and timestamp")) {
+      migrated = migrated.replace(
+        "8. Use `record_task_exp` with action `plan` for upcoming work, `award` for completed work, or `recalibrate` when replacing a planned score.",
+        "8. Use `record_task_exp` with action `plan` for upcoming work, `award` for completed work, or `recalibrate` when replacing a planned score. For a completed task, pass its completion occurrence and timestamp from `get_task`: `once` for an ordinary completion or `instance:<value>` for a recurring occurrence."
       );
     }
     return migrated;

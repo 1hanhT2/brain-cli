@@ -41,6 +41,7 @@ import { chunkMatchesFilters, prepareMarkdownChunks } from "../src/markdown-chun
 import { cosineSimilarity, MemorySemanticStore } from "../src/semantic-store";
 import type { EmbeddingModel, SemanticChunkRecord } from "../src/semantic-types";
 import { detectsPlanningIntent, planModeSystemMessage } from "../src/plan-mode";
+import { isLocalExpCommand } from "../src/exp-command";
 import { SemanticIndexCoordinator } from "../src/semantic-index";
 import type { BrainSettings } from "../src/settings";
 import { MemoryLexicalIndexStore } from "../src/retrieval-store";
@@ -51,7 +52,7 @@ import type { OpenRouterModel } from "../src/types";
 import { TaskService } from "../src/task-service";
 import { TaskNotesProvider } from "../src/tasknotes-provider";
 import { formatExpTaskTitle, stripExpTitlePrefix, taskDisplayTitle } from "../src/task-provider";
-import { calculateExpStreaks, validateExpInput, validateExpTransition } from "../src/exp-core";
+import { calculateExpStreaks, inferOneTimeCompletion, validateExpInput, validateExpTransition } from "../src/exp-core";
 import type { ExpService } from "../src/exp-service";
 import { parseSkillInvocation } from "../src/skill-invocation";
 import { parseExpScoringResponse, type ExpAutoScorer } from "../src/exp-auto-scorer";
@@ -66,7 +67,7 @@ import {
 import { chooseWritingCoachInterval } from "../src/writing-coach-core";
 import { parseBufferedChatCompletion } from "../src/openrouter-response";
 import { raceWithAbort } from "../src/abort";
-import { effectivePrivacyExclusions, frontmatterSensitivityReasons } from "../src/privacy-policy";
+import { effectivePrivacyExclusions, frontmatterSensitivityReasons, pathMatchesExclusion } from "../src/privacy-policy";
 import { isMemoryFrontmatter, isMemoryMarkdownPath } from "../src/memory-policy";
 import { runAfterLayoutReady } from "../src/layout-ready";
 import { validateExpGoalLanes } from "../src/exp-goals-core";
@@ -155,6 +156,16 @@ test("plan mode detects planning requests without hijacking execution requests",
   assert.match(planModeSystemMessage(), /Do not create, edit, rename, delete/i);
 });
 
+test("EXP routing preserves exact subcommands and sends natural language to the agent", () => {
+  assert.equal(isLocalExpCommand(["pending"]), true);
+  assert.equal(isLocalExpCommand(["history", "2"]), true);
+  assert.equal(isLocalExpCommand(["unscored"]), true);
+  assert.equal(isLocalExpCommand(["sync"]), true);
+  assert.equal(isLocalExpCommand(["pending", "items", "from", "today"]), false);
+  assert.equal(isLocalExpCommand(["status", "of", "my", "latest", "task"]), false);
+  assert.equal(isLocalExpCommand(["what", "is", "the", "latest", "task"]), false);
+});
+
 test("privacy and startup policies enforce behavior instead of source shape", () => {
   let readyCallback: (() => void) | null = null;
   let registered = false;
@@ -180,6 +191,8 @@ test("privacy and startup policies enforce behavior instead of source shape", ()
   assert.deepEqual(frontmatterSensitivityReasons({ sensitivity: "Review" }), [
     "frontmatter marks the note as review-only"
   ]);
+  assert.equal(pathMatchesExclusion("Brain/Coaching/writing-session.md", effectivePrivacyExclusions([], "Brain")), true);
+  assert.equal(pathMatchesExclusion("TaskNotes/Tasks/writing-session.md", effectivePrivacyExclusions([], "Brain")), false);
   assert.equal(isMemoryMarkdownPath("Brain/Memory/one.md", "Brain/Memory"), true);
   assert.equal(isMemoryMarkdownPath("Brain/Memory.txt", "Brain/Memory"), false);
   assert.equal(isMemoryMarkdownPath("Brain/Other/one.md", "Brain/Memory"), false);
@@ -470,6 +483,9 @@ test("registry exposes the complete foundational tool surface", () => {
   assert.match(JSON.stringify(createTask?.function.parameters), /exported calendar duration/);
   const createGoal = registry.definitions().find((tool) => tool.function.name === "create_exp_goal");
   assert.match(JSON.stringify(createGoal?.function.parameters), /balanced minimums/);
+  const recordExp = registry.definitions().find((tool) => tool.function.name === "record_task_exp");
+  assert.match(JSON.stringify(recordExp?.function.parameters), /completion_token/);
+  assert.match(JSON.stringify(recordExp?.function.parameters), /completion_at/);
 });
 
 test("registry executes environment reads and note creation", async () => {
@@ -1620,6 +1636,9 @@ test("bundled EXP skill has valid metadata, workflow, references, and calibratio
   assert.match(EXP_SKILL, /completions:\n[\s\S]*value: score/);
   assert.match(EXP_SKILL, /value: check/);
   assert.match(EXP_SKILL, /value: pending/);
+  assert.match(EXP_SKILL, /value: unscored/);
+  assert.match(EXP_SKILL, /value: sync/);
+  assert.match(EXP_SKILL, /completion occurrence and timestamp/);
   assert.match(EXP_SKILL, /25 to 1000/);
   assert.match(EXP_SKILL, /references\/rubric\.md/);
   assert.match(EXP_SKILL, /references\/examples\.md/);
@@ -1750,6 +1769,21 @@ test("EXP completion cutoffs validate calendar dates and include the cutoff day"
   assert.equal(completionMeetsCutoff("2026-07-29", "2026-07-30"), false);
   assert.equal(completionMeetsCutoff("2026-07-30", "2026-07-30"), true);
   assert.equal(completionMeetsCutoff("2026-07-30T00:15:00+07:00", "2026-07-30"), true);
+});
+
+test("ordinary completed tasks infer stable completion identity for manual awards", () => {
+  assert.deepEqual(inferOneTimeCompletion({
+    completed: true,
+    recurrence: null,
+    completedInstances: [],
+    completedDate: "2026-08-02"
+  }), { completionToken: "once", completionAt: "2026-08-02" });
+  assert.equal(inferOneTimeCompletion({
+    completed: true,
+    recurrence: "RRULE:FREQ=DAILY",
+    completedInstances: ["2026-08-02"],
+    completedDate: "2026-08-02"
+  }), null);
 });
 
 test("completion cutoff baselines old instances and preserves today for reconciliation", async () => {
@@ -1961,6 +1995,70 @@ test("unscored completions enter the needs-score queue when automatic AI scoring
   const result = await coordinator.reconcileAll();
   assert.equal(result.needsScore, 1);
   assert.equal(saved?.state, "needs-score");
+});
+
+test("completion observer ignores excluded internal Brain files", () => {
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  let scheduled = 0;
+  (globalThis as { window?: unknown }).window = {
+    setTimeout: () => { scheduled += 1; return 1; },
+    clearTimeout: () => undefined
+  };
+  try {
+    const coordinator = new ExpCompletionCoordinator(
+      {} as TaskService,
+      {} as ExpService,
+      {} as ExpAutoScorer,
+      {} as never,
+      () => ({ detectCompletedTaskExp: true }) as never,
+      async () => undefined,
+      () => undefined,
+      () => undefined,
+      (path) => path.startsWith("Brain/Coaching/")
+    );
+    coordinator.observe("Brain/Coaching/writing-session.md");
+    assert.equal(scheduled, 0);
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
+
+test("earned one-time tasks prune stale completion proposals without completion metadata", async () => {
+  const proposal: ExpCompletionProposal = {
+    id: completionProposalId("TaskNotes/Tasks/done.md", "once"),
+    path: "TaskNotes/Tasks/done.md",
+    title: "Done",
+    completionToken: "once",
+    completionAt: "2026-08-02",
+    detectedAt: "2026-08-02T00:00:00Z",
+    state: "needs-score"
+  };
+  let queued: ExpCompletionProposal[] = [proposal];
+  const settings = {
+    detectCompletedTaskExp: true,
+    completionExpCutoffDate: "2026-07-30",
+    completionExpSeen: {} as Record<string, string[]>,
+    autoAwardCompletedTaskExp: false,
+    autoScoreCompletedTaskExp: false
+  };
+  const coordinator = new ExpCompletionCoordinator(
+    {} as TaskService,
+    {
+      taskState: async () => ({ taskId: "task-1", state: "earned" }),
+      hasCompletion: async () => false
+    } as unknown as ExpService,
+    {} as ExpAutoScorer,
+    {
+      list: async () => queued,
+      remove: async () => { queued = []; }
+    } as never,
+    () => settings as never,
+    async () => undefined,
+    () => undefined,
+    () => undefined
+  );
+  assert.deepEqual(await coordinator.pending(), []);
+  assert.deepEqual(settings.completionExpSeen[proposal.path], ["once"]);
 });
 
 test("EXP streaks count unique award days and allow yesterday's streak to remain current", () => {

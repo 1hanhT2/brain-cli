@@ -131,6 +131,16 @@ export interface ExpGoalLane {
   progress: number;
 }
 
+export const inferOneTimeCompletion = (task: {
+  completed: boolean;
+  recurrence: string | null;
+  completedInstances: string[];
+  completedDate: string | null;
+}): { completionToken: "once"; completionAt?: string } | null =>
+  task.completed && !task.recurrence && task.completedInstances.length === 0
+    ? { completionToken: "once", ...(task.completedDate ? { completionAt: task.completedDate } : {}) }
+    : null;
+
 export const expRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
