@@ -99,8 +99,13 @@
 }
 
 .brain-cli-context-prefix,
-.brain-cli-context-model {
+.brain-cli-context-model,
+.brain-cli-context-mode {
   color: var(--brain-accent);
+}
+
+.brain-cli-context-mode {
+  color: var(--brain-warning);
 }
 
 .brain-cli-context-chat {

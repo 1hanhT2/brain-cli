@@ -1,4 +1,5 @@
 import type { ChatMessage } from "./openrouter";
+import type { InteractionMode } from "./plan-mode";
 
 export interface ChatState {
   id: string;
@@ -7,6 +8,7 @@ export interface ChatState {
   createdAt: string;
   updatedAt: string;
   model: string;
+  mode?: InteractionMode;
   messages: ChatMessage[];
 }
 
@@ -102,11 +104,13 @@ export const renderChatMarkdown = (state: ChatState): string => {
     `created: ${state.createdAt}`,
     `updated: ${state.updatedAt}`,
     `model: ${JSON.stringify(state.model)}`,
+    `mode: ${state.mode ?? "default"}`,
     "---",
     "",
     `# ${state.title}`,
     "",
     `> Model: \`${state.model}\`  `,
+    `> Mode: \`${state.mode ?? "default"}\`  `,
     `> Updated: ${state.updatedAt}`,
     "",
     `<!-- brain-cli-state:${encodeChatState(state)} -->`,

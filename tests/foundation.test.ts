@@ -40,6 +40,7 @@ import {
 import { chunkMatchesFilters, prepareMarkdownChunks } from "../src/markdown-chunks";
 import { cosineSimilarity, MemorySemanticStore } from "../src/semantic-store";
 import type { EmbeddingModel, SemanticChunkRecord } from "../src/semantic-types";
+import { detectsPlanningIntent, planModeSystemMessage } from "../src/plan-mode";
 import { SemanticIndexCoordinator } from "../src/semantic-index";
 import type { BrainSettings } from "../src/settings";
 import { MemoryLexicalIndexStore } from "../src/retrieval-store";
@@ -132,6 +133,26 @@ test("buffered OpenRouter completions preserve content and function calls", () =
     () => parseBufferedChatCompletion({ error: { message: "provider unavailable" } }),
     /provider unavailable/
   );
+});
+
+test("plan mode detects planning requests without hijacking execution requests", () => {
+  for (const prompt of [
+    "Plan how we should refactor the chat state",
+    "Help me plan a migration",
+    "Create an implementation plan for this feature",
+    "How should we approach this redesign?",
+    "Before we implement it, inspect the architecture"
+  ]) assert.equal(detectsPlanningIntent(prompt), true, prompt);
+
+  for (const prompt of [
+    "Implement the plan",
+    "Follow our plan and ship it",
+    "Update my planned EXP",
+    "Create a TaskNotes task"
+  ]) assert.equal(detectsPlanningIntent(prompt), false, prompt);
+
+  assert.match(planModeSystemMessage(), /read-only tools/i);
+  assert.match(planModeSystemMessage(), /Do not create, edit, rename, delete/i);
 });
 
 test("privacy and startup policies enforce behavior instead of source shape", () => {
@@ -833,6 +854,10 @@ test("task tools expose readable intent and result previews instead of raw JSON"
   assert.equal(result?.afterLabel, "Results");
   assert.match(result?.after ?? "", /\[200\] Read 15 pages — open · due 2026-07-31/);
   assert.equal(registry.displayName("add_task_dependency"), "Add task dependency");
+  assert.ok(registry.definitions("read").length > 0);
+  assert.ok(registry.definitions("read").every((definition) =>
+    registry.riskFor(definition.function.name) === "read"
+  ));
 });
 
 test("chat Markdown round-trips Unicode state while remaining readable", () => {
@@ -843,6 +868,7 @@ test("chat Markdown round-trips Unicode state while remaining readable", () => {
     createdAt: "2026-07-27T10:00:00.000Z",
     updatedAt: "2026-07-27T10:01:00.000Z",
     model: "openrouter/free",
+    mode: "plan",
     messages: [
       { role: "system", content: "System" },
       { role: "user", content: "Đọc 15 trang 📖" },
@@ -852,6 +878,7 @@ test("chat Markdown round-trips Unicode state while remaining readable", () => {
   const markdown = renderChatMarkdown(state);
   assert.match(markdown, /# Đọc Kinh Thánh/);
   assert.match(markdown, /## User/);
+  assert.match(markdown, /> Mode: `plan`/);
   assert.deepEqual(decodeChatState(markdown), state);
 });
 

@@ -6,6 +6,7 @@ Android-safe Obsidian agent foundation, derived selectively from OpenCode's inte
 
 - Obsidian chat `ItemView` with a command-first terminal interface.
 - Slash-command completion, combined `@` skill/file completion, keyboard history, and command-operated chats, models, skills, memory, indexing, and approvals.
+- Per-chat read-only plan mode via `Ctrl+Tab`, planning-intent detection, or `/plan`, with write tools removed and rejected while active.
 - Real multi-turn OpenRouter chat completions using Obsidian's cross-platform HTTP API and buffered rendering.
 - Stop-generation control that reaches model-invoked tools and ignores late network results.
 - Native OpenRouter tool calling with iterative tool-result feedback.
@@ -114,7 +115,10 @@ there is no separate browser preview to keep in sync.
 
 Type `/` to open the complete command list. Use `Tab` to complete, `↑` and
 `↓` to move through the list (it scrolls as needed) or input history, `Enter`
-to run, `Shift+Enter` for a newline, and `Ctrl+C` to stop generation.
+to run, `Shift+Enter` for a newline, `Ctrl+Tab` to switch between default and
+read-only plan mode, and `Ctrl+C` to stop generation. Planning phrases such as
+“help me plan” and “how should we approach…” automatically enable plan mode;
+use `/plan off` to return to default mode.
 Type `@` anywhere in a prompt to search installed skills and vault Markdown
 files. Use `↑`/`↓` to select and `Enter` or `Tab` to insert; `Escape` closes the
 picker. Files are inserted as `@[[full/vault/path.md]]`, so the model can call
@@ -131,6 +135,7 @@ for explicit activation, and `/skill exp history` is an EXP-view alias.
 /status
 /perf [reset]
 /new
+/plan [on|off|status]
 /chats [page] [query]
 /open <number|title>
 /rename <title>

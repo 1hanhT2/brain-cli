@@ -9,6 +9,7 @@ import {
   type ChatSummary
 } from "./chat-format";
 import type { PerformanceTracer } from "./performance";
+import type { InteractionMode } from "./plan-mode";
 
 interface CachedChatSummary {
   modifiedAt: number;
@@ -52,7 +53,7 @@ export class ChatStore {
     return summaries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  async create(title: string, model: string, messages: ChatState["messages"]): Promise<ChatState> {
+  async create(title: string, model: string, messages: ChatState["messages"], mode: InteractionMode = "default"): Promise<ChatState> {
     const timestamp = new Date().toISOString();
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const path = await this.uniquePath(title, id);
@@ -63,6 +64,7 @@ export class ChatStore {
       createdAt: timestamp,
       updatedAt: timestamp,
       model,
+      mode,
       messages
     };
     await this.app.vault.create(path, renderChatMarkdown(state));

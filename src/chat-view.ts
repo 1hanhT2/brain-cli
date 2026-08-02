@@ -30,6 +30,11 @@ import { parseSkillInvocation } from "./skill-invocation";
 import { extractFileMentions, fileMention, findAtQuery } from "./file-mentions";
 import type { ExpCompletionProposal } from "./exp-completion-core";
 import type { WritingCoachStatus, WritingPillar } from "./writing-coach";
+import {
+  detectsPlanningIntent,
+  planModeSystemMessage,
+  type InteractionMode
+} from "./plan-mode";
 
 export const BRAIN_VIEW_TYPE = "brain-cli-chat";
 
@@ -86,6 +91,7 @@ const BRAIN_COMMANDS: BrainCommand[] = [
   { name: "status", usage: "/status", description: "Show the active vault, chat, model, retrieval, and skills" },
   { name: "perf", usage: "/perf [reset]", description: "Show local plugin performance measurements" },
   { name: "new", usage: "/new", description: "Start a new chat" },
+  { name: "plan", usage: "/plan [on|off|status]", description: "Enable, disable, or inspect read-only plan mode" },
   { name: "chats", usage: "/chats [page] [query]", description: "List saved chats" },
   { name: "open", usage: "/open <number|title>", description: "Open a saved chat from /chats" },
   { name: "rename", usage: "/rename <title>", description: "Rename the current chat" },
@@ -231,6 +237,7 @@ export class BrainChatView extends ItemView {
   private statusEl!: HTMLElement;
   private contextChatEl!: HTMLElement;
   private contextModelEl!: HTMLElement;
+  private contextModeEl!: HTMLElement;
   private chatSelect!: HTMLSelectElement;
   private renameChatButton!: HTMLButtonElement;
   private deleteChatButton!: HTMLButtonElement;
@@ -251,6 +258,7 @@ export class BrainChatView extends ItemView {
   private activePartial = "";
   private activeMemoryContext: ChatMessage | null = null;
   private messages: ChatMessage[] = [createSystemMessage()];
+  private interactionMode: InteractionMode = "default";
   private currentChat: ChatState | null = null;
   private chatSummaries: ChatSummary[] = [];
   private readonly markdownComponents = new Map<HTMLElement, Component>();
@@ -345,6 +353,7 @@ export class BrainChatView extends ItemView {
     this.contextChatEl = contextRow.createSpan({ cls: "brain-cli-context-chat", text: "new" });
     contextRow.createSpan({ cls: "brain-cli-context-divider", text: "│" });
     this.contextModelEl = contextRow.createSpan({ cls: "brain-cli-context-model" });
+    this.contextModeEl = contextRow.createSpan({ cls: "brain-cli-context-mode" });
     this.modelDetailsEl = contextRow.createSpan({ cls: "brain-cli-model-details" });
 
     // Native controls remain as an accessibility/state fallback. The terminal
@@ -410,7 +419,7 @@ export class BrainChatView extends ItemView {
     });
     this.commandHintEl = composer.createDiv({
       cls: "brain-cli-command-hint",
-      text: "enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop"
+      text: "enter run  ·  tab complete  ·  ctrl+tab mode  ·  ↑ history  ·  ctrl+c stop"
     });
     const submit = async () => {
       if (this.expPendingPickerEl) {
@@ -529,6 +538,11 @@ export class BrainChatView extends ItemView {
         this.abortController.abort();
         return;
       }
+      if (event.ctrlKey && event.key === "Tab" && !this.abortController) {
+        event.preventDefault();
+        void this.setInteractionMode(this.interactionMode === "plan" ? "default" : "plan", "shortcut");
+        return;
+      }
       if (event.key === "Tab" && this.visibleSuggestions.length > 0) {
         event.preventDefault();
         this.completeSuggestion();
@@ -567,6 +581,9 @@ export class BrainChatView extends ItemView {
       this.addCommandEcho(text);
       await this.executeCommand(text);
       return;
+    }
+    if (this.interactionMode === "default" && detectsPlanningIntent(text)) {
+      await this.setInteractionMode("plan", "keyword");
     }
     const mentionedPaths = extractFileMentions(text);
     const mentionedFiles: TFile[] = [];
@@ -652,7 +669,11 @@ export class BrainChatView extends ItemView {
     this.abortController = new AbortController();
     this.setGenerating(true);
     try {
-      const compacted = await this.plugin.compactChatContext(this.messages, this.abortController.signal);
+      const compacted = await this.plugin.compactChatContext(
+        this.messages,
+        this.abortController.signal,
+        this.interactionMode === "plan"
+      );
       if (compacted.compacted) {
         this.messages = compacted.messages;
         await this.persistCurrentChat();
@@ -726,6 +747,7 @@ export class BrainChatView extends ItemView {
             `vault      ${this.app.vault.getName()}`,
             `chat       ${this.currentChat?.title ?? "new / unsaved"}`,
             `model      ${this.plugin.settings.interactiveModel}`,
+            `mode       ${this.interactionMode}${this.interactionMode === "plan" ? " · read-only tools" : ""}`,
             `retrieval  ${retrieval.ready ? "ready" : "building"} · ${retrieval.indexedNotes} notes · ${retrieval.chunks} chunks`,
             `lexical    ${retrieval.lexicalProvider}${retrieval.omnisearch.enabled && !retrieval.omnisearch.available ? " · Omnisearch unavailable, fallback active" : ""}`,
             `index load ${retrieval.persistence.skippedForOmnisearch ? "skipped · Omnisearch active" : `${retrieval.persistence.restoredNotes} cached · ${retrieval.persistence.updatedNotes} updated · ${retrieval.persistence.removedNotes} removed`}`,
@@ -754,6 +776,9 @@ export class BrainChatView extends ItemView {
         case "new":
           this.startNewChat();
           await this.addTerminalOutput("new chat ready");
+          return;
+        case "plan":
+          await this.planCommand(parts);
           return;
         case "chats":
           await this.listChats(parts);
@@ -902,6 +927,38 @@ export class BrainChatView extends ItemView {
       "",
       this.paginationLine(paged, "commands", (target) => `/help ${target}`)
     ].join("\n"));
+  }
+
+  private async planCommand(parts: string[]): Promise<void> {
+    const action = parts[0]?.toLocaleLowerCase() ?? "on";
+    if (parts.length > 1 || !["on", "off", "status", "toggle"].includes(action)) {
+      await this.addTerminalOutput("usage: `/plan [on|off|status]`", "error");
+      return;
+    }
+    if (action === "status") {
+      await this.addTerminalOutput(`interaction mode: **${this.interactionMode}**`);
+      return;
+    }
+    const mode = action === "toggle"
+      ? (this.interactionMode === "plan" ? "default" : "plan")
+      : action === "off" ? "default" : "plan";
+    await this.setInteractionMode(mode, "command");
+  }
+
+  private async setInteractionMode(mode: InteractionMode, source: "command" | "shortcut" | "keyword"): Promise<void> {
+    if (this.interactionMode === mode) {
+      if (source === "command") await this.addTerminalOutput(`${mode} mode is already active`);
+      return;
+    }
+    this.interactionMode = mode;
+    if (this.currentChat) {
+      this.currentChat.mode = mode;
+      await this.persistCurrentChat();
+    }
+    this.renderPromptContext();
+    this.statusEl.setText(mode === "plan" ? "plan mode" : "ready");
+    const reason = source === "shortcut" ? "Ctrl+Tab" : source === "keyword" ? "planning intent detected" : "/plan";
+    await this.addTerminalOutput(`${mode === "plan" ? "enabled read-only plan mode" : "returned to default mode"} · ${reason}`);
   }
 
   private async listChats(parts: string[]): Promise<void> {
@@ -2568,7 +2625,8 @@ export class BrainChatView extends ItemView {
           assistantBody.setText(this.activePartial);
           assistantBody.scrollIntoView({ block: "end" });
         },
-        signal
+        signal,
+        this.interactionMode === "plan"
       );
       assistantBody.removeClass("brain-cli-stream-cursor");
 
@@ -2624,12 +2682,15 @@ export class BrainChatView extends ItemView {
   }
 
   private messagesForRequest(): ChatMessage[] {
-    if (!this.activeMemoryContext) return this.messages;
+    const contexts: ChatMessage[] = [];
+    if (this.interactionMode === "plan") contexts.push({ role: "system", content: planModeSystemMessage() });
+    if (this.activeMemoryContext) contexts.push(this.activeMemoryContext);
+    if (contexts.length === 0) return this.messages;
     const firstSystem = this.messages.findIndex((message) => message.role === "system");
     const insertion = firstSystem < 0 ? 0 : firstSystem + 1;
     return [
       ...this.messages.slice(0, insertion),
-      this.activeMemoryContext,
+      ...contexts,
       ...this.messages.slice(insertion)
     ];
   }
@@ -2641,6 +2702,14 @@ export class BrainChatView extends ItemView {
       card.setStatus("unknown tool", "error");
       card.setError(`Brain does not recognize the requested tool: ${call.function.name}`);
       return { value: { ok: false, error: `Unknown tool: ${call.function.name}` }, sensitive: false };
+    }
+    if (this.interactionMode === "plan" && risk !== "read") {
+      card.setStatus("blocked by plan mode", "error");
+      card.setError("Plan mode permits read-only tools. Exit with /plan off before making changes.");
+      return {
+        value: { ok: false, error: "Write tool blocked by read-only plan mode." },
+        sensitive: false
+      };
     }
     let inspection;
     try {
@@ -2840,7 +2909,8 @@ export class BrainChatView extends ItemView {
     this.currentChat = await this.plugin.chatStore.create(
       titleFromMessage(firstMessage),
       this.plugin.settings.interactiveModel,
-      this.messages
+      this.messages,
+      this.interactionMode
     );
     await this.refreshChatSummaries();
   }
@@ -2968,6 +3038,7 @@ export class BrainChatView extends ItemView {
     this.currentChat = await this.plugin.chatStore.save({
       ...this.currentChat,
       model: this.plugin.settings.interactiveModel,
+      mode: this.interactionMode,
       messages: persistedMessages
     });
     await this.refreshChatSummaries(false);
@@ -3021,6 +3092,7 @@ export class BrainChatView extends ItemView {
       this.sensitiveAssistantMessages.clear();
       this.sensitiveContextActive = false;
       this.messages = this.currentChat.messages;
+      this.interactionMode = this.currentChat.mode === "plan" ? "plan" : "default";
       this.transcriptVisibleStart = null;
       this.refreshBaseSystemMessage();
       this.plugin.settings.interactiveModel = this.currentChat.model;
@@ -3046,6 +3118,7 @@ export class BrainChatView extends ItemView {
     this.sensitiveAssistantMessages.clear();
     this.sensitiveContextActive = false;
     this.messages = [createSystemMessage()];
+    this.interactionMode = "default";
     this.transcriptVisibleStart = null;
     this.disposeMarkdownComponents();
     this.transcriptEl.empty();
@@ -3201,6 +3274,10 @@ export class BrainChatView extends ItemView {
     this.contextChatEl.title = this.currentChat?.path ?? "Unsaved chat";
     this.contextModelEl.setText(this.plugin.settings.interactiveModel);
     this.contextModelEl.title = this.plugin.settings.interactiveModel;
+    this.contextModeEl.setText(this.interactionMode === "plan" ? "[plan]" : "[default]");
+    this.contextModeEl.title = this.interactionMode === "plan"
+      ? "Read-only plan mode (Ctrl+Tab to switch)"
+      : "Default mode (Ctrl+Tab to switch)";
   }
 
   private rememberInput(text: string): void {
@@ -3398,7 +3475,7 @@ export class BrainChatView extends ItemView {
     this.inputEl.setAttribute("aria-expanded", "false");
     this.inputEl.removeAttribute("aria-activedescendant");
     if (!this.pendingApproval && !this.configMenuEl && !this.folderPickerEl && !this.expPendingPickerEl) {
-      this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
+      this.commandHintEl.setText("enter run  ·  tab complete  ·  ctrl+tab mode  ·  ↑ history  ·  ctrl+c stop");
     }
   }
 
@@ -3640,7 +3717,7 @@ export class BrainChatView extends ItemView {
     this.inputEl.readOnly = generating && !this.pendingApproval;
     if (!generating) {
       this.inputEl.placeholder = "ask the vault or type /help";
-      this.commandHintEl.setText("enter run  ·  tab complete  ·  ↑ history  ·  ctrl+c stop");
+      this.commandHintEl.setText("enter run  ·  tab complete  ·  ctrl+tab mode  ·  ↑ history  ·  ctrl+c stop");
     }
   }
 

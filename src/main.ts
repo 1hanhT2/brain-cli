@@ -494,10 +494,10 @@ export default class BrainCliPlugin extends Plugin {
     return this.modelCatalog.find((model) => model.id === modelId);
   }
 
-  async compactChatContext(messages: ChatMessage[], signal: AbortSignal): Promise<ContextCompactionResult> {
+  async compactChatContext(messages: ChatMessage[], signal: AbortSignal, readOnly = false): Promise<ContextCompactionResult> {
     const model = this.getModel();
     const contextLength = model?.context_length ?? model?.top_provider?.context_length ?? 32_768;
-    const toolDefinitionTokens = Math.ceil(JSON.stringify(this.activeRequestTools()).length / 4);
+    const toolDefinitionTokens = Math.ceil(JSON.stringify(this.activeRequestTools(readOnly)).length / 4);
     const effectiveContextLength = Math.max(4_096, contextLength - toolDefinitionTokens);
     return compactConversation(messages, effectiveContextLength, async (transcript) =>
       this.openRouter.completeText(
@@ -512,19 +512,21 @@ export default class BrainCliPlugin extends Plugin {
   streamChatCompletion(
     messages: ChatMessage[],
     onDelta: (delta: string) => void,
-    signal: AbortSignal
+    signal: AbortSignal,
+    readOnly = false
   ) {
     return this.openRouter.streamChatCompletion(
       this.settings.interactiveModel,
       messages,
-      this.activeRequestTools(),
+      this.activeRequestTools(readOnly),
       onDelta,
       signal
     );
   }
 
-  private activeRequestTools() {
-    return assembleOpenRouterTools(this.agentTools.definitions(), this.settings.useWebSearch);
+  private activeRequestTools(readOnly = false) {
+    const definitions = readOnly ? this.agentTools.definitions("read") : this.agentTools.definitions();
+    return assembleOpenRouterTools(definitions, this.settings.useWebSearch);
   }
 
   reportError(error: unknown): void {

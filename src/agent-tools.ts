@@ -1366,8 +1366,10 @@ export class AgentToolRegistry {
     this.tools = new Map(registered.map((tool) => [tool.definition.function.name, tool]));
   }
 
-  definitions(): ToolDefinition[] {
-    return [...this.tools.values()].map((tool) => tool.definition);
+  definitions(risk?: ToolRisk): ToolDefinition[] {
+    return [...this.tools.values()]
+      .filter((tool) => !risk || tool.risk === risk)
+      .map((tool) => tool.definition);
   }
 
   riskFor(name: string): ToolRisk | null {
