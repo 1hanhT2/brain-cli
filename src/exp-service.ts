@@ -26,11 +26,20 @@ import { validateExpGoalLanes, type ExpGoalLaneDefinition } from "./exp-goals-co
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const EXP_SCHEMA_VERSION = 2;
-const EXP_FRONTMATTER_KEYS = [
+export const EXP_FRONTMATTER_KEYS = [
   "title", "exp_schema", "exp", "exp_state", "exp_confidence", "exp_reason",
   "exp_factors", "exp_scored_at", "exp_awarded_at", "exp_revision",
   "exp_task_id", "exp_last_completion_id"
 ];
+
+export interface ExpResetPreview {
+  tasks: number;
+  artifacts: number;
+}
+
+export interface ExpResetResult extends ExpResetPreview {
+  skippedTasks: string[];
+}
 
 const uniqueId = (): string =>
   typeof crypto?.randomUUID === "function"
@@ -112,6 +121,36 @@ export class ExpService {
 
   async latestEvent(path: string): Promise<ExpLedgerEntry | null> {
     return (await this.history()).find((entry) => entry.taskPath === path) ?? null;
+  }
+
+  async resetPreview(): Promise<ExpResetPreview> {
+    return {
+      tasks: this.expTaskFiles().length,
+      artifacts: this.expArtifactFiles().length
+    };
+  }
+
+  async resetAll(): Promise<ExpResetResult> {
+    const taskFiles = this.expTaskFiles();
+    const artifactFiles = this.expArtifactFiles();
+    const skippedTasks: string[] = [];
+    let tasks = 0;
+    for (const file of taskFiles) {
+      const frontmatter = await this.frontmatter(file);
+      const title = expString(frontmatter.title);
+      try {
+        await this.vaultTools.restoreFrontmatter(
+          file.path,
+          title ? { title: stripExpTitlePrefix(title) } : {},
+          EXP_FRONTMATTER_KEYS
+        );
+        tasks += 1;
+      } catch {
+        skippedTasks.push(file.path);
+      }
+    }
+    for (const file of artifactFiles) await this.vaultTools.trashMarkdown(file.path);
+    return { tasks, artifacts: artifactFiles.length, skippedTasks };
   }
 
   async record(input: ExpRecordInput, signal?: AbortSignal): Promise<{
@@ -538,6 +577,25 @@ export class ExpService {
       tags,
       projects
     };
+  }
+
+  private expTaskFiles(): TFile[] {
+    return this.app.vault.getMarkdownFiles().filter((file) => {
+      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!frontmatter || ["exp-entry", "exp-goal", "exp-completion-proposal"].includes(frontmatter.type)) {
+        return false;
+      }
+      return ["exp_schema", "exp_state", "exp_task_id"].some((key) =>
+        Object.prototype.hasOwnProperty.call(frontmatter, key)
+      );
+    });
+  }
+
+  private expArtifactFiles(): TFile[] {
+    const root = normalizePath(this.getExpRoot()).replace(/^\/+|\/+$/g, "");
+    return this.app.vault.getMarkdownFiles().filter((file) =>
+      file.path.startsWith(`${root}/`)
+    );
   }
 
   private ledgerPath(entry: ExpLedgerEntry): string {

@@ -1787,6 +1787,40 @@ export class BrainChatView extends ItemView {
       ].join("\n"));
       return;
     }
+    if (action === "reset") {
+      if (parts.length > 2 || (parts.length === 2 && parts[1] !== "--confirm")) {
+        await this.addTerminalOutput("usage: `@exp reset [--confirm]`", "error");
+        return;
+      }
+      const preview = await this.plugin.previewExpReset();
+      if (parts[1] !== "--confirm") {
+        await this.addTerminalOutput([
+          "## Reset all EXP data",
+          "",
+          `This will clear EXP metadata from **${preview.tasks} task${preview.tasks === 1 ? "" : "s"}**, move **${preview.artifacts} ledger/goal artifact${preview.artifacts === 1 ? "" : "s"}** and **${preview.proposals} pending proposal${preview.proposals === 1 ? "" : "s"}** to recoverable Obsidian trash, and clear local EXP queues.`,
+          "",
+          "Existing completions will be baselined so they are not awarded again. Unrelated task fields and automatic EXP settings are preserved.",
+          "",
+          "Run `@exp reset --confirm` to proceed."
+        ].join("\n"));
+        return;
+      }
+      this.statusEl.setText("resetting EXP data…");
+      const result = await this.plugin.resetExpData();
+      this.statusEl.setText("ready");
+      await this.addTerminalOutput([
+        "## EXP data reset complete",
+        "",
+        `Cleared EXP metadata from **${result.tasks} task${result.tasks === 1 ? "" : "s"}**.`,
+        `Moved **${result.artifacts} ledger/goal artifact${result.artifacts === 1 ? "" : "s"}** and **${result.proposals} pending proposal${result.proposals === 1 ? "" : "s"}** to recoverable Obsidian trash.`,
+        "Cleared automatic scoring queues and baselined existing completions.",
+        ...(result.skippedTasks.length > 0 ? [
+          "",
+          `Could not clear ${result.skippedTasks.length} excluded task${result.skippedTasks.length === 1 ? "" : "s"}: ${result.skippedTasks.map((path) => `\`${path}\``).join(", ")}`
+        ] : [])
+      ].join("\n"));
+      return;
+    }
     if (action === "task") {
       const path = parts.slice(1).join(" ");
       if (!path) {
@@ -1825,7 +1859,7 @@ export class BrainChatView extends ItemView {
       return;
     }
     await this.addTerminalOutput(
-      "usage: `@exp [status|cutoff [today|YYYY-MM-DD|off]|check|pending|unscored [page]|sync|score-completed|analytics [days]|goals|history [page]|review [days]|task <path>|calibrate]`",
+      "usage: `@exp [status|cutoff [today|YYYY-MM-DD|off]|check|pending|unscored [page]|sync|score-completed|analytics [days]|goals|history [page]|review [days]|reset [--confirm]|task <path>|calibrate]`",
       "error"
     );
   }

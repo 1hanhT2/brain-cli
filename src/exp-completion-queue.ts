@@ -70,6 +70,12 @@ export class ExpCompletionQueueStore {
     if (file instanceof TFile) await this.app.fileManager.trashFile(file);
   }
 
+  async clear(): Promise<number> {
+    const proposals = await this.list();
+    for (const proposal of proposals) await this.remove(proposal);
+    return proposals.length;
+  }
+
   async renameTask(oldPath: string, newPath: string): Promise<void> {
     for (const proposal of await this.list()) {
       if (proposal.path !== oldPath) continue;

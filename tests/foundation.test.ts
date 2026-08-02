@@ -160,6 +160,9 @@ test("EXP routing preserves exact subcommands and sends natural language to the 
   assert.equal(isLocalExpCommand(["pending"]), true);
   assert.equal(isLocalExpCommand(["history", "2"]), true);
   assert.equal(isLocalExpCommand(["unscored"]), true);
+  assert.equal(isLocalExpCommand(["reset"]), true);
+  assert.equal(isLocalExpCommand(["reset", "--confirm"]), true);
+  assert.equal(isLocalExpCommand(["reset", "now"]), false);
   assert.equal(isLocalExpCommand(["sync"]), true);
   assert.equal(isLocalExpCommand(["pending", "items", "from", "today"]), false);
   assert.equal(isLocalExpCommand(["status", "of", "my", "latest", "task"]), false);
@@ -1638,6 +1641,8 @@ test("bundled EXP skill has valid metadata, workflow, references, and calibratio
   assert.match(EXP_SKILL, /value: pending/);
   assert.match(EXP_SKILL, /value: unscored/);
   assert.match(EXP_SKILL, /value: sync/);
+  assert.match(EXP_SKILL, /value: reset/);
+  assert.match(EXP_SKILL, /@exp reset --confirm/);
   assert.match(EXP_SKILL, /completion occurrence and timestamp/);
   assert.match(EXP_SKILL, /Every actionable task should have an expected value before completion/);
   assert.match(EXP_SKILL, /Never answer that it must be completed before it can receive an EXP value/);

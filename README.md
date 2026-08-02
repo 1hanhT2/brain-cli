@@ -253,6 +253,12 @@ explicit scoring session. Brain reads each task before scoring it and still
 pauses on a separate approval preview for each award, so a batch never creates
 unreviewed EXP writes.
 
+`@exp reset` previews a complete EXP reset. `@exp reset --confirm` removes
+EXP-owned task metadata, moves ledger, goal, and pending proposal notes to
+recoverable Obsidian trash, clears local queues, and baselines existing
+completions so historical work is not immediately re-awarded. Other TaskNotes
+fields and automatic EXP settings are preserved.
+
 When automatic award writes are disabled, `@exp pending` opens a CLI checklist.
 Use arrows to navigate, Space to select ready proposals, and Enter to show one
 batch approval preview. `/approve` records the selected awards; `/deny` leaves

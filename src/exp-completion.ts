@@ -99,6 +99,17 @@ export class ExpCompletionCoordinator {
     await this.persistLocalState();
   }
 
+  async resetBaseline(): Promise<void> {
+    const tasks = await this.taskService.list({ includeCompleted: true, limit: 10_000, internalUnbounded: true });
+    this.getSettings().completionExpSeen = {};
+    for (const task of tasks) {
+      const tokens = observationsFor(task).map((item) => item.token);
+      if (tokens.length > 0) this.getSettings().completionExpSeen[task.path] = [...new Set(tokens)];
+    }
+    this.getSettings().completionExpBaselineReady = true;
+    await this.persistLocalState();
+  }
+
   async reconcileAll(): Promise<ExpCompletionReconcileResult> {
     await this.pruneResolved();
     const tasks = await this.taskService.list({ includeCompleted: true, limit: 10_000, internalUnbounded: true });

@@ -375,6 +375,29 @@ export default class BrainCliPlugin extends Plugin {
     else this.expAutoScorer.resumeQueued();
   }
 
+  async previewExpReset(): Promise<{ tasks: number; artifacts: number; proposals: number }> {
+    const preview = await this.expService.resetPreview();
+    return {
+      ...preview,
+      proposals: (await this.expCompletionQueue.list()).length
+    };
+  }
+
+  async resetExpData(): Promise<{
+    tasks: number;
+    artifacts: number;
+    proposals: number;
+    skippedTasks: string[];
+  }> {
+    this.expAutoScorer.cancel();
+    const result = await this.expService.resetAll();
+    const proposals = await this.expCompletionQueue.clear();
+    this.settings.autoExpQueue = [];
+    await this.expCompletion.resetBaseline();
+    await this.saveSettings();
+    return { ...result, proposals };
+  }
+
   async setCompletionDetectionEnabled(enabled: boolean): Promise<void> {
     if (enabled && !this.settings.completionExpBaselineReady) {
       await this.expCompletion.establishBaseline();

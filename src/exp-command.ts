@@ -7,6 +7,7 @@ export const isLocalExpCommand = (parts: string[]): boolean => {
   if (["status", "check", "pending", "score-completed", "goals", "calibrate", "sync"].includes(action)) {
     return parts.length === 1;
   }
+  if (action === "reset") return parts.length === 1 || (parts.length === 2 && parts[1] === "--confirm");
   if (action === "cutoff") return parts.length <= 2;
   if (["analytics", "review", "history", "unscored"].includes(action)) {
     return parts.length === 1 || (parts.length === 2 && positiveInteger(parts[1]));
