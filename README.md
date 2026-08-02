@@ -243,6 +243,11 @@ requeues open unscored tasks while reconciling completed-task awards. Automatic
 planned-score failures are retained locally with their last error until a sync
 retries them or the task is resolved.
 
+Open tasks receive planned EXP so their expected reward is visible before work
+begins. Completion promotes that planned value to earned EXP. When automatic
+task scoring is enabled, startup also reconciles open tasks that missed their
+creation event, preventing them from remaining indefinitely unscored.
+
 `@exp score-completed` turns every `needs-score` completion proposal into one
 explicit scoring session. Brain reads each task before scoring it and still
 pauses on a separate approval preview for each award, so a batch never creates

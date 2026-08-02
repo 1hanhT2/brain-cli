@@ -1,7 +1,7 @@
 {
   "id": "brain-cli",
   "name": "Brain CLI",
-  "version": "0.13.7",
+  "version": "0.13.8",
   "minAppVersion": "1.11.4",
   "description": "An OpenRouter-powered CLI-style vault agent with safe note and TaskNotes tools.",
   "author": "Thanh12",

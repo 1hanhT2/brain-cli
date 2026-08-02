@@ -52,6 +52,8 @@ Evaluate meaningful output while retaining time only as supporting context.
 
 The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event. Never award the same completion twice. The completion cutoff applies to automatic detection and \`@exp check\`; completions before it are ignored while the cutoff date itself is included. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion.
 
+Every actionable task should have an expected value before completion. For an open task, \`exp\` is planned EXP: what the task is expected to earn. Completion changes that planned value to earned EXP; it is not the event that first gives the task a value. If the user asks about an open task whose EXP is null, inspect and plan its EXP now with \`record_task_exp\`. Never answer that it must be completed before it can receive an EXP value, and never treat automatic scoring being enabled as proof that a missing score will appear later.
+
 When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.
 `;
 

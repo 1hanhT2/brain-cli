@@ -260,6 +260,9 @@ export default class BrainCliPlugin extends Plugin {
         });
         this.deferStartup(700, async () => {
           this.expAutoScorer.resumeQueued();
+          if (this.settings.autoScoreTaskExp) {
+            await this.expAutoScorer.reconcileUnscored();
+          }
           await this.expCompletion.initialize();
         });
         this.deferStartup(900, async () => {

@@ -1639,6 +1639,8 @@ test("bundled EXP skill has valid metadata, workflow, references, and calibratio
   assert.match(EXP_SKILL, /value: unscored/);
   assert.match(EXP_SKILL, /value: sync/);
   assert.match(EXP_SKILL, /completion occurrence and timestamp/);
+  assert.match(EXP_SKILL, /Every actionable task should have an expected value before completion/);
+  assert.match(EXP_SKILL, /Never answer that it must be completed before it can receive an EXP value/);
   assert.match(EXP_SKILL, /25 to 1000/);
   assert.match(EXP_SKILL, /references\/rubric\.md/);
   assert.match(EXP_SKILL, /references\/examples\.md/);
