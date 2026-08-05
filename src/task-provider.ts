@@ -1,3 +1,9 @@
+import {
+  completionPercentFromTitle,
+  stripCompletionPercentMarker,
+  type ExpCompletionPercent
+} from "./exp-completion-percent";
+
 export type TaskProviderKind = "tasknotes" | "markdown";
 
 export interface BrainTask {
@@ -13,6 +19,7 @@ export interface BrainTask {
   timeEstimate: number | null;
   exp: number | null;
   expState: "planned" | "earned" | null;
+  expCompletionPercent: ExpCompletionPercent | null;
   recurrence: string | null;
   completedDate: string | null;
   completedInstances: string[];
@@ -78,6 +85,16 @@ export const citationForTask = (path: string): string => `[[${path.replace(/\.md
 
 export const stripExpTitlePrefix = (title: string): string =>
   title.replace(/^\[\d{1,4}\]\s*/, "").trim();
+
+export const formatExpCompletionTitle = (
+  title: string,
+  completionPercent: ExpCompletionPercent,
+  exp: number | null,
+  maxLength = 100
+): string => {
+  const marked = `[${completionPercent}%] ${stripCompletionPercentMarker(stripExpTitlePrefix(title))}`.trim();
+  return exp === null ? marked : formatExpTaskTitle(marked, exp, maxLength);
+};
 
 export const formatExpTaskTitle = (title: string, exp: number, maxLength = 100): string => {
   const prefix = `[${exp}] `;

@@ -1,5 +1,6 @@
 export type ExpAction = "plan" | "award" | "recalibrate";
 export type ExpScoringSource = "manual" | "manual-ai" | "background-ai" | "planned-reuse";
+import { isExpCompletionPercent, type ExpCompletionPercent } from "./exp-completion-percent";
 
 export interface ExpFactors {
   output: string;
@@ -28,6 +29,7 @@ export interface ExpRecordInput {
   completionTokens?: number;
   costUsd?: number;
   rubricVersion?: number;
+  completionPercent?: ExpCompletionPercent;
 }
 
 export interface TaskExpState {
@@ -42,6 +44,8 @@ export interface TaskExpState {
   revision: number;
   taskId: string;
   lastCompletionId: string | null;
+  plannedValue?: number;
+  completionPercent?: ExpCompletionPercent;
 }
 
 export interface ExpLedgerEntry {
@@ -70,6 +74,7 @@ export interface ExpLedgerEntry {
   rubricVersion?: number;
   tags?: string[];
   projects?: string[];
+  completionPercent?: ExpCompletionPercent;
 }
 
 export interface ExpProgress {
@@ -197,6 +202,9 @@ export const validateExpInput = (input: ExpRecordInput): ExpRecordInput => {
   }
   if (!Number.isInteger(input.value) || input.value < 25 || input.value > 1000 || input.value % 25 !== 0) {
     throw new Error("EXP must be 25-1000 and rounded to the nearest 25.");
+  }
+  if (input.completionPercent !== undefined && !isExpCompletionPercent(input.completionPercent)) {
+    throw new Error("EXP completion percentage must be one of 25, 50, 75, or 100.");
   }
   if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) {
     throw new Error("EXP confidence must be between 0 and 1.");

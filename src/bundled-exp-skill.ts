@@ -14,7 +14,7 @@ completions:
     description: Review pending completion awards
   - value: unscored
     description: List tasks without planned or earned EXP
-  - value: sync
+  - value: reconcile
     description: Reconcile unscored tasks and completed-task EXP
   - value: reset
     description: Preview a complete EXP data reset
@@ -52,7 +52,7 @@ Evaluate meaningful output while retaining time only as supporting context.
 10. Use \`get_exp_progress\` and \`review_exp_calibration\` for progress and consistency reviews.
 11. Read \`references/goals.md\` before creating or reviewing a balanced EXP goal. Report both overall progress and every required lane.
 
-Use \`@exp reset\` to preview a full reset and \`@exp reset --confirm\` only after the user explicitly chooses to proceed. A reset removes EXP-owned task metadata, moves ledger, goal, and pending proposal notes to recoverable Obsidian trash, clears local EXP queues, and baselines existing completions so they are not re-awarded. It preserves unrelated task fields and automation settings.
+Use \`@exp reset\` to preview a full reset and \`@exp reset --confirm\` only after the user explicitly chooses to proceed. A reset removes EXP-owned task metadata, moves ledger, goal, and pending proposal notes to recoverable Obsidian trash, clears local EXP queues, and baselines existing completions so they are not re-awarded. It preserves unrelated task fields and automation settings. If any task metadata cannot be cleared, ledger and goal artifacts remain in place so that task keeps its audit history; report the affected task and tell the user to resolve it before retrying.
 
 The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event. Never award the same completion twice. The completion cutoff applies to automatic detection and \`@exp check\`; completions before it are ignored while the cutoff date itself is included. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion.
 

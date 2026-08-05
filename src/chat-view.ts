@@ -7,6 +7,7 @@ import {
   Setting,
   TFile,
   TFolder,
+  moment,
   normalizePath,
   setIcon,
   type App,
@@ -14,7 +15,7 @@ import {
 } from "obsidian";
 import type BrainCliPlugin from "./main";
 import type { ChatMessage, ToolCall } from "./openrouter";
-import { requiresApproval } from "./permissions";
+import { isVaultPathSafe, requiresApproval } from "./permissions";
 import type { ToolRisk, OpenRouterModel } from "./types";
 import type { EmbeddingModel, RetrievalMode, SemanticIndexStatus } from "./semantic-types";
 import { titleFromMessage, type ChatState, type ChatSummary } from "./chat-format";
@@ -35,7 +36,20 @@ import {
   planModeSystemMessage,
   type InteractionMode
 } from "./plan-mode";
-import { isLocalExpCommand } from "./exp-command";
+import { isLocalExpCommand, isRemovedExpCommand } from "./exp-command";
+import {
+  findNaturalDateAtQuery,
+  naturalDateCandidates,
+  type NaturalDateCandidate
+} from "./date-mentions";
+import {
+  createDailyNoteSafely,
+  dailyNotePath,
+  dailyTemplatePaths,
+  parseDailyNoteSettings,
+  renderDailyTemplate,
+  type DailyNoteSettings
+} from "./daily-note-core";
 
 export const BRAIN_VIEW_TYPE = "brain-cli-chat";
 
@@ -46,13 +60,18 @@ interface BrainCommand {
 }
 
 interface InputSuggestion {
-  kind: "command" | "skill" | "file";
+  kind: "command" | "skill" | "file" | "date" | "daily-note-create";
   name: string;
   usage: string;
   description: string;
   completion?: string;
   replaceStart?: number;
   replaceEnd?: number;
+  dailyNoteCreation?: {
+    path: string;
+    timestamp: number;
+    template: string;
+  };
 }
 
 interface ConfigMenuItem {
@@ -75,6 +94,9 @@ const WRITING_COACH_LOCAL_ACTIONS = new Set(["status", "check", "stop"]);
 const EMBEDDING_MANAGEMENT_ACTIONS = new Set(["status", "refresh", "delete", "pause", "resume", "cancel"]);
 const TRANSCRIPT_INITIAL_MESSAGES = 40;
 const TRANSCRIPT_PAGE_MESSAGES = 40;
+const obsidianMoment = moment as unknown as (input?: Date | number) => {
+  format: (format: string) => string;
+};
 const localDateKey = (date = new Date()): string => [
   date.getFullYear(),
   String(date.getMonth() + 1).padStart(2, "0"),
@@ -202,7 +224,13 @@ class ConfirmModal extends Modal {
   private resolve!: (value: boolean) => void;
   readonly result = new Promise<boolean>((resolve) => { this.resolve = resolve; });
 
-  constructor(app: App, private readonly heading: string, private readonly message: string) {
+  constructor(
+    app: App,
+    private readonly heading: string,
+    private readonly message: string,
+    private readonly confirmLabel = "Move to vault trash",
+    private readonly confirmClass = "mod-warning"
+  ) {
     super(app);
   }
 
@@ -211,7 +239,7 @@ class ConfirmModal extends Modal {
     this.contentEl.createEl("p", { text: this.message });
     const actions = this.contentEl.createDiv({ cls: "modal-button-container" });
     actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.finish(false));
-    actions.createEl("button", { text: "Move to vault trash", cls: "mod-warning" }).addEventListener("click", () =>
+    actions.createEl("button", { text: this.confirmLabel, cls: this.confirmClass }).addEventListener("click", () =>
       this.finish(true)
     );
   }
@@ -271,6 +299,7 @@ export class BrainChatView extends ItemView {
   private suggestionIndex = 0;
   private visibleSuggestions: InputSuggestion[] = [];
   private skillSuggestionsLoading = false;
+  private dailyNoteSettings: DailyNoteSettings | null = null;
   private lastModelResults: OpenRouterModel[] = [];
   private lastEmbeddingResults: EmbeddingModel[] = [];
   private lastChatResults: ChatSummary[] = [];
@@ -321,6 +350,7 @@ export class BrainChatView extends ItemView {
       this.transcriptEl.setAttribute("aria-label", "Brain CLI conversation");
       this.renderEmptyState();
       this.renderComposer();
+      await this.refreshDailyNoteSettings();
       await this.refreshChatSummaries();
       this.unsubscribeSemantic = this.plugin.semanticIndex.subscribe((status) => this.renderSemanticStatus(status));
     } finally {
@@ -545,7 +575,7 @@ export class BrainChatView extends ItemView {
       }
       if (event.key === "Tab" && this.visibleSuggestions.length > 0) {
         event.preventDefault();
-        this.completeSuggestion();
+        void this.completeSuggestion();
         return;
       }
       if ((event.key === "ArrowUp" || event.key === "ArrowDown") && !event.shiftKey) {
@@ -567,7 +597,7 @@ export class BrainChatView extends ItemView {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         if (this.visibleSuggestions.length > 0) {
-          this.completeSuggestion();
+          void this.completeSuggestion();
           return;
         }
         void submit();
@@ -625,6 +655,11 @@ export class BrainChatView extends ItemView {
         return;
       }
       const skillParts = commandTokens(invocation.prompt);
+      if (invocation.name === "exp" && isRemovedExpCommand(skillParts)) {
+        this.addCommandEcho(text);
+        await this.addTerminalOutput("`@exp sync` was removed · use `@exp reconcile`", "error");
+        return;
+      }
       if (invocation.name === "exp" && isLocalExpCommand(skillParts)) {
         this.addCommandEcho(text);
         await this.activateSkill(invocation.name, false);
@@ -827,6 +862,13 @@ export class BrainChatView extends ItemView {
           return;
         case "skill":
           await this.plugin.skillRegistry.initialize();
+          if (
+            parts[0]?.toLocaleLowerCase() === "exp"
+            && isRemovedExpCommand(parts.slice(1))
+          ) {
+            await this.addTerminalOutput("`@exp sync` was removed · use `@exp reconcile`", "error");
+            return;
+          }
           if (
             parts[0]?.toLocaleLowerCase() === "exp"
             && isLocalExpCommand(parts.slice(1))
@@ -1649,13 +1691,13 @@ export class BrainChatView extends ItemView {
       ].join("\n"));
       return;
     }
-    if (action === "sync") {
-      this.statusEl.setText("syncing EXP…");
-      const unscored = await this.plugin.expAutoScorer.reconcileUnscored();
+    if (action === "reconcile") {
+      this.statusEl.setText("reconciling EXP…");
+      const unscored = await this.plugin.expAutoScorer.reconcileUnscored({ retryFailed: true });
       const completions = await this.plugin.expCompletion.reconcileAll();
       this.statusEl.setText("ready");
       await this.addTerminalOutput([
-        "## EXP sync",
+        "## EXP reconciliation",
         "",
         `Open tasks scanned: **${unscored.scanned}** · newly queued for planned scoring: **${unscored.queued}** · not newly queued: **${unscored.existing}**`,
         `Completions discovered: **${completions.discovered}** · awarded: **${completions.awarded}** · awaiting review: **${completions.queued + completions.needsScore}** · failed: **${completions.failed}**`,
@@ -1816,7 +1858,8 @@ export class BrainChatView extends ItemView {
         "Cleared automatic scoring queues and baselined existing completions.",
         ...(result.skippedTasks.length > 0 ? [
           "",
-          `Could not clear ${result.skippedTasks.length} excluded task${result.skippedTasks.length === 1 ? "" : "s"}: ${result.skippedTasks.map((path) => `\`${path}\``).join(", ")}`
+          `Could not clear ${result.skippedTasks.length} task${result.skippedTasks.length === 1 ? "" : "s"}: ${result.skippedTasks.map((path) => `\`${path}\``).join(", ")}`,
+          "Ledger and goal artifacts were preserved so those tasks keep their audit history. Resolve the reported access or write error and run the reset again."
         ] : [])
       ].join("\n"));
       return;
@@ -1859,7 +1902,7 @@ export class BrainChatView extends ItemView {
       return;
     }
     await this.addTerminalOutput(
-      "usage: `@exp [status|cutoff [today|YYYY-MM-DD|off]|check|pending|unscored [page]|sync|score-completed|analytics [days]|goals|history [page]|review [days]|reset [--confirm]|task <path>|calibrate]`",
+      "usage: `@exp [status|cutoff [today|YYYY-MM-DD|off]|check|pending|unscored [page]|reconcile|score-completed|analytics [days]|goals|history [page]|review [days]|reset [--confirm]|task <path>|calibrate]`",
       "error"
     );
   }
@@ -3382,6 +3425,77 @@ export class BrainChatView extends ItemView {
     this.updateCommandSuggestions();
   }
 
+  private async refreshDailyNoteSettings(): Promise<void> {
+    try {
+      const configPath = normalizePath(`${this.app.vault.configDir}/daily-notes.json`);
+      const adapter = this.app.vault.adapter;
+      const raw = await adapter.exists(configPath) ? await adapter.read(configPath) : null;
+      this.dailyNoteSettings = parseDailyNoteSettings(raw);
+    } catch (error) {
+      this.dailyNoteSettings = null;
+      this.plugin.reportError(new Error(
+        `Could not read Daily Notes configuration: ${error instanceof Error ? error.message : String(error)}`
+      ));
+    }
+  }
+
+  private naturalDateSuggestions(
+    candidates: NaturalDateCandidate[],
+    replaceStart: number,
+    replaceEnd: number
+  ): InputSuggestion[] {
+    const suggestions: InputSuggestion[] = [];
+    const seenDailyPaths = new Set<string>();
+    const seenIsoDates = new Set<string>();
+    for (const candidate of candidates) {
+      const displayDate = obsidianMoment(candidate.date).format("dddd, MMMM D, YYYY");
+      const settings = this.dailyNoteSettings;
+      if (settings) {
+        const path = normalizePath(dailyNotePath(settings, obsidianMoment(candidate.date).format(settings.format)));
+        if (!seenDailyPaths.has(path)) {
+          seenDailyPaths.add(path);
+          const existing = isVaultPathSafe(path) ? this.app.vault.getAbstractFileByPath(path) : null;
+          suggestions.push(existing instanceof TFile
+            ? {
+                kind: "date",
+                name: candidate.phrase,
+                usage: `${candidate.phrase} · ${displayDate}`,
+                description: `${path} · Daily note`,
+                completion: fileMention(path),
+                replaceStart,
+                replaceEnd
+              }
+            : {
+                kind: "daily-note-create",
+                name: candidate.phrase,
+                usage: `${candidate.phrase} · ${displayDate}`,
+                description: `${path} · Create daily note (confirmation required)`,
+                replaceStart,
+                replaceEnd,
+                dailyNoteCreation: {
+                  path,
+                  timestamp: candidate.date.getTime(),
+                  template: settings.template
+                }
+              });
+        }
+      }
+      if (!seenIsoDates.has(candidate.isoDate)) {
+        seenIsoDates.add(candidate.isoDate);
+        suggestions.push({
+          kind: "date",
+          name: candidate.phrase,
+          usage: `${candidate.isoDate} · ${candidate.phrase}`,
+          description: `${displayDate} · Insert plain date`,
+          completion: candidate.isoDate,
+          replaceStart,
+          replaceEnd
+        });
+      }
+    }
+    return suggestions;
+  }
+
   private updateCommandSuggestions(): void {
     const value = this.inputEl.value;
     if (value.startsWith("/embedding ") && !value.includes("\n")) {
@@ -3411,10 +3525,17 @@ export class BrainChatView extends ItemView {
       this.renderCommandSuggestions();
       return;
     }
-    const atQuery = findAtQuery(value, this.inputEl.selectionStart ?? value.length);
-    if (atQuery && !value.includes("\n")) {
-      const query = atQuery.query.toLocaleLowerCase().replace(/\\/g, "/");
-      const skills = atQuery.start === 0
+    const cursor = this.inputEl.selectionStart ?? value.length;
+    const atQuery = findAtQuery(value, cursor);
+    const dateAtQuery = findNaturalDateAtQuery(value, cursor);
+    const dateCandidates = dateAtQuery ? naturalDateCandidates(dateAtQuery.query) : [];
+    const mentionQuery = atQuery ?? (dateCandidates.length > 0 ? dateAtQuery : null);
+    if (mentionQuery && !value.includes("\n")) {
+      const query = mentionQuery.query.toLocaleLowerCase().replace(/\\/g, "/");
+      const dates = dateCandidates.length > 0
+        ? this.naturalDateSuggestions(dateCandidates, mentionQuery.start, mentionQuery.end)
+        : [];
+      const skills = atQuery?.start === 0
         ? this.plugin.skillRegistry.list()
           .flatMap((skill) => [skill.name, ...skill.aliases].map((invocationName) => ({ skill, invocationName })))
           .filter(({ invocationName }) => invocationName.startsWith(query))
@@ -3423,11 +3544,11 @@ export class BrainChatView extends ItemView {
               name: invocationName,
               usage: `@${invocationName}`,
               description: `${skill.description}${invocationName !== skill.name ? ` · Alias for ${skill.name}` : ""} · Skill`,
-              replaceStart: atQuery.start,
-              replaceEnd: atQuery.end
+              replaceStart: mentionQuery.start,
+              replaceEnd: mentionQuery.end
             }))
         : [];
-      const files = this.app.vault.getMarkdownFiles()
+      const files = atQuery ? this.app.vault.getMarkdownFiles()
         .map((file) => {
           const name = file.name.toLocaleLowerCase();
           const basename = file.basename.toLocaleLowerCase();
@@ -3457,13 +3578,22 @@ export class BrainChatView extends ItemView {
           usage: file.name,
           description: `${file.parent?.path ?? "/"} · File`,
           completion: fileMention(file.path),
-          replaceStart: atQuery.start,
-          replaceEnd: atQuery.end
-        }));
-      this.visibleSuggestions = [...skills, ...files].slice(0, 30);
+          replaceStart: mentionQuery.start,
+          replaceEnd: mentionQuery.end
+        })) : [];
+      const seenCompletions = new Set<string>();
+      const orderedSuggestions = [...dates, ...skills, ...files];
+      this.visibleSuggestions = orderedSuggestions
+        .filter((suggestion) => {
+          if (!suggestion.completion) return true;
+          if (seenCompletions.has(suggestion.completion)) return false;
+          seenCompletions.add(suggestion.completion);
+          return true;
+        })
+        .slice(0, 30);
       this.suggestionIndex = Math.min(this.suggestionIndex, Math.max(0, this.visibleSuggestions.length - 1));
       this.renderCommandSuggestions();
-      if (atQuery.start === 0 && skills.length === 0 && !this.skillSuggestionsLoading) {
+      if (atQuery?.start === 0 && skills.length === 0 && !this.skillSuggestionsLoading) {
         this.skillSuggestionsLoading = true;
         void this.plugin.skillRegistry.initialize()
           .then(() => {
@@ -3543,7 +3673,7 @@ export class BrainChatView extends ItemView {
       item.addEventListener("mousedown", (event) => {
         event.preventDefault();
         this.suggestionIndex = index;
-        this.completeSuggestion();
+        void this.completeSuggestion();
       });
       if (index === this.suggestionIndex) {
         this.inputEl.setAttribute("aria-activedescendant", item.id);
@@ -3573,17 +3703,13 @@ export class BrainChatView extends ItemView {
     this.renderCommandSuggestions();
   }
 
-  private completeSuggestion(): void {
-    const suggestion = this.visibleSuggestions[this.suggestionIndex];
-    if (!suggestion) return;
-    const expandSkillCompletions = suggestion.kind === "skill" && !suggestion.completion;
-    let completion = suggestion.completion ?? (suggestion.kind === "skill"
-      ? `@${suggestion.name} `
-      : `/${suggestion.name}${suggestion.usage.includes(" ") ? " " : ""}`);
-    if (
-      suggestion.replaceStart !== undefined
-      && suggestion.replaceEnd !== undefined
-    ) {
+  private applySuggestionCompletion(
+    suggestion: InputSuggestion,
+    initialCompletion: string,
+    expandSkillCompletions = false
+  ): void {
+    let completion = initialCompletion;
+    if (suggestion.replaceStart !== undefined && suggestion.replaceEnd !== undefined) {
       const before = this.inputEl.value.slice(0, suggestion.replaceStart);
       const after = this.inputEl.value.slice(suggestion.replaceEnd);
       if (!completion.endsWith(" ") && !after.startsWith(" ")) completion += " ";
@@ -3598,6 +3724,85 @@ export class BrainChatView extends ItemView {
     }
     if (expandSkillCompletions) this.updateCommandSuggestions();
     else this.hideCommandSuggestions();
+  }
+
+  private async createDailyNoteFromSuggestion(suggestion: InputSuggestion): Promise<void> {
+    const creation = suggestion.dailyNoteCreation;
+    if (!creation) return;
+    if (!isVaultPathSafe(creation.path) || !creation.path.toLocaleLowerCase().endsWith(".md")) {
+      this.plugin.reportError(new Error(`Daily Notes produced an unsafe Markdown path: ${creation.path}`));
+      return;
+    }
+    try {
+      const result = await createDailyNoteSafely<TFile>({
+        confirm: async () => {
+          const modal = new ConfirmModal(
+            this.app,
+            "Create daily note",
+            `Create ${creation.path}${creation.template ? ` using ${creation.template}` : ""}?`,
+            "Create daily note",
+            "mod-cta"
+          );
+          modal.open();
+          return modal.result;
+        },
+        findExisting: () => {
+          const existing = this.app.vault.getAbstractFileByPath(creation.path);
+          if (existing && !(existing instanceof TFile)) {
+            throw new Error(`A folder already exists at the daily note path: ${creation.path}`);
+          }
+          return existing instanceof TFile ? existing : null;
+        },
+        create: async () => {
+          let content = "";
+          if (creation.template) {
+            let templateFile: TFile | null = null;
+            for (const candidate of dailyTemplatePaths(creation.template)) {
+              const normalized = normalizePath(candidate);
+              if (!isVaultPathSafe(normalized)) {
+                throw new Error(`Daily Notes has an unsafe template path: ${candidate}`);
+              }
+              const file = this.app.vault.getAbstractFileByPath(normalized);
+              if (file instanceof TFile) {
+                templateFile = file;
+                break;
+              }
+            }
+            if (!templateFile) {
+              throw new Error(`Daily Notes template was not found: ${creation.template}`);
+            }
+            const template = await this.app.vault.cachedRead(templateFile);
+            const targetDate = obsidianMoment(creation.timestamp);
+            const currentTime = obsidianMoment();
+            content = renderDailyTemplate(
+              template,
+              (format) => targetDate.format(format),
+              (format) => currentTime.format(format)
+            );
+          }
+          return this.plugin.vaultTools.createMarkdown(creation.path, content);
+        }
+      });
+      if (result.status === "denied") return;
+      this.applySuggestionCompletion(suggestion, fileMention(result.file.path));
+      if (result.status === "created") new Notice(`Brain CLI created ${creation.path}.`);
+    } catch (error) {
+      this.plugin.reportError(error);
+    }
+  }
+
+  private async completeSuggestion(): Promise<void> {
+    const suggestion = this.visibleSuggestions[this.suggestionIndex];
+    if (!suggestion) return;
+    if (suggestion.kind === "daily-note-create") {
+      await this.createDailyNoteFromSuggestion(suggestion);
+      return;
+    }
+    const expandSkillCompletions = suggestion.kind === "skill" && !suggestion.completion;
+    const completion = suggestion.completion ?? (suggestion.kind === "skill"
+      ? `@${suggestion.name} `
+      : `/${suggestion.name}${suggestion.usage.includes(" ") ? " " : ""}`);
+    this.applySuggestionCompletion(suggestion, completion, expandSkillCompletions);
   }
 
   private refreshModelOptions(): void {

@@ -240,18 +240,26 @@ export class ExpAutoScorer {
     this.candidates.clear();
     this.qualifying.clear();
     this.restored.clear();
+    this.failed.clear();
     this.clearTimer();
     this.persist();
   }
 
-  async reconcileUnscored(): Promise<{ scanned: number; queued: number; existing: number }> {
+  async reconcileUnscored(
+    options: { retryFailed?: boolean } = {}
+  ): Promise<{ scanned: number; queued: number; existing: number }> {
     const tasks = await this.taskService.list({ includeCompleted: true, limit: 10_000, internalUnbounded: true });
     const open = tasks.filter((task) => !task.completed && task.exp === null);
     let queued = 0;
     let existing = 0;
     for (const task of open) {
       if (!this.getSettings().autoScoreTaskExp) continue;
-      if (this.pending.has(task.path) || this.candidates.has(task.path) || this.qualifying.has(task.path)) {
+      if (
+        this.pending.has(task.path)
+        || this.candidates.has(task.path)
+        || this.qualifying.has(task.path)
+        || (this.failed.has(task.path) && !options.retryFailed)
+      ) {
         existing += 1;
         continue;
       }

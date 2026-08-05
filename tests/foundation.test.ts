@@ -41,7 +41,11 @@ import { chunkMatchesFilters, prepareMarkdownChunks } from "../src/markdown-chun
 import { cosineSimilarity, MemorySemanticStore } from "../src/semantic-store";
 import type { EmbeddingModel, SemanticChunkRecord } from "../src/semantic-types";
 import { detectsPlanningIntent, planModeSystemMessage } from "../src/plan-mode";
-import { isLocalExpCommand } from "../src/exp-command";
+import {
+  isLocalExpCommand,
+  isRemovedExpCommand,
+  removeLegacyExpSyncCommand
+} from "../src/exp-command";
 import { SemanticIndexCoordinator } from "../src/semantic-index";
 import type { BrainSettings } from "../src/settings";
 import { MemoryLexicalIndexStore } from "../src/retrieval-store";
@@ -55,7 +59,7 @@ import { formatExpTaskTitle, stripExpTitlePrefix, taskDisplayTitle } from "../sr
 import { calculateExpStreaks, inferOneTimeCompletion, validateExpInput, validateExpTransition } from "../src/exp-core";
 import type { ExpService } from "../src/exp-service";
 import { parseSkillInvocation } from "../src/skill-invocation";
-import { parseExpScoringResponse, type ExpAutoScorer } from "../src/exp-auto-scorer";
+import { ExpAutoScorer, parseExpScoringResponse } from "../src/exp-auto-scorer";
 import { extractFileMentions, fileMention, findAtQuery } from "../src/file-mentions";
 import { ExpCompletionCoordinator } from "../src/exp-completion";
 import {
@@ -71,6 +75,18 @@ import { effectivePrivacyExclusions, frontmatterSensitivityReasons, pathMatchesE
 import { isMemoryFrontmatter, isMemoryMarkdownPath } from "../src/memory-policy";
 import { runAfterLayoutReady } from "../src/layout-ready";
 import { validateExpGoalLanes } from "../src/exp-goals-core";
+import { isExpResetArtifactType, runExpReset } from "../src/exp-reset-core";
+import {
+  findNaturalDateAtQuery,
+  naturalDateCandidates
+} from "../src/date-mentions";
+import {
+  createDailyNoteSafely,
+  dailyNotePath,
+  dailyTemplatePaths,
+  parseDailyNoteSettings,
+  renderDailyTemplate
+} from "../src/daily-note-core";
 import { normalizeTextAsset } from "../build-text.mjs";
 
 const call = (name: string, input: unknown) => ({
@@ -163,10 +179,30 @@ test("EXP routing preserves exact subcommands and sends natural language to the 
   assert.equal(isLocalExpCommand(["reset"]), true);
   assert.equal(isLocalExpCommand(["reset", "--confirm"]), true);
   assert.equal(isLocalExpCommand(["reset", "now"]), false);
-  assert.equal(isLocalExpCommand(["sync"]), true);
+  assert.equal(isLocalExpCommand(["reconcile"]), true);
+  assert.equal(isLocalExpCommand(["sync"]), false);
+  assert.equal(isRemovedExpCommand(["sync"]), true);
+  assert.equal(isRemovedExpCommand(["sync", "these", "tasks"]), false);
   assert.equal(isLocalExpCommand(["pending", "items", "from", "today"]), false);
   assert.equal(isLocalExpCommand(["status", "of", "my", "latest", "task"]), false);
   assert.equal(isLocalExpCommand(["what", "is", "the", "latest", "task"]), false);
+});
+
+test("EXP skill migration removes the sync command and installs reconcile", () => {
+  const migrated = removeLegacyExpSyncCommand([
+    "---",
+    "name: exp",
+    "completions:",
+    "  - value: sync",
+    "    description: Reconcile unscored tasks and completed-task EXP",
+    "---",
+    "",
+    "Run @exp sync to retry failures."
+  ].join("\n"));
+  assert.match(migrated, /value: reconcile/);
+  assert.match(migrated, /@exp reconcile/);
+  assert.doesNotMatch(migrated, /value: sync|@exp sync/);
+  assert.equal((migrated.match(/value: reconcile/g) ?? []).length, 1);
 });
 
 test("privacy and startup policies enforce behavior instead of source shape", () => {
@@ -359,6 +395,115 @@ test("@ file mentions identify the active token and preserve canonical vault pat
   );
 });
 
+test("natural date mentions resolve local relative dates and ISO week weekdays", () => {
+  const now = new Date(2026, 7, 2, 18, 30);
+  const resolve = (query: string) => naturalDateCandidates(query, now)
+    .map(({ phrase, isoDate }) => ({ phrase, isoDate }));
+
+  assert.deepEqual(resolve("today"), [{ phrase: "Today", isoDate: "2026-08-02" }]);
+  assert.deepEqual(resolve("yesterday"), [{ phrase: "Yesterday", isoDate: "2026-08-01" }]);
+  assert.deepEqual(resolve("tomorrow"), [{ phrase: "Tomorrow", isoDate: "2026-08-03" }]);
+  assert.deepEqual(resolve("monday"), [{ phrase: "Monday", isoDate: "2026-08-03" }]);
+  assert.deepEqual(resolve("sunday"), [{ phrase: "Sunday", isoDate: "2026-08-02" }]);
+  assert.deepEqual(resolve("this monday"), [{ phrase: "This Monday", isoDate: "2026-07-27" }]);
+  assert.deepEqual(resolve("next monday"), [{ phrase: "Next Monday", isoDate: "2026-08-03" }]);
+  assert.deepEqual(resolve("last sunday"), [{ phrase: "Last Sunday", isoDate: "2026-07-26" }]);
+});
+
+test("natural date mention matching accepts partial spaced and hyphenated phrases without hijacking skills", () => {
+  const now = new Date(2026, 7, 2);
+  assert.deepEqual(findNaturalDateAtQuery("show @next mon"), {
+    query: "next mon",
+    start: 5,
+    end: 14
+  });
+  assert.deepEqual(findNaturalDateAtQuery("@next-mon"), {
+    query: "next-mon",
+    start: 0,
+    end: 9
+  });
+  assert.equal(findNaturalDateAtQuery("@exp score"), null);
+  assert.deepEqual(naturalDateCandidates("next-mon", now).map(({ phrase }) => phrase), ["Next Monday"]);
+  assert.equal(naturalDateCandidates("exp", now).length, 0);
+});
+
+test("Daily Notes configuration, paths, and template placeholders retain plugin conventions", () => {
+  assert.deepEqual(parseDailyNoteSettings(null), {
+    folder: "",
+    format: "YYYY-MM-DD",
+    template: ""
+  });
+  const settings = parseDailyNoteSettings(JSON.stringify({
+    folder: "Dailies/",
+    format: "YYYY/MMMM/YYYY-MM-DD",
+    template: "Assets/Templates/daily-template"
+  }));
+  assert.deepEqual(settings, {
+    folder: "Dailies",
+    format: "YYYY/MMMM/YYYY-MM-DD",
+    template: "Assets/Templates/daily-template"
+  });
+  assert.equal(dailyNotePath(settings, "2026/August/2026-08-02"), "Dailies/2026/August/2026-08-02.md");
+  assert.deepEqual(dailyTemplatePaths(settings.template), [
+    "Assets/Templates/daily-template.md",
+    "Assets/Templates/daily-template"
+  ]);
+  assert.equal(
+    renderDailyTemplate(
+      "{{date}} | {{date:dddd}} | {{time}} | {{time:ss}}",
+      (format) => ({ "YYYY-MM-DD": "2026-08-02", dddd: "Sunday" })[format] ?? format,
+      (format) => ({ "HH:mm": "18:30", ss: "45" })[format] ?? format
+    ),
+    "2026-08-02 | Sunday | 18:30 | 45"
+  );
+  assert.equal(isVaultPathSafe(dailyNotePath({ ...settings, folder: "../outside" }, "2026-08-02")), false);
+  assert.throws(() => parseDailyNoteSettings("[]"), /JSON object/);
+});
+
+test("confirmed daily-note creation handles denial, existing notes, creation, and races", async () => {
+  let creates = 0;
+  const denied = await createDailyNoteSafely({
+    confirm: async () => false,
+    findExisting: () => null,
+    create: async () => { creates += 1; return "created"; }
+  });
+  assert.deepEqual(denied, { status: "denied" });
+  assert.equal(creates, 0);
+
+  const existing = await createDailyNoteSafely({
+    confirm: async () => true,
+    findExisting: () => "existing",
+    create: async () => { creates += 1; return "created"; }
+  });
+  assert.deepEqual(existing, { status: "existing", file: "existing" });
+  assert.equal(creates, 0);
+
+  const created = await createDailyNoteSafely({
+    confirm: async () => true,
+    findExisting: () => null,
+    create: async () => { creates += 1; return "created"; }
+  });
+  assert.deepEqual(created, { status: "created", file: "created" });
+  assert.equal(creates, 1);
+
+  let raced = false;
+  const race = await createDailyNoteSafely({
+    confirm: async () => true,
+    findExisting: () => raced ? "raced" : null,
+    create: async () => { raced = true; throw new Error("already exists"); }
+  });
+  assert.deepEqual(race, { status: "existing", file: "raced" });
+});
+
+test("date suggestions remain ordered before skills and filename matches within the picker cap", () => {
+  const source = readFileSync("src/chat-view.ts", "utf8");
+  assert.match(source, /orderedSuggestions = \[\.\.\.dates, \.\.\.skills, \.\.\.files\]/);
+  assert.match(source, /seenCompletions\.has\(suggestion\.completion\)/);
+  assert.match(source, /\s\.slice\(0, 30\)/);
+  assert.match(source, /seenDailyPaths = new Set<string>\(\)/);
+  assert.match(source, /seenIsoDates = new Set<string>\(\)/);
+});
+
 test("Brain layout creation is idempotent while the Vault index is stale", async () => {
   const folders = new Set<string>(["Brain", "Brain/Chats"]);
   const createCalls: string[] = [];
@@ -447,6 +592,7 @@ test("registry exposes the complete foundational tool surface", () => {
       "get_exp_analytics",
       "create_exp_goal",
       "record_task_exp",
+      "set_task_exp_completion_percent",
       "create_task",
       "update_task",
       "complete_task",
@@ -1640,9 +1786,11 @@ test("bundled EXP skill has valid metadata, workflow, references, and calibratio
   assert.match(EXP_SKILL, /value: check/);
   assert.match(EXP_SKILL, /value: pending/);
   assert.match(EXP_SKILL, /value: unscored/);
-  assert.match(EXP_SKILL, /value: sync/);
+  assert.match(EXP_SKILL, /value: reconcile/);
+  assert.doesNotMatch(EXP_SKILL, /value: sync/);
   assert.match(EXP_SKILL, /value: reset/);
   assert.match(EXP_SKILL, /@exp reset --confirm/);
+  assert.match(EXP_SKILL, /If any task metadata cannot be cleared, ledger and goal artifacts remain in place/);
   assert.match(EXP_SKILL, /completion occurrence and timestamp/);
   assert.match(EXP_SKILL, /Every actionable task should have an expected value before completion/);
   assert.match(EXP_SKILL, /Never answer that it must be completed before it can receive an EXP value/);
@@ -1788,6 +1936,106 @@ test("automatic EXP scoring normalizes structured and missing factor explanation
   assert.equal(parsed.factors.independence, "Self-directed without prompting");
   assert.match(parsed.factors.significance, /overall assessment/);
   assert.doesNotThrow(() => validateExpInput(parsed));
+});
+
+test("automatic EXP reconciliation preserves failures until explicit reconcile and cancel clears them", async () => {
+  const previousWindow = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    setTimeout: () => 1,
+    clearTimeout: () => undefined
+  };
+  try {
+    const path = "TaskNotes/Tasks/retry.md";
+    const settings = {
+      autoScoreTaskExp: true,
+      autoExpSpendCapUsd: 0.1,
+      autoExpQueue: [{
+        path,
+        attempts: 3,
+        readyAt: Date.now(),
+        state: "failed" as const,
+        lastError: "provider rejected the score",
+        failedAt: new Date().toISOString()
+      }],
+      fallbackTaskFolder: "TaskNotes/Tasks"
+    } as BrainSettings;
+    const persisted: BrainSettings["autoExpQueue"][] = [];
+    const scorer = new ExpAutoScorer(
+      { metadataCache: { getCache: () => ({ frontmatter: { status: "open" } }) } } as unknown as App,
+      {
+        list: async () => [{ path, completed: false, exp: null }],
+        inspectSensitivity: async () => ({ sensitive: false, reasons: [] })
+      } as unknown as TaskService,
+      {} as ExpService,
+      {} as never,
+      () => settings,
+      () => undefined,
+      async (entries) => {
+        settings.autoExpQueue = entries;
+        persisted.push(entries.map((entry) => ({ ...entry })));
+      },
+      () => undefined,
+      () => undefined
+    );
+
+    scorer.resumeQueued();
+    const startup = await scorer.reconcileUnscored();
+    assert.deepEqual(startup, { scanned: 1, queued: 0, existing: 1 });
+    assert.deepEqual(scorer.getStatus(), {
+      queued: 0,
+      failed: 1,
+      running: false,
+      estimatedSpendUsd: 0,
+      capUsd: 0.1
+    });
+
+    const reconcile = await scorer.reconcileUnscored({ retryFailed: true });
+    assert.deepEqual(reconcile, { scanned: 1, queued: 1, existing: 0 });
+    assert.equal(scorer.getStatus().failed, 0);
+    scorer.cancel();
+    assert.equal(scorer.getStatus().queued, 0);
+    assert.equal(scorer.getStatus().failed, 0);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(persisted.at(-1), []);
+  } finally {
+    (globalThis as { window?: unknown }).window = previousWindow;
+  }
+});
+
+test("EXP reset preserves artifacts after task failures and ignores custom EXP notes", async () => {
+  assert.equal(isExpResetArtifactType("exp-entry"), true);
+  assert.equal(isExpResetArtifactType("exp-goal"), true);
+  assert.equal(isExpResetArtifactType("note"), false);
+
+  const tasks = [
+    { path: "TaskNotes/Tasks/one.md", title: "[100] One" },
+    { path: "TaskNotes/Tasks/two.md", title: "[200] Two" }
+  ];
+  const artifacts = [
+    "Brain/EXP/Ledger/2026-08/entry.md",
+    "Brain/EXP/Goals/weekly.md"
+  ];
+  let failPath: string | null = tasks[1].path;
+  const trashed: string[] = [];
+  const clearTask = async ({ path }: { path: string }) => {
+    if (path === failPath) throw new Error("excluded task");
+  };
+  const trashArtifact = async (path: string) => { trashed.push(path); };
+
+  assert.deepEqual(await runExpReset(tasks, artifacts, clearTask, trashArtifact), {
+    tasks: 1,
+    artifacts: 0,
+    skippedTasks: [tasks[1].path]
+  });
+  assert.deepEqual(trashed, []);
+
+  failPath = null;
+  assert.deepEqual(await runExpReset(tasks, artifacts, clearTask, trashArtifact), {
+    tasks: 2,
+    artifacts: 2,
+    skippedTasks: []
+  });
+  assert.deepEqual(trashed.sort(), artifacts.sort());
 });
 
 test("EXP completion cutoffs validate calendar dates and include the cutoff day", () => {
@@ -2103,3 +2351,26 @@ test("EXP streaks count unique award days and allow yesterday's streak to remain
     { current: 1, longest: 2 }
   );
 });
+
+test("EXP completion percentage utils parse titles and scale EXP awards proportionally", () => {
+  const {
+    completionPercentFromTitle,
+    stripCompletionPercentMarker,
+    scaledExpForCompletion
+  } = require("../src/exp-completion-percent");
+  const { formatExpCompletionTitle } = require("../src/task-provider");
+
+  assert.equal(completionPercentFromTitle("[50%] Workout - Cardio"), 50);
+  assert.equal(completionPercentFromTitle("[100] [75%] Study Task"), 75);
+  assert.equal(completionPercentFromTitle("Ordinary Task"), null);
+
+  assert.equal(stripCompletionPercentMarker("[50%] Workout - Cardio"), "Workout - Cardio");
+  assert.equal(formatExpCompletionTitle("Workout - Cardio", 50, 100), "[100] [50%] Workout - Cardio");
+
+  assert.equal(scaledExpForCompletion(100, 25), 25);
+  assert.equal(scaledExpForCompletion(100, 50), 50);
+  assert.equal(scaledExpForCompletion(100, 75), 75);
+  assert.equal(scaledExpForCompletion(100, 100), 100);
+  assert.equal(scaledExpForCompletion(50, 50), 25);
+});
+

@@ -21,15 +21,26 @@ import {
   type ExpRecordInput,
   type TaskExpState
 } from "./exp-core";
-import { formatExpTaskTitle, stripExpTitlePrefix } from "./task-provider";
+import {
+  formatExpCompletionTitle,
+  formatExpTaskTitle,
+  stripExpTitlePrefix,
+  taskDisplayTitle
+} from "./task-provider";
+import {
+  completionPercentFromTitle,
+  isExpCompletionPercent,
+  type ExpCompletionPercent
+} from "./exp-completion-percent";
 import { validateExpGoalLanes, type ExpGoalLaneDefinition } from "./exp-goals-core";
+import { isExpResetArtifactType, runExpReset } from "./exp-reset-core";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const EXP_SCHEMA_VERSION = 2;
 export const EXP_FRONTMATTER_KEYS = [
   "title", "exp_schema", "exp", "exp_state", "exp_confidence", "exp_reason",
   "exp_factors", "exp_scored_at", "exp_awarded_at", "exp_revision",
-  "exp_task_id", "exp_last_completion_id"
+  "exp_task_id", "exp_last_completion_id", "exp_planned_value", "exp_completion_percent"
 ];
 
 export interface ExpResetPreview {
@@ -109,6 +120,10 @@ export class ExpService {
       revision: expNumber(frontmatter.exp_revision),
       taskId: expString(frontmatter.exp_task_id),
       lastCompletionId: expString(frontmatter.exp_last_completion_id) || null
+      , plannedValue: expNumber(frontmatter.exp_planned_value, value)
+      , completionPercent: isExpCompletionPercent(frontmatter.exp_completion_percent)
+        ? frontmatter.exp_completion_percent
+        : completionPercentFromTitle(expString(frontmatter.title)) ?? undefined
     };
   }
 
@@ -133,24 +148,21 @@ export class ExpService {
   async resetAll(): Promise<ExpResetResult> {
     const taskFiles = this.expTaskFiles();
     const artifactFiles = this.expArtifactFiles();
-    const skippedTasks: string[] = [];
-    let tasks = 0;
+    const taskTargets = [];
     for (const file of taskFiles) {
       const frontmatter = await this.frontmatter(file);
-      const title = expString(frontmatter.title);
-      try {
-        await this.vaultTools.restoreFrontmatter(
-          file.path,
-          title ? { title: stripExpTitlePrefix(title) } : {},
-          EXP_FRONTMATTER_KEYS
-        );
-        tasks += 1;
-      } catch {
-        skippedTasks.push(file.path);
-      }
+      taskTargets.push({ path: file.path, title: expString(frontmatter.title) });
     }
-    for (const file of artifactFiles) await this.vaultTools.trashMarkdown(file.path);
-    return { tasks, artifacts: artifactFiles.length, skippedTasks };
+    return runExpReset(
+      taskTargets,
+      artifactFiles.map((file) => file.path),
+      ({ path, title }) => this.vaultTools.restoreFrontmatter(
+        path,
+        title ? { title: stripExpTitlePrefix(title) } : {},
+        EXP_FRONTMATTER_KEYS
+      ),
+      (path) => this.vaultTools.trashMarkdown(path).then(() => undefined)
+    );
   }
 
   async record(input: ExpRecordInput, signal?: AbortSignal): Promise<{
@@ -186,8 +198,13 @@ export class ExpService {
 
     const now = new Date().toISOString();
     const revision = (existing?.revision ?? 0) + 1;
+    const completionPercent = clean.completionPercent
+      ?? completionPercentFromTitle(task.title)
+      ?? task.expCompletionPercent
+      ?? existing?.completionPercent
+      ?? 100;
     const plainTitle = stripExpTitlePrefix(task.title);
-    const storedTitle = formatExpTaskTitle(plainTitle, clean.value, this.getTitleMaxLength());
+    const storedTitle = formatExpCompletionTitle(task.title, completionPercent, clean.value, this.getTitleMaxLength());
     const sensitivity = await this.taskService.inspectSensitivity(task.path);
     const ledger = this.makeLedgerEntry(
       clean,
@@ -217,16 +234,27 @@ export class ExpService {
         exp_revision: revision,
         exp_task_id: taskId,
         exp_last_completion_id: completionId ?? existing?.lastCompletionId ?? null
+        , exp_planned_value: clean.action === "award"
+          ? existing?.plannedValue ?? clean.value
+          : clean.value
+        , exp_completion_percent: completionPercent
       });
       const verified = await this.taskState(task.path);
       if (signal?.aborted) throw new DOMException("The operation was aborted.", "AbortError");
       if (!verified || verified.value !== clean.value || verified.revision !== revision) {
         throw new Error(`EXP metadata could not be verified after writing ${task.path}.`);
       }
-      await this.vaultTools.createMarkdown(
-        this.ledgerPath(ledger),
-        this.renderLedger(ledger, task.citation)
-      );
+      const jsonPath = normalizePath(`${this.getExpRoot()}/ledger.json`);
+      let ledgerData: ExpLedgerEntry[] = [];
+      if (await this.app.vault.adapter.exists(jsonPath)) {
+        try {
+          ledgerData = JSON.parse(await this.app.vault.adapter.read(jsonPath));
+        } catch (e) {
+          console.error("[Brain CLI] Failed to parse ledger.json", e);
+        }
+      }
+      ledgerData.push(ledger);
+      await this.app.vault.adapter.write(jsonPath, JSON.stringify(ledgerData, null, 2));
       return {
         task: {
           path: task.path,
@@ -246,62 +274,53 @@ export class ExpService {
     }
   }
 
-  async history(): Promise<ExpLedgerEntry[]> {
-    const root = normalizePath(`${this.getExpRoot()}/Ledger`).replace(/^\/+|\/+$/g, "");
-    const entries: ExpLedgerEntry[] = [];
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      if (file.path !== root && !file.path.startsWith(`${root}/`)) continue;
-      const frontmatter = await this.frontmatter(file);
-      if (frontmatter.type !== "exp-entry") continue;
-      const action = frontmatter.action;
-      if (action !== "plan" && action !== "award" && action !== "recalibrate") continue;
-      const taskPath = expString(frontmatter.task);
-      let sensitive = frontmatter.sensitive === true;
-      if (!sensitive && taskPath) {
-        sensitive = await this.taskService.inspectSensitivity(taskPath)
-          .then((report) => report.sensitive)
-          .catch(() => false);
-      }
-      entries.push({
-        id: expString(frontmatter.id),
-        action,
-        taskPath,
-        taskTitle: expString(frontmatter.task_title),
-        value: expNumber(frontmatter.exp),
-        confidence: expNumber(frontmatter.confidence),
-        reason: expString(frontmatter.reason),
-        factors: parseExpFactors(frontmatter.factors),
-        recordedAt: expString(frontmatter.recorded_at),
-        revision: expNumber(frontmatter.revision),
-        citation: `[[${file.path.replace(/\.md$/i, "")}]]`,
-        sensitive,
-        taskId: expString(frontmatter.exp_task_id) || undefined,
-        completionId: expString(frontmatter.completion_id) || undefined,
-        completionAt: expString(frontmatter.completion_at) || undefined,
-        scoringSource: frontmatter.scoring_source === "manual-ai"
-          || frontmatter.scoring_source === "background-ai"
-          || frontmatter.scoring_source === "planned-reuse"
-          ? frontmatter.scoring_source
-          : "manual",
-        sourceEventId: expString(frontmatter.source_event_id) || undefined,
-        modelId: expString(frontmatter.model_id) || undefined,
-        provider: expString(frontmatter.provider) || undefined,
-        promptTokens: Number.isFinite(expNumber(frontmatter.prompt_tokens, Number.NaN))
-          ? expNumber(frontmatter.prompt_tokens)
-          : undefined,
-        completionTokens: Number.isFinite(expNumber(frontmatter.completion_tokens, Number.NaN))
-          ? expNumber(frontmatter.completion_tokens)
-          : undefined,
-        costUsd: Number.isFinite(expNumber(frontmatter.cost_usd, Number.NaN))
-          ? expNumber(frontmatter.cost_usd)
-          : undefined,
-        rubricVersion: Number.isFinite(expNumber(frontmatter.rubric_version, Number.NaN))
-          ? expNumber(frontmatter.rubric_version)
-          : undefined,
-        tags: stringArray(frontmatter.tags),
-        projects: stringArray(frontmatter.projects)
-      });
+  async setCompletionPercent(path: string, completionPercent: ExpCompletionPercent): Promise<{
+    task: { path: string; title: string; displayTitle: string; citation: string };
+    verified: true;
+  }> {
+    const task = await this.taskService.get(path, true);
+    if (!task) throw new Error(`Task not found: ${path}`);
+    const title = formatExpCompletionTitle(task.title, completionPercent, task.exp, this.getTitleMaxLength());
+    await this.vaultTools.updateFrontmatter(task.path, {
+      title,
+      exp_completion_percent: completionPercent
+    });
+    const verified = await this.taskService.get(task.path, true);
+    if (!verified || verified.title !== title || verified.expCompletionPercent !== completionPercent) {
+      throw new Error(`EXP completion percentage could not be verified after writing ${task.path}.`);
     }
+    return {
+      task: {
+        path: verified.path,
+        title,
+        displayTitle: taskDisplayTitle(verified),
+        citation: verified.citation
+      },
+      verified: true
+    };
+  }
+
+  async history(): Promise<ExpLedgerEntry[]> {
+    const jsonPath = normalizePath(`${this.getExpRoot()}/ledger.json`);
+    let entries: ExpLedgerEntry[] = [];
+    if (await this.app.vault.adapter.exists(jsonPath)) {
+      try {
+        entries = JSON.parse(await this.app.vault.adapter.read(jsonPath));
+      } catch (e) {
+        console.error("[Brain CLI] Failed to parse ledger.json for history", e);
+      }
+    }
+    // Normalize casing for fields that might have been snake_case in YAML
+    entries = entries.map(e => ({
+      ...e,
+      value: e.value || (e as any).exp || 0,
+      recordedAt: e.recordedAt || (e as any).recorded_at,
+      taskTitle: e.taskTitle || (e as any).task_title,
+      taskPath: e.taskPath || (e as any).task,
+      completionAt: e.completionAt || (e as any).completion_at,
+      completionId: e.completionId || (e as any).completion_id,
+      taskId: e.taskId || (e as any).exp_task_id,
+    }));
     return entries.sort((left, right) => right.recordedAt.localeCompare(left.recordedAt));
   }
 
@@ -574,6 +593,7 @@ export class ExpService {
       completionTokens: input.completionTokens,
       costUsd: input.costUsd,
       rubricVersion: input.rubricVersion ?? 1,
+      completionPercent: input.completionPercent,
       tags,
       projects
     };
@@ -593,9 +613,11 @@ export class ExpService {
 
   private expArtifactFiles(): TFile[] {
     const root = normalizePath(this.getExpRoot()).replace(/^\/+|\/+$/g, "");
-    return this.app.vault.getMarkdownFiles().filter((file) =>
-      file.path.startsWith(`${root}/`)
-    );
+    return this.app.vault.getMarkdownFiles().filter((file) => {
+      if (!file.path.startsWith(`${root}/`)) return false;
+      const type = this.app.metadataCache.getFileCache(file)?.frontmatter?.type;
+      return isExpResetArtifactType(type);
+    });
   }
 
   private ledgerPath(entry: ExpLedgerEntry): string {
@@ -629,6 +651,7 @@ export class ExpService {
       `completion_tokens: ${JSON.stringify(entry.completionTokens ?? null)}`,
       `cost_usd: ${JSON.stringify(entry.costUsd ?? null)}`,
       `rubric_version: ${entry.rubricVersion ?? 1}`,
+      `completion_percent: ${JSON.stringify(entry.completionPercent ?? null)}`,
       `tags: ${JSON.stringify(entry.tags ?? [])}`,
       `projects: ${JSON.stringify(entry.projects ?? [])}`,
       `sensitive: ${entry.sensitive === true}`,
@@ -642,6 +665,7 @@ export class ExpService {
       `- Confidence: ${Math.round(entry.confidence * 100)}%`,
       `- Source: ${entry.scoringSource ?? "manual"}${entry.modelId ? ` via \`${entry.modelId}\`` : ""}`,
       ...(entry.completionAt ? [`- Completed: ${entry.completionAt}`] : []),
+      ...(entry.completionPercent ? [`- Completion amount: ${entry.completionPercent}%`] : []),
       ...(entry.promptTokens !== undefined || entry.completionTokens !== undefined
         ? [`- Usage: ${(entry.promptTokens ?? 0).toLocaleString()} input + ${(entry.completionTokens ?? 0).toLocaleString()} output tokens${entry.costUsd !== undefined ? ` · $${entry.costUsd.toFixed(6)}` : ""}`]
         : []),

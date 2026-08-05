@@ -5,6 +5,7 @@ import type { VaultRetrievalIndex } from "./retrieval-index";
 import type { SkillRegistry } from "./skill-registry";
 import type { TaskService } from "./task-service";
 import {
+  formatExpCompletionTitle,
   formatExpTaskTitle,
   taskDisplayTitle,
   type BrainTask,
@@ -12,6 +13,7 @@ import {
   type TaskPatch,
   type TaskQuery
 } from "./task-provider";
+import { isExpCompletionPercent, type ExpCompletionPercent } from "./exp-completion-percent";
 import type { ExpService } from "./exp-service";
 import type { MemoryService } from "./memory-service";
 import type { WritingCoachService } from "./writing-coach";
@@ -176,8 +178,19 @@ const expInput = (input: Record<string, unknown>): ExpRecordInput => {
     factors,
     allowRepeat: booleanArg(input, "allow_repeat"),
     completionToken: typeof input.completion_token === "string" ? input.completion_token : undefined,
-    completionAt: typeof input.completion_at === "string" ? input.completion_at : undefined
+    completionAt: typeof input.completion_at === "string" ? input.completion_at : undefined,
+    completionPercent: input.completion_percent === undefined
+      ? undefined
+      : completionPercentArg(input)
   };
+};
+
+const completionPercentArg = (input: Record<string, unknown>): ExpCompletionPercent => {
+  const value = input.completion_percent;
+  if (!isExpCompletionPercent(value)) {
+    throw new Error('Tool argument "completion_percent" must be 25, 50, 75, or 100.');
+  }
+  return value;
 };
 
 const citationForPath = (path: string): string => `[[${path.replace(/\.md$/, "")}]]`;
@@ -217,6 +230,7 @@ const TOOL_LABELS: Record<string, string> = {
   check_writing_coach: "Check writing now",
   stop_writing_coach: "Stop writing coach",
   record_task_exp: "Record task EXP",
+  set_task_exp_completion_percent: "Set task completion percentage",
   create_task: "Create task",
   update_task: "Update task",
   complete_task: "Complete task",
@@ -911,6 +925,11 @@ export class AgentToolRegistry {
                 completion_at: {
                   type: "string",
                   description: "Actual completion date or timestamp corresponding to completion_token."
+                },
+                completion_percent: {
+                  type: "integer",
+                  enum: [25, 50, 75, 100],
+                  description: "Amount of the task completed. Stored in both title and exp_completion_percent frontmatter."
                 }
               },
               required: ["path", "action", "value", "confidence", "reason", "factors"],
@@ -926,6 +945,29 @@ export class AgentToolRegistry {
           provider: this.getInteractiveModel() ? "openrouter" : undefined,
           rubricVersion: 1
         })
+      },
+      {
+        definition: {
+          type: "function",
+          function: {
+            name: "set_task_exp_completion_percent",
+            description: "@exp workflow only: set a task's 25/50/75/100% completion marker in both its title and exp_completion_percent frontmatter. A later TaskNotes completion uses this percentage to scale the earned EXP.",
+            parameters: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Vault-relative task Markdown path." },
+                completion_percent: { type: "integer", enum: [25, 50, 75, 100] }
+              },
+              required: ["path", "completion_percent"],
+              additionalProperties: false
+            }
+          }
+        },
+        risk: "high-write",
+        execute: async (input) => this.expService.setCompletionPercent(
+          stringArg(input, "path"),
+          completionPercentArg(input)
+        )
       },
       {
         definition: {
@@ -1609,6 +1651,22 @@ export class AgentToolRegistry {
         afterLabel: "Proposed EXP",
         details: `${task.citation}\nTitle → ${taskDisplayTitle({ ...task, exp: next.value })}\nImmutable Markdown ledger entry · time fields remain unchanged`
       };
+    } else if (call.function.name === "set_task_exp_completion_percent") {
+      const path = stringArg(input, "path");
+      const completionPercent = completionPercentArg(input);
+      const task = await this.taskService.get(path, true);
+      if (!task) throw new Error(`Task not found: ${path}`);
+      const report = await this.taskService.inspectSensitivity(path);
+      sensitive = report.sensitive;
+      sensitivityReasons = report.reasons;
+      preview = {
+        title: `Set @exp completion to ${completionPercent}%: ${task.title}`,
+        before: `Title: ${task.title}\nFrontmatter: ${task.expCompletionPercent ?? "not set"}%`,
+        after: `Title: ${formatExpCompletionTitle(task.title, completionPercent, task.exp, 200)}\nFrontmatter: ${completionPercent}%`,
+        beforeLabel: "Current completion marker",
+        afterLabel: "Proposed completion marker",
+        details: `${task.citation}\nA later TaskNotes completion awards the proportional EXP through the normal pending/automatic completion setting.`
+      };
     } else if (call.function.name === "create_note") {
       preview = { title: `Create ${stringArg(input, "path")}`, before: "", after: previewText(stringArg(input, "content", false)) };
     } else if (call.function.name === "append_note") {
@@ -1792,6 +1850,16 @@ export class AgentToolRegistry {
           typeof task.citation === "string" ? task.citation : "",
           result.verified === true ? "Task frontmatter and ledger entry verified" : ""
         ].filter(Boolean).join("\n") || undefined
+      };
+    }
+    if (name === "set_task_exp_completion_percent") {
+      const result = recordValue(value);
+      const task = recordValue(result.task);
+      return {
+        title: "Task completion percentage set",
+        after: typeof task.title === "string" ? task.title : "Completion percentage updated.",
+        afterLabel: "Verified title and frontmatter",
+        details: typeof task.citation === "string" ? task.citation : undefined
       };
     }
     return undefined;

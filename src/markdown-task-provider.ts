@@ -12,6 +12,7 @@ import {
   type TaskProviderStatus,
   type TaskQuery
 } from "./task-provider";
+import { isExpCompletionPercent } from "./exp-completion-percent";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
@@ -188,6 +189,9 @@ export class MarkdownTaskProvider implements TaskProvider {
       expState: frontmatter.exp_state === "earned"
         ? "earned"
         : frontmatter.exp_state === "planned" ? "planned" : null,
+      expCompletionPercent: isExpCompletionPercent(frontmatter.exp_completion_percent)
+        ? frontmatter.exp_completion_percent
+        : null,
       recurrence: scalar(frontmatter.recurrence),
       completedDate: scalar(frontmatter.completedDate),
       completedInstances: array(frontmatter.complete_instances),

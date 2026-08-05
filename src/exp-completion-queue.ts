@@ -133,6 +133,10 @@ export class ExpCompletionQueueStore {
           completionTokens: number(row.completion_tokens),
           costUsd: number(row.cost_usd),
           rubricVersion: number(row.rubric_version)
+          , completionPercent: row.completion_percent === 25 || row.completion_percent === 50
+            || row.completion_percent === 75 || row.completion_percent === 100
+            ? row.completion_percent
+            : undefined
         } satisfies ExpRecordInput
       : undefined;
     return {
@@ -177,6 +181,7 @@ export class ExpCompletionQueueStore {
         `completion_tokens: ${JSON.stringify(input.completionTokens ?? null)}`,
         `cost_usd: ${JSON.stringify(input.costUsd ?? null)}`,
         `rubric_version: ${input.rubricVersion ?? 1}`
+        , `completion_percent: ${JSON.stringify(input.completionPercent ?? null)}`
       ] : []),
       `error: ${JSON.stringify(proposal.error ?? "")}`,
       "---",

@@ -10,6 +10,7 @@ import {
   type TaskProviderStatus,
   type TaskQuery
 } from "./task-provider";
+import { isExpCompletionPercent } from "./exp-completion-percent";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -255,6 +256,9 @@ export class TaskNotesProvider implements TaskProvider {
       timeEstimate,
       exp,
       expState: rawExpState === "earned" ? "earned" : rawExpState === "planned" ? "planned" : null,
+      expCompletionPercent: isExpCompletionPercent(frontmatter.exp_completion_percent)
+        ? frontmatter.exp_completion_percent
+        : null,
       recurrence: optionalString(task.recurrence),
       completedDate,
       completedInstances,

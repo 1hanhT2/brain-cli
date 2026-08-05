@@ -6,6 +6,7 @@ import type { ExpRecordInput, TaskExpState } from "./exp-core";
 import type { ExpService } from "./exp-service";
 import type { BrainSettings } from "./settings";
 import type { TaskService } from "./task-service";
+import { completionPercentFromTitle, scaledExpForCompletion } from "./exp-completion-percent";
 
 interface CompletionObservation {
   token: string;
@@ -248,13 +249,13 @@ export class ExpCompletionCoordinator {
     let input: ExpRecordInput | undefined;
     if (existing) {
       const source = await this.expService.latestEvent(task.path);
-      input = this.reusePlanned(task.path, observation, existing, recurring, source?.id);
+      input = this.reusePlanned(task, observation, existing, recurring, source?.id);
     } else if (this.getSettings().autoScoreCompletedTaskExp) {
-      input = (await this.scorer.proposeAward(
+      input = this.applyCompletionPercent(task, (await this.scorer.proposeAward(
         task.path,
         observation.token,
         observation.at
-      )).input;
+      )).input);
     }
 
     if (!input) {
@@ -290,25 +291,46 @@ export class ExpCompletionCoordinator {
   }
 
   private reusePlanned(
-    path: string,
+    task: BrainTask,
     observation: CompletionObservation,
     state: TaskExpState,
     recurring: boolean,
     sourceEventId?: string
   ): ExpRecordInput {
+    const completionPercent = completionPercentFromTitle(task.title)
+      ?? state.completionPercent
+      ?? 100;
+    const plannedValue = state.plannedValue ?? state.value;
+    const value = scaledExpForCompletion(plannedValue, completionPercent);
     return {
-      path,
+      path: task.path,
       action: "award",
-      value: state.value,
+      value,
       confidence: state.confidence,
-      reason: state.reason,
+      reason: completionPercent === 100
+        ? state.reason
+        : `${state.reason} Award scaled from ${plannedValue} EXP for the ${completionPercent}% completion marker.`,
       factors: state.factors,
       allowRepeat: recurring && state.state === "earned",
       completionToken: observation.token,
       completionAt: observation.at,
       scoringSource: "planned-reuse",
       sourceEventId,
-      rubricVersion: 1
+      rubricVersion: 1,
+      completionPercent
+    };
+  }
+
+  private applyCompletionPercent(task: BrainTask, input: ExpRecordInput): ExpRecordInput {
+    const completionPercent = completionPercentFromTitle(task.title) ?? task.expCompletionPercent ?? 100;
+    const value = scaledExpForCompletion(input.value, completionPercent);
+    return {
+      ...input,
+      value,
+      reason: completionPercent === 100
+        ? input.reason
+        : `${input.reason} Award scaled from ${input.value} EXP for the ${completionPercent}% completion marker.`,
+      completionPercent
     };
   }
 

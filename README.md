@@ -125,6 +125,12 @@ picker. Files are inserted as `@[[full/vault/path.md]]`, so the model can call
 the normal approval-aware note tools for their contents. Skills are offered
 when `@` begins the prompt. After selecting a skill, typing a space shows every
 completion declared by that skill's `SKILL.md` frontmatter.
+Natural dates appear ahead of ordinary filename matches. `@today`,
+`@yesterday`, `@tomorrow`, bare weekdays, and `this`/`next`/`last` weekday
+phrases (with spaces or hyphens) offer both the configured Daily Notes file and
+the plain local `YYYY-MM-DD` date. A missing daily note can be created only
+after confirmation; Brain honors the Daily Notes folder, filename format, and
+template without replacing an existing note.
 `@exp` toggles EXP for the current conversation. EXP view requests such as
 `@exp history`, `@exp check`, and `@exp pending` run locally; other forms such as `@exp score this task` enable
 the skill and send the remaining request. `/skill <name>` remains available
@@ -238,10 +244,10 @@ call; unscored completions either use the background model or remain
 `needs-score`, according to `/config`.
 
 `@exp pending` contains completed-task award proposals only. `@exp unscored`
-lists accessible tasks with neither planned nor earned EXP, and `@exp sync`
+lists accessible tasks with neither planned nor earned EXP, and `@exp reconcile`
 requeues open unscored tasks while reconciling completed-task awards. Automatic
-planned-score failures are retained locally with their last error until a sync
-retries them or the task is resolved.
+planned-score failures are retained locally with their last error until
+`@exp reconcile` retries them or the task is resolved.
 Factor explanations returned as strings, ratings, or structured
 explanation/reasoning objects are normalized before strict EXP validation.
 
@@ -259,7 +265,9 @@ unreviewed EXP writes.
 EXP-owned task metadata, moves ledger, goal, and pending proposal notes to
 recoverable Obsidian trash, clears local queues, and baselines existing
 completions so historical work is not immediately re-awarded. Other TaskNotes
-fields and automatic EXP settings are preserved.
+fields and automatic EXP settings are preserved. If any task metadata cannot
+be cleared, ledger and goal artifacts remain in place so its audit history is
+not removed; resolve the reported task and run the reset again.
 
 When automatic award writes are disabled, `@exp pending` opens a CLI checklist.
 Use arrows to navigate, Space to select ready proposals, and Enter to show one
