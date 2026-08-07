@@ -198,13 +198,14 @@ export class ExpService {
 
     const now = new Date().toISOString();
     const revision = (existing?.revision ?? 0) + 1;
-    const completionPercent = clean.completionPercent
-      ?? completionPercentFromTitle(task.title)
-      ?? task.expCompletionPercent
-      ?? existing?.completionPercent
-      ?? 100;
+    const isAward = clean.action === "award";
+    const completionPercent = isAward
+      ? (clean.completionPercent ?? completionPercentFromTitle(task.title) ?? task.expCompletionPercent ?? existing?.completionPercent ?? 100)
+      : (completionPercentFromTitle(task.title) ?? task.expCompletionPercent ?? existing?.completionPercent ?? null);
     const plainTitle = stripExpTitlePrefix(task.title);
-    const storedTitle = formatExpCompletionTitle(task.title, completionPercent, clean.value, this.getTitleMaxLength());
+    const storedTitle = completionPercent == null
+      ? formatExpTaskTitle(task.title, clean.value, this.getTitleMaxLength())
+      : formatExpCompletionTitle(task.title, completionPercent, clean.value, this.getTitleMaxLength());
     const sensitivity = await this.taskService.inspectSensitivity(task.path);
     const ledger = this.makeLedgerEntry(
       clean,

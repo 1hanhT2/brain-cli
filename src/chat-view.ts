@@ -282,6 +282,16 @@ export class BrainChatView extends ItemView {
   private commandHintEl!: HTMLElement;
   private abortController: AbortController | null = null;
   private pendingApproval: { finish: (approved: boolean) => void } | null = null;
+  private readonly handleVisualViewport = (): void => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const inset = Math.max(0, window.innerHeight - vv.height);
+    if (inset > 0) {
+      this.containerEl.style.paddingBottom = `${inset}px`;
+    } else {
+      this.containerEl.style.paddingBottom = "";
+    }
+  };
   private activeAssistantBody: HTMLElement | null = null;
   private activePartial = "";
   private activeMemoryContext: ChatMessage | null = null;
@@ -353,12 +363,14 @@ export class BrainChatView extends ItemView {
       await this.refreshDailyNoteSettings();
       await this.refreshChatSummaries();
       this.unsubscribeSemantic = this.plugin.semanticIndex.subscribe((status) => this.renderSemanticStatus(status));
+      window.visualViewport?.addEventListener("resize", this.handleVisualViewport, { passive: true });
     } finally {
       finish();
     }
   }
 
   async onClose(): Promise<void> {
+    window.visualViewport?.removeEventListener("resize", this.handleVisualViewport);
     this.abortController?.abort();
     this.closeConfigMenu(false);
     this.closeFolderPicker(false);
@@ -1897,7 +1909,7 @@ export class BrainChatView extends ItemView {
       }
       await this.handleSkillCommand("exp");
       await this.addTerminalOutput(
-        "EXP calibration mode is ready. Describe completed work or name a TaskNotes task. Brain will inspect it, apply the rubric, propose one score, and show an approval preview before writing the task and Markdown ledger."
+        "EXP calibration mode is ready. Describe completed work or name a TaskNotes task. Brain will inspect it, apply the rubric, propose one score, and show an approval preview before writing the task and appending the EXP ledger."
       );
       return;
     }

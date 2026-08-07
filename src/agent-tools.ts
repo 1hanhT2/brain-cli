@@ -882,7 +882,7 @@ export class AgentToolRegistry {
           type: "function",
           function: {
             name: "record_task_exp",
-            description: "Plan, award, or recalibrate task EXP. Writes task frontmatter and an immutable Markdown ledger entry after approval.",
+            description: "Plan, award, or recalibrate task EXP. Writes task frontmatter and appends an immutable ledger entry to Brain/EXP/ledger.json after approval.",
             parameters: {
               type: "object",
               properties: {
@@ -929,7 +929,7 @@ export class AgentToolRegistry {
                 completion_percent: {
                   type: "integer",
                   enum: [25, 50, 75, 100],
-                  description: "Amount of the task completed. Stored in both title and exp_completion_percent frontmatter."
+                  description: "Amount of the task completed. Completed work only: stored in both title and exp_completion_percent frontmatter. Ignored for plan actions, which never carry a completion marker."
                 }
               },
               required: ["path", "action", "value", "confidence", "reason", "factors"],
@@ -951,7 +951,7 @@ export class AgentToolRegistry {
           type: "function",
           function: {
             name: "set_task_exp_completion_percent",
-            description: "@exp workflow only: set a task's 25/50/75/100% completion marker in both its title and exp_completion_percent frontmatter. A later TaskNotes completion uses this percentage to scale the earned EXP.",
+            description: "@exp workflow only: set a task's 25/50/75/100% completion marker for completed work in both its title and exp_completion_percent frontmatter. A later TaskNotes completion uses this percentage to scale the earned EXP. Never use it on a task that is not actually completed.",
             parameters: {
               type: "object",
               properties: {
@@ -1649,7 +1649,7 @@ export class AgentToolRegistry {
         after: expPreview(next),
         beforeLabel: "Current EXP",
         afterLabel: "Proposed EXP",
-        details: `${task.citation}\nTitle → ${taskDisplayTitle({ ...task, exp: next.value })}\nImmutable Markdown ledger entry · time fields remain unchanged`
+        details: `${task.citation}\nTitle → ${taskDisplayTitle({ ...task, exp: next.value })}\nImmutable EXP ledger entry (ledger.json) · time fields remain unchanged`
       };
     } else if (call.function.name === "set_task_exp_completion_percent") {
       const path = stringArg(input, "path");

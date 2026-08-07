@@ -45,7 +45,7 @@ const EXP_COMPLETIONS_YAML = EXP_COMPLETIONS
   .join("\n");
 const LEGACY_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created. This remains a separate approval. Tasks created directly in TaskNotes are not sent to a model automatically; score them when the user invokes this skill or asks for unscored tasks.";
 const CURRENT_EXP_CREATION_RULE = "When this skill is active and Brain creates a task, propose planned EXP immediately after the task is created unless the environment reports that automatic task scoring is enabled. Manual proposals remain separately approved. When automatic task scoring is enabled, newly created non-sensitive TaskNotes are scored by the configured background model and written through the EXP service.";
-const BUNDLED_SKILLS_VERSION = 12;
+const BUNDLED_SKILLS_VERSION = 13;
 const WRITING_COACH_COMPLETIONS: SkillCompletion[] = [
   { value: "Coach ", description: "Add a draft file, interval, and writing goal" },
   { value: "status", description: "Show the current coaching session" },
@@ -331,13 +331,13 @@ export class SkillRegistry {
     if (!migrated.includes("Every actionable task should have an expected value before completion.")) {
       migrated = migrated.replace(
         "The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event.",
-        "Every actionable task should have an expected value before completion. For an open task, `exp` is planned EXP: what the task is expected to earn. Completion changes that planned value to earned EXP; it is not the event that first gives the task a value. If the user asks about an open task whose EXP is null, inspect and plan its EXP now with `record_task_exp`. Never answer that it must be completed before it can receive an EXP value, and never treat automatic scoring being enabled as proof that a missing score will appear later.\n\nThe EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event."
+        "Every actionable task should have an expected value before completion. For an open task, `exp` is planned EXP: what the task is expected to earn. Completion changes that planned value to earned EXP; it is not the event that first gives the task a value. If the user asks about an open task whose EXP is null, inspect and plan its EXP now with `record_task_exp`. Never answer that it must be completed before it can receive an EXP value, and never treat automatic scoring being enabled as proof that a missing score will appear later.\n\nThe EXP service preserves time fields, writes the current score to the task, and appends the event to the immutable EXP ledger at `Brain/EXP/ledger.json`. Completion percentage (`exp_completion_percent`, shown as `[25%]`-`[100%]` in the title) is recorded only when work is actually completed; planned scores never carry a completion marker."
       );
     }
     if (!migrated.includes("Use `@exp reset` to preview a full reset")) {
       migrated = migrated.replace(
         "The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event.",
-        "Use `@exp reset` to preview a full reset and `@exp reset --confirm` only after the user explicitly chooses to proceed. A reset removes EXP-owned task metadata, moves ledger, goal, and pending proposal notes to recoverable Obsidian trash, clears local EXP queues, and baselines existing completions so they are not re-awarded. It preserves unrelated task fields and automation settings.\n\nThe EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event."
+        "Use `@exp reset` to preview a full reset and `@exp reset --confirm` only after the user explicitly chooses to proceed. A reset removes EXP-owned task metadata, moves ledger, goal, and pending proposal notes to recoverable Obsidian trash, clears local EXP queues, and baselines existing completions so they are not re-awarded. It preserves unrelated task fields and automation settings.\n\nThe EXP service preserves time fields, writes the current score to the task, and appends the event to the immutable EXP ledger at `Brain/EXP/ledger.json`. Completion percentage (`exp_completion_percent`, shown as `[25%]`-`[100%]` in the title) is recorded only when work is actually completed; planned scores never carry a completion marker."
       );
     }
     if (!migrated.includes("If any task metadata cannot be cleared, ledger and goal artifacts remain in place")) {

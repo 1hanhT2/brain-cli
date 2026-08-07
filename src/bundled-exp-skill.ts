@@ -54,7 +54,7 @@ Evaluate meaningful output while retaining time only as supporting context.
 
 Use \`@exp reset\` to preview a full reset and \`@exp reset --confirm\` only after the user explicitly chooses to proceed. A reset removes EXP-owned task metadata, moves ledger, goal, and pending proposal notes to recoverable Obsidian trash, clears local EXP queues, and baselines existing completions so they are not re-awarded. It preserves unrelated task fields and automation settings. If any task metadata cannot be cleared, ledger and goal artifacts remain in place so that task keeps its audit history; report the affected task and tell the user to resolve it before retrying.
 
-The EXP service preserves time fields, writes the current score to the task, and adds an immutable Markdown ledger event. Never award the same completion twice. The completion cutoff applies to automatic detection and \`@exp check\`; completions before it are ignored while the cutoff date itself is included. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion.
+The EXP service preserves time fields, writes the current score to the task, and appends the event to the immutable EXP ledger at \`Brain/EXP/ledger.json\`. Never award the same completion twice. The completion cutoff applies to automatic detection and \`@exp check\`; completions before it are ignored while the cutoff date itself is included. Set \`allow_repeat\` only for a new recurrence or an intentional additional completion. Completion percentage (\`exp_completion_percent\`, shown as \`[25%]\`-\`[100%]\` in the title) is recorded only when work is actually completed; planned scores never carry a completion marker.
 
 Every actionable task should have an expected value before completion. For an open task, \`exp\` is planned EXP: what the task is expected to earn. Completion changes that planned value to earned EXP; it is not the event that first gives the task a value. If the user asks about an open task whose EXP is null, inspect and plan its EXP now with \`record_task_exp\`. Never answer that it must be completed before it can receive an EXP value, and never treat automatic scoring being enabled as proof that a missing score will appear later.
 
@@ -125,13 +125,13 @@ The task note stores its current EXP state in flat frontmatter:
 - \`exp_task_id: stable task identifier\`
 - \`exp_last_completion_id: most recently awarded completion or null\`
 
-Every plan, award, and recalibration also creates an immutable ordinary Markdown
-event under \`Brain/EXP/Ledger/YYYY-MM/\` (or the configured Brain folder).
+Every plan, award, and recalibration is appended to the immutable EXP ledger at
+\`Brain/EXP/ledger.json\` (or the configured Brain folder).
 Version 2 award events can include a completion identifier, actual completion
 time, scoring source, originating model, token usage, cost, and rubric version.
 Totals and streaks count only events whose action is \`award\`. This keeps
 recurring-task awards, adjustments, and calibration history reproducible without
-a SQL database. Time-tracking fields are never removed or rewritten.
+a SQL database. Time-tracking fields are never removed or rewritten. \`exp_completion_percent\` (and the \`[xx%]\` title marker) is set only for completed work; planned scores carry no completion marker.
 `;
 
 export const EXP_GOALS = `# EXP goals
