@@ -7,10 +7,16 @@ export interface ToolCall {
   };
 }
 
+export interface ChatCitation {
+  url: string;
+  title?: string;
+}
+
 export interface ChatCompletionResult {
   content: string;
   finishReason: string | null;
   toolCalls: ToolCall[];
+  citations: ChatCitation[];
 }
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -50,9 +56,23 @@ export const parseBufferedChatCompletion = (
       }
     };
   });
+  const citations: ChatCitation[] = [];
+  const annotations = Array.isArray(message.annotations) ? message.annotations : [];
+  for (const entry of annotations) {
+    const annotation = record(entry);
+    if (annotation.type !== "url_citation") continue;
+    const citation = record(annotation.url_citation);
+    const url = typeof citation.url === "string" ? citation.url : "";
+    if (!url) continue;
+    citations.push({
+      url,
+      title: typeof citation.title === "string" ? citation.title : undefined
+    });
+  }
   return {
     content,
     finishReason: typeof choice.finish_reason === "string" ? choice.finish_reason : null,
-    toolCalls
+    toolCalls,
+    citations
   };
 };

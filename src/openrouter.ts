@@ -21,7 +21,7 @@ import {
 import { abortError, raceWithAbort, throwIfAborted } from "./abort";
 
 export type { FunctionToolDefinition as ToolDefinition } from "./openrouter-tools";
-export type { ChatCompletionResult, ToolCall } from "./openrouter-response";
+export type { ChatCitation, ChatCompletionResult, ToolCall } from "./openrouter-response";
 
 interface ModelListResponse {
   data?: OpenRouterModel[];

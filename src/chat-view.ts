@@ -10,13 +10,11 @@ import {
   moment,
   normalizePath,
   setIcon,
-  FuzzySuggestModal,
   type App,
   type WorkspaceLeaf
 } from "obsidian";
 import type BrainCliPlugin from "./main";
-import type { ChatMessage, FileAttachmentMeta, ToolCall, UserContentPart } from "./openrouter";
-import { isVaultPathSafe, requiresApproval } from "./permissions";
+import type { ChatCitation, ChatMessage, FileAttachmentMeta, ToolCall, UserContentPart } from "./openrouter";import { isVaultPathSafe, requiresApproval } from "./permissions";
 import type { ToolRisk, OpenRouterModel } from "./types";
 import type { EmbeddingModel, RetrievalMode, SemanticIndexStatus } from "./semantic-types";
 import { titleFromMessage, type ChatState, type ChatSummary } from "./chat-format";
@@ -261,73 +259,6 @@ class ConfirmModal extends Modal {
   }
 }
 
-class FilePickerModal extends FuzzySuggestModal<TFile> {
-  private settled = false;
-  private resolve!: (value: TFile[]) => void;
-  readonly result = new Promise<TFile[]>((resolve) => { this.resolve = resolve; });
-  private selected: TFile[] = [];
-
-  constructor(app: App) {
-    super(app);
-    this.setPlaceholder("Type to filter Markdown files…");
-    this.limit = 50;
-    this.setInstructions([
-      { command: "↑↓", purpose: "navigate" },
-      { command: "↵", purpose: "choose" },
-      { command: "⇧↵", purpose: "add another" }
-    ]);
-  }
-
-  getItems(): TFile[] {
-    const query = (this.inputEl.value ?? "").trim().toLocaleLowerCase();
-    const files = this.app.vault.getMarkdownFiles();
-    if (!query) return files;
-    return files.filter((file) =>
-      file.path.toLocaleLowerCase().includes(query) || file.name.toLocaleLowerCase().includes(query)
-    );
-  }
-
-  getItemText(file: TFile): string {
-    return file.path;
-  }
-
-  onChooseItem(file: TFile): void {
-    this.choose(file, true);
-  }
-
-  private choose(file: TFile, close: boolean): void {
-    if (!this.selected.some((existing) => existing.path === file.path)) this.selected.push(file);
-    if (close) this.finish();
-  }
-
-  private finish(): void {
-    if (this.settled) return;
-    this.settled = true;
-    this.resolve([...this.selected]);
-    this.close();
-  }
-
-  onOpen(): void {
-    super.onOpen();
-    this.inputEl?.addEventListener("keydown", (event) => {
-      if (event.shiftKey && event.key === "Enter") {
-        event.preventDefault();
-        const chooser = (this as unknown as { chooser?: { values?: TFile[]; selectedItem?: number } }).chooser;
-        const item = chooser?.values?.[chooser.selectedItem ?? 0] as TFile | undefined;
-        if (item) this.choose(item, false);
-      }
-    });
-  }
-
-  onClose(): void {
-    if (!this.settled) {
-      this.settled = true;
-      this.resolve([...this.selected]);
-    }
-    super.onClose();
-  }
-}
-
 export class BrainChatView extends ItemView {
   private transcriptEl!: HTMLElement;
   private statusEl!: HTMLElement;
@@ -346,7 +277,6 @@ export class BrainChatView extends ItemView {
   private modelDetailsEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
   private sendButton!: HTMLButtonElement;
-  private attachButton!: HTMLButtonElement;
   private pdfAttachButton!: HTMLButtonElement;
   private attachmentTrayEl!: HTMLElement;
   private pendingAttachments: FileAttachmentMeta[] = [];
@@ -450,6 +380,7 @@ export class BrainChatView extends ItemView {
     this.unsubscribeSemantic?.();
     this.unsubscribeSemantic = null;
     this.disposeMarkdownComponents();
+    this.clearAttachmentMemory();
   }
 
   private renderHeader(): void {
@@ -529,12 +460,6 @@ export class BrainChatView extends ItemView {
         spellcheck: "true"
       }
     });
-    this.attachButton = row.createEl("button", {
-      cls: "brain-cli-attach-button",
-      attr: { "aria-label": "Attach files", title: "Attach files" }
-    });
-    setIcon(this.attachButton, "paperclip");
-    this.attachButton.addEventListener("click", () => void this.attachFiles());
     this.pdfAttachButton = row.createEl("button", {
       cls: "brain-cli-attach-button",
       attr: { "aria-label": "Attach a PDF from your device", title: "Attach a PDF from your device" }
@@ -704,58 +629,51 @@ export class BrainChatView extends ItemView {
     });
   }
 
-  private async attachFiles(): Promise<void> {
-    const modal = new FilePickerModal(this.app);
-    modal.open();
-    const files = await modal.result;
-    if (files.length === 0) return;
-    const mentions = files.map((file) => fileMention(file.path));
-    const completion = `${mentions.join(" ")} `;
-    const before = this.inputEl.value.slice(0, this.inputEl.selectionStart ?? this.inputEl.value.length);
-    const after = this.inputEl.value.slice(this.inputEl.selectionEnd ?? this.inputEl.value.length);
-    this.inputEl.value = `${before}${completion}${after}`;
-    const cursor = before.length + completion.length;
-    this.inputEl.focus();
-    this.inputEl.setSelectionRange(cursor, cursor);
-    this.updateCommandSuggestions();
-  }
-
-  private async attachPdf(): Promise<void> {
+  private attachPdf(): Promise<void> {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "application/pdf,.pdf";
-    const bytes = await new Promise<string | null>((resolve) => {
-      input.addEventListener("change", () => {
-        const file = input.files?.[0];
-        if (!file) {
-          resolve(null);
+    input.style.display = "none";
+    document.body.appendChild(input);
+    const cleanup = () => {
+      input.removeEventListener("change", onChange);
+      input.remove();
+    };
+    const onChange = () => {
+      cleanup();
+      const file = input.files?.[0];
+      if (!file) return;
+      if (file.size > 20 * 1024 * 1024) {
+        new Notice(`"${file.name}" is larger than the 20 MB attachment limit.`);
+        return;
+      }
+      if (file.type && file.type !== "application/pdf" && !file.name.toLocaleLowerCase().endsWith(".pdf")) {
+        new Notice(`"${file.name}" is not a PDF file.`);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onerror = () => new Notice(`Could not read "${file.name}".`);
+      reader.onload = () => {
+        const bytes = typeof reader.result === "string" ? reader.result : null;
+        if (!bytes) {
+          new Notice(`Could not read "${file.name}".`);
           return;
         }
-        if (file.size > 20 * 1024 * 1024) {
-          new Notice(`"${file.name}" is larger than the 20 MB attachment limit.`);
-          resolve(null);
-          return;
-        }
-        if (file.type && file.type !== "application/pdf" && !file.name.toLocaleLowerCase().endsWith(".pdf")) {
-          new Notice(`"${file.name}" is not a PDF file.`);
-          resolve(null);
-          return;
-        }
-        const reader = new FileReader();
-        reader.onerror = () => resolve(null);
-        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
-        reader.readAsDataURL(file);
-      });
-      input.click();
-    });
-    if (!bytes) return;
-    const name = input.files?.[0]?.name ?? "attachment.pdf";
-    const size = input.files?.[0]?.size ?? 0;
-    const mime = input.files?.[0]?.type || "application/pdf";
-    const id = `att-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    this.attachmentBytes.set(id, bytes);
-    this.pendingAttachments.push({ id, name, mime, size });
-    this.renderAttachmentTray();
+        const id = `att-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        this.attachmentBytes.set(id, bytes);
+        this.pendingAttachments.push({
+          id,
+          name: file.name,
+          mime: file.type || "application/pdf",
+          size: file.size
+        });
+        this.renderAttachmentTray();
+      };
+      reader.readAsDataURL(file);
+    };
+    input.addEventListener("change", onChange);
+    input.click();
+    return Promise.resolve();
   }
 
   private removePendingAttachment(id: string): void {
@@ -767,6 +685,11 @@ export class BrainChatView extends ItemView {
   }
 
   private clearPendingAttachments(): void {
+    this.pendingAttachments = [];
+    this.renderAttachmentTray();
+  }
+
+  private clearAttachmentMemory(): void {
     this.pendingAttachments = [];
     this.attachmentBytes.clear();
     this.renderAttachmentTray();
@@ -2962,6 +2885,12 @@ export class BrainChatView extends ItemView {
       assistantBody.removeClass("brain-cli-stream-cursor");
 
       let completed = result.content || this.activePartial;
+      if (result.citations.length > 0) {
+        this.addWebSearchCard(result.citations);
+        result.citations.forEach((citation) => {
+          if (citation.url) this.turnCitations.add(citation.url);
+        });
+      }
       if (result.toolCalls.length === 0 && completed && this.turnCitations.size > 0) {
         const missing = [...this.turnCitations].filter((citation) => !completed.includes(citation));
         if (missing.length > 0) completed = `${completed}\n\n**Sources:** ${missing.join(" · ")}`;
@@ -3253,6 +3182,29 @@ export class BrainChatView extends ItemView {
     };
   }
 
+  private addWebSearchCard(citations: ChatCitation[]): void {
+    this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
+    const card = this.transcriptEl.createDiv({ cls: "brain-cli-tool brain-cli-web-search" });
+    card.setAttribute("role", "group");
+    card.setAttribute("aria-label", "Web search performed");
+    const header = card.createDiv({ cls: "brain-cli-tool-header" });
+    header.createSpan({ cls: "brain-cli-tool-name", text: "Web search" });
+    header.createSpan({ cls: "brain-cli-tool-risk", text: "read" });
+    header.createSpan({ cls: "brain-cli-tool-status", text: `${citations.length} result${citations.length === 1 ? "" : "s"}` });
+    card.dataset.state = "success";
+    const sources = card.createDiv({ cls: "brain-cli-tool-sources" });
+    if (citations.length > 0) {
+      sources.createSpan({ text: "Sources: " });
+      const links = sources.createSpan();
+      const markdown = [...new Set(citations
+        .map((citation) => `[${(citation.title ?? citation.url).replace(/\]/g, "\\]")}](${citation.url})`)
+        .filter((link) => !link.includes("javascript:")))]
+        .join(" · ");
+      void this.renderInlineMarkdown(links, markdown);
+    }
+    card.scrollIntoView({ block: "end" });
+  }
+
   private async ensureCurrentChat(firstMessage: string): Promise<void> {
     if (this.currentChat) return;
     await this.plugin.ensureDataLayout();
@@ -3441,6 +3393,7 @@ export class BrainChatView extends ItemView {
       this.sensitiveToolCallIds.clear();
       this.sensitiveAssistantMessages.clear();
       this.sensitiveContextActive = false;
+      this.clearAttachmentMemory();
       this.messages = this.currentChat.messages;
       this.interactionMode = this.currentChat.mode === "plan" ? "plan" : "default";
       this.transcriptVisibleStart = null;
@@ -3467,6 +3420,7 @@ export class BrainChatView extends ItemView {
     this.sensitiveToolCallIds.clear();
     this.sensitiveAssistantMessages.clear();
     this.sensitiveContextActive = false;
+    this.clearAttachmentMemory();
     this.messages = [createSystemMessage()];
     this.interactionMode = "default";
     this.transcriptVisibleStart = null;
