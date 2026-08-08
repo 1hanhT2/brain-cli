@@ -83,12 +83,15 @@ const readableMessage = (message: ChatMessage): string | null => {
     return `> Tool result: \`${message.name ?? "tool"}\`\n`;
   }
   const heading = message.role === "user" ? "User" : "Assistant";
-  const content = message.content?.trim();
+  const content = typeof message.content === "string" ? message.content.trim() : "";
+  const attachmentLines = message.role === "user" && message.attachments
+    ? message.attachments.map((attachment) => `> Attachment: \`${attachment.name}\``)
+    : [];
   const toolLines = message.role === "assistant"
     ? (message.tool_calls ?? []).map((call) => `> Tool requested: \`${call.function.name}\``)
     : [];
-  if (!content && toolLines.length === 0) return null;
-  return [`## ${heading}`, "", content ?? "", ...toolLines, ""].join("\n");
+  if (!content && toolLines.length === 0 && attachmentLines.length === 0) return null;
+  return [`## ${heading}`, "", content ?? "", ...attachmentLines, ...toolLines, ""].join("\n");
 };
 
 export const renderChatMarkdown = (state: ChatState): string => {

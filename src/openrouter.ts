@@ -43,10 +43,26 @@ interface EmbeddingResponse extends OpenRouterErrorBody {
   };
 }
 
+export type UserContentPart =
+  | { type: "text"; text: string }
+  | { type: "file"; file: { filename: string; file_data: string } };
+
+export interface FileAttachmentMeta {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+}
+
 export type ChatMessage =
   | {
-      role: "system" | "user";
+      role: "system";
       content: string;
+    }
+  | {
+      role: "user";
+      content: string | UserContentPart[];
+      attachments?: FileAttachmentMeta[];
     }
   | {
       role: "assistant";

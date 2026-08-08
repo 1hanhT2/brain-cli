@@ -11,7 +11,17 @@ const messageText = (message: ChatMessage): string => {
       `TOOL REQUEST ${call.function.name}: ${call.function.arguments}`
     ).join("\n")
     : "";
-  return `${message.role.toUpperCase()}: ${message.content ?? ""}${toolCalls ? `\n${toolCalls}` : ""}`;
+  const content = Array.isArray(message.content)
+    ? message.content.map((part) => part.type === "text" ? part.text : `[file: ${part.file.filename}]`).join("\n")
+    : (message.content ?? "");
+  const attachments = message.role === "user" && message.attachments
+    ? message.attachments.map((attachment) => `ATTACHMENT ${attachment.name} (${attachment.size} bytes)`).join("\n")
+    : "";
+  return [
+    `${message.role.toUpperCase()}: ${content}`,
+    attachments,
+    toolCalls
+  ].filter(Boolean).join("\n");
 };
 
 export const estimateMessageTokens = (messages: ChatMessage[]): number =>

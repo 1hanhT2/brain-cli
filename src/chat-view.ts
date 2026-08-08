@@ -10,11 +10,12 @@ import {
   moment,
   normalizePath,
   setIcon,
+  FuzzySuggestModal,
   type App,
   type WorkspaceLeaf
 } from "obsidian";
 import type BrainCliPlugin from "./main";
-import type { ChatMessage, ToolCall } from "./openrouter";
+import type { ChatMessage, FileAttachmentMeta, ToolCall, UserContentPart } from "./openrouter";
 import { isVaultPathSafe, requiresApproval } from "./permissions";
 import type { ToolRisk, OpenRouterModel } from "./types";
 import type { EmbeddingModel, RetrievalMode, SemanticIndexStatus } from "./semantic-types";
@@ -260,6 +261,73 @@ class ConfirmModal extends Modal {
   }
 }
 
+class FilePickerModal extends FuzzySuggestModal<TFile> {
+  private settled = false;
+  private resolve!: (value: TFile[]) => void;
+  readonly result = new Promise<TFile[]>((resolve) => { this.resolve = resolve; });
+  private selected: TFile[] = [];
+
+  constructor(app: App) {
+    super(app);
+    this.setPlaceholder("Type to filter Markdown files…");
+    this.limit = 50;
+    this.setInstructions([
+      { command: "↑↓", purpose: "navigate" },
+      { command: "↵", purpose: "choose" },
+      { command: "⇧↵", purpose: "add another" }
+    ]);
+  }
+
+  getItems(): TFile[] {
+    const query = (this.inputEl.value ?? "").trim().toLocaleLowerCase();
+    const files = this.app.vault.getMarkdownFiles();
+    if (!query) return files;
+    return files.filter((file) =>
+      file.path.toLocaleLowerCase().includes(query) || file.name.toLocaleLowerCase().includes(query)
+    );
+  }
+
+  getItemText(file: TFile): string {
+    return file.path;
+  }
+
+  onChooseItem(file: TFile): void {
+    this.choose(file, true);
+  }
+
+  private choose(file: TFile, close: boolean): void {
+    if (!this.selected.some((existing) => existing.path === file.path)) this.selected.push(file);
+    if (close) this.finish();
+  }
+
+  private finish(): void {
+    if (this.settled) return;
+    this.settled = true;
+    this.resolve([...this.selected]);
+    this.close();
+  }
+
+  onOpen(): void {
+    super.onOpen();
+    this.inputEl?.addEventListener("keydown", (event) => {
+      if (event.shiftKey && event.key === "Enter") {
+        event.preventDefault();
+        const chooser = (this as unknown as { chooser?: { values?: TFile[]; selectedItem?: number } }).chooser;
+        const item = chooser?.values?.[chooser.selectedItem ?? 0] as TFile | undefined;
+        if (item) this.choose(item, false);
+      }
+    });
+  }
+
+  onClose(): void {
+    if (!this.settled) {
+      this.settled = true;
+      this.resolve([...this.selected]);
+    }
+    super.onClose();
+  }
+}
+
 export class BrainChatView extends ItemView {
   private transcriptEl!: HTMLElement;
   private statusEl!: HTMLElement;
@@ -278,6 +346,11 @@ export class BrainChatView extends ItemView {
   private modelDetailsEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
   private sendButton!: HTMLButtonElement;
+  private attachButton!: HTMLButtonElement;
+  private pdfAttachButton!: HTMLButtonElement;
+  private attachmentTrayEl!: HTMLElement;
+  private pendingAttachments: FileAttachmentMeta[] = [];
+  private readonly attachmentBytes = new Map<string, string>();
   private commandSuggestionsEl!: HTMLElement;
   private commandHintEl!: HTMLElement;
   private abortController: AbortController | null = null;
@@ -441,6 +514,8 @@ export class BrainChatView extends ItemView {
     this.commandSuggestionsEl.id = this.suggestionsId;
     this.commandSuggestionsEl.setAttribute("role", "listbox");
     this.commandSuggestionsEl.setAttribute("aria-label", "Command, skill, and file suggestions");
+    this.attachmentTrayEl = composer.createDiv({ cls: "brain-cli-attachment-tray" });
+    this.attachmentTrayEl.hidden = true;
     const row = composer.createDiv({ cls: "brain-cli-composer-row" });
     row.createSpan({ cls: "brain-cli-shell-prompt", text: "brain>" });
     this.inputEl = row.createEl("textarea", {
@@ -454,6 +529,18 @@ export class BrainChatView extends ItemView {
         spellcheck: "true"
       }
     });
+    this.attachButton = row.createEl("button", {
+      cls: "brain-cli-attach-button",
+      attr: { "aria-label": "Attach files", title: "Attach files" }
+    });
+    setIcon(this.attachButton, "paperclip");
+    this.attachButton.addEventListener("click", () => void this.attachFiles());
+    this.pdfAttachButton = row.createEl("button", {
+      cls: "brain-cli-attach-button",
+      attr: { "aria-label": "Attach a PDF from your device", title: "Attach a PDF from your device" }
+    });
+    setIcon(this.pdfAttachButton, "file-text");
+    this.pdfAttachButton.addEventListener("click", () => void this.attachPdf());
     this.sendButton = row.createEl("button", {
       text: "↵",
       cls: "brain-cli-run-button",
@@ -617,6 +704,103 @@ export class BrainChatView extends ItemView {
     });
   }
 
+  private async attachFiles(): Promise<void> {
+    const modal = new FilePickerModal(this.app);
+    modal.open();
+    const files = await modal.result;
+    if (files.length === 0) return;
+    const mentions = files.map((file) => fileMention(file.path));
+    const completion = `${mentions.join(" ")} `;
+    const before = this.inputEl.value.slice(0, this.inputEl.selectionStart ?? this.inputEl.value.length);
+    const after = this.inputEl.value.slice(this.inputEl.selectionEnd ?? this.inputEl.value.length);
+    this.inputEl.value = `${before}${completion}${after}`;
+    const cursor = before.length + completion.length;
+    this.inputEl.focus();
+    this.inputEl.setSelectionRange(cursor, cursor);
+    this.updateCommandSuggestions();
+  }
+
+  private async attachPdf(): Promise<void> {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/pdf,.pdf";
+    const bytes = await new Promise<string | null>((resolve) => {
+      input.addEventListener("change", () => {
+        const file = input.files?.[0];
+        if (!file) {
+          resolve(null);
+          return;
+        }
+        if (file.size > 20 * 1024 * 1024) {
+          new Notice(`"${file.name}" is larger than the 20 MB attachment limit.`);
+          resolve(null);
+          return;
+        }
+        if (file.type && file.type !== "application/pdf" && !file.name.toLocaleLowerCase().endsWith(".pdf")) {
+          new Notice(`"${file.name}" is not a PDF file.`);
+          resolve(null);
+          return;
+        }
+        const reader = new FileReader();
+        reader.onerror = () => resolve(null);
+        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
+        reader.readAsDataURL(file);
+      });
+      input.click();
+    });
+    if (!bytes) return;
+    const name = input.files?.[0]?.name ?? "attachment.pdf";
+    const size = input.files?.[0]?.size ?? 0;
+    const mime = input.files?.[0]?.type || "application/pdf";
+    const id = `att-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    this.attachmentBytes.set(id, bytes);
+    this.pendingAttachments.push({ id, name, mime, size });
+    this.renderAttachmentTray();
+  }
+
+  private removePendingAttachment(id: string): void {
+    const index = this.pendingAttachments.findIndex((attachment) => attachment.id === id);
+    if (index < 0) return;
+    this.pendingAttachments.splice(index, 1);
+    this.attachmentBytes.delete(id);
+    this.renderAttachmentTray();
+  }
+
+  private clearPendingAttachments(): void {
+    this.pendingAttachments = [];
+    this.attachmentBytes.clear();
+    this.renderAttachmentTray();
+  }
+
+  private renderAttachmentTray(): void {
+    this.attachmentTrayEl.empty();
+    if (this.pendingAttachments.length === 0) {
+      this.attachmentTrayEl.hidden = true;
+      return;
+    }
+    this.attachmentTrayEl.hidden = false;
+    for (const attachment of this.pendingAttachments) {
+      const chip = this.attachmentTrayEl.createSpan({ cls: "brain-cli-attachment-chip" });
+      chip.createSpan({ cls: "brain-cli-attachment-chip-icon", text: "📄" });
+      chip.createSpan({
+        cls: "brain-cli-attachment-chip-name",
+        text: `${attachment.name} · ${this.formatBytes(attachment.size)}`
+      });
+      const remove = chip.createEl("button", {
+        cls: "brain-cli-attachment-chip-remove",
+        attr: { "aria-label": `Remove ${attachment.name}`, title: "Remove" }
+      });
+      setIcon(remove, "x");
+      remove.addEventListener("click", () => this.removePendingAttachment(attachment.id));
+    }
+  }
+
+  private formatBytes(size: number): string {
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   private async handleInput(text: string): Promise<void> {
     if (this.abortController) return;
     if (text.startsWith("/")) {
@@ -692,7 +876,9 @@ export class BrainChatView extends ItemView {
       await this.activateSkill(invocation.name, false);
       prompt = invocation.prompt;
     }
-    this.addMessage("user", text);
+    const pendingAttachments = this.pendingAttachments;
+    if (pendingAttachments.length > 0) this.clearPendingAttachments();
+    this.addMessage("user", text, pendingAttachments);
     if (mentionedFiles.length > 0) {
       this.messages.push({
         role: "system",
@@ -704,7 +890,11 @@ export class BrainChatView extends ItemView {
         ].join("\n")
       });
     }
-    this.messages.push({ role: "user", content: text });
+    this.messages.push({
+      role: "user",
+      content: text,
+      ...(pendingAttachments.length > 0 ? { attachments: pendingAttachments } : {})
+    });
     await this.ensureCurrentChat(text);
     await this.persistCurrentChat();
 
@@ -2826,14 +3016,33 @@ export class BrainChatView extends ItemView {
     const contexts: ChatMessage[] = [];
     if (this.interactionMode === "plan") contexts.push({ role: "system", content: planModeSystemMessage() });
     if (this.activeMemoryContext) contexts.push(this.activeMemoryContext);
-    if (contexts.length === 0) return this.messages;
-    const firstSystem = this.messages.findIndex((message) => message.role === "system");
-    const insertion = firstSystem < 0 ? 0 : firstSystem + 1;
-    return [
-      ...this.messages.slice(0, insertion),
-      ...contexts,
-      ...this.messages.slice(insertion)
-    ];
+    const base = contexts.length === 0 ? this.messages : (() => {
+      const firstSystem = this.messages.findIndex((message) => message.role === "system");
+      const insertion = firstSystem < 0 ? 0 : firstSystem + 1;
+      return [
+        ...this.messages.slice(0, insertion),
+        ...contexts,
+        ...this.messages.slice(insertion)
+      ];
+    })();
+    return base.map((message): ChatMessage => {
+      if (message.role !== "user" || !message.attachments || message.attachments.length === 0) {
+        return message;
+      }
+      const fileParts = message.attachments.flatMap((attachment): UserContentPart[] => {
+        const fileData = this.attachmentBytes.get(attachment.id);
+        if (!fileData) return [];
+        return [{ type: "file", file: { filename: attachment.name, file_data: fileData } }];
+      });
+      if (fileParts.length === 0) {
+        return { role: "user", content: typeof message.content === "string" ? message.content : "" };
+      }
+      const text = typeof message.content === "string" ? message.content : "";
+      return {
+        role: "user",
+        content: text ? [{ type: "text", text }, ...fileParts] : fileParts
+      };
+    });
   }
 
   private async handleToolCall(call: ToolCall, signal: AbortSignal): Promise<HandledToolCall> {
@@ -3344,6 +3553,7 @@ export class BrainChatView extends ItemView {
       .filter(({ message }) =>
         ((message.role === "user" || message.role === "assistant") && Boolean(message.content))
         || (message.role === "assistant" && Boolean(message.tool_calls?.length))
+        || (message.role === "user" && Boolean(message.attachments?.length))
       )
       .map(({ index }) => index);
     if (this.transcriptVisibleStart === null) {
@@ -3370,8 +3580,15 @@ export class BrainChatView extends ItemView {
     for (const [index, message] of this.messages.entries()) {
       if (index < firstMessageIndex) continue;
       if ((message.role === "user" || message.role === "assistant") && message.content) {
-        const body = this.addMessage(message.role, message.content);
+        const body = this.addMessage(
+          message.role,
+          typeof message.content === "string" ? message.content : "",
+          message.role === "user" ? message.attachments : undefined
+        );
         if (message.role === "assistant") await this.renderAssistantMarkdown(body, message.content);
+        visible = true;
+      } else if (message.role === "user" && message.attachments && message.attachments.length > 0) {
+        this.addMessage("user", "", message.attachments);
         visible = true;
       }
       if (message.role === "assistant") {
@@ -3959,7 +4176,7 @@ export class BrainChatView extends ItemView {
     return button;
   }
 
-  private addMessage(role: "user" | "assistant", text: string): HTMLElement {
+  private addMessage(role: "user" | "assistant", text: string, attachments?: FileAttachmentMeta[]): HTMLElement {
     this.transcriptEl.querySelector(".brain-cli-empty")?.remove();
     const message = this.transcriptEl.createDiv({ cls: "brain-cli-message" });
     message.dataset.role = role;
@@ -3969,7 +4186,16 @@ export class BrainChatView extends ItemView {
       cls: "brain-cli-message-label",
       text: role === "user" ? "you>" : "brain>"
     });
-    const body = message.createDiv({ cls: "brain-cli-message-body", text });
+    const body = message.createDiv({ cls: "brain-cli-message-body" });
+    if (attachments && attachments.length > 0) {
+      for (const attachment of attachments) {
+        body.createDiv({
+          cls: "brain-cli-transcript-attachment",
+          text: `📄 ${attachment.name} · ${this.formatBytes(attachment.size)}`
+        });
+      }
+    }
+    if (text) body.createDiv({ text });
     message.scrollIntoView({ block: "end" });
     return body;
   }
