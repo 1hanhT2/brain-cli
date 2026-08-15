@@ -201,7 +201,7 @@ export class ExpService {
     const isAward = clean.action === "award";
     const completionPercent = isAward
       ? (clean.completionPercent ?? completionPercentFromTitle(task.title) ?? task.expCompletionPercent ?? existing?.completionPercent ?? 100)
-      : (completionPercentFromTitle(task.title) ?? task.expCompletionPercent ?? existing?.completionPercent ?? null);
+      : null;
     const plainTitle = stripExpTitlePrefix(task.title);
     const storedTitle = completionPercent == null
       ? formatExpTaskTitle(task.title, clean.value, this.getTitleMaxLength())

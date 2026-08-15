@@ -646,6 +646,25 @@
   background: var(--brain-bg);
 }
 
+/*
+ * On Obsidian mobile and tablet the composer moves to the top, directly below
+ * the header, so the keyboard never covers the input. The transcript fills the
+ * remaining space underneath.
+ */
+body.is-mobile .brain-cli-view .brain-cli-composer {
+  order: 1;
+  border-top: 0;
+  border-bottom: var(--border-width, 1px) solid var(--brain-border);
+}
+
+body.is-mobile .brain-cli-view .brain-cli-transcript {
+  order: 2;
+}
+
+body.is-mobile .brain-cli-view .brain-cli-header {
+  order: 0;
+}
+
 .brain-cli-composer-row {
   display: flex;
   width: min(100%, var(--brain-content-width));

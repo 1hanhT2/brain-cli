@@ -80,6 +80,7 @@ export class BrainSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+    new Setting(containerEl).setName("Vault & folders").setHeading();
     new Setting(containerEl)
       .setName("Brain folder")
       .setDesc("Synced conversations, memories, calibration, and non-secret preferences live here.")
@@ -95,22 +96,23 @@ export class BrainSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("OpenRouter API key")
-      .setDesc("Stored in Obsidian SecretStorage, not in the vault or synced settings.")
-      .addComponent((component) => new SecretComponent(this.app, component)
-        .setValue(this.plugin.settings.openRouterSecretId)
-        .onChange(async (secretId) => {
-          this.plugin.settings.openRouterSecretId = secretId;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
       .setName("Fallback task folder")
       .setDesc("Folder used for generic Markdown tasks when the TaskNotes runtime API is unavailable.")
       .addText((text) => text
         .setValue(this.plugin.settings.fallbackTaskFolder)
         .onChange(async (value) => {
           this.plugin.settings.fallbackTaskFolder = normalizePath(value.trim() || "TaskNotes/Tasks");
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl).setName("API & models").setHeading();
+    new Setting(containerEl)
+      .setName("OpenRouter API key")
+      .setDesc("Stored in Obsidian SecretStorage, not in the vault or synced settings.")
+      .addComponent((component) => new SecretComponent(this.app, component)
+        .setValue(this.plugin.settings.openRouterSecretId)
+        .onChange(async (secretId) => {
+          this.plugin.settings.openRouterSecretId = secretId;
           await this.plugin.saveSettings();
         }));
 
@@ -152,6 +154,7 @@ export class BrainSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    new Setting(containerEl).setName("Automatic EXP scoring").setHeading();
     new Setting(containerEl)
       .setName("Automatically score new TaskNotes")
       .setDesc("Opt in to sending newly created, non-sensitive task content to the background OpenRouter model. Brain writes planned EXP and prefixes the real title without another approval.")
@@ -266,6 +269,7 @@ export class BrainSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    new Setting(containerEl).setName("Search & retrieval").setHeading();
     const omnisearch = this.plugin.omnisearchProvider.getStatus();
     new Setting(containerEl)
       .setName("Use Omnisearch")
@@ -290,6 +294,7 @@ export class BrainSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    new Setting(containerEl).setName("Semantic search").setHeading();
     new Setting(containerEl)
       .setName("Semantic search")
       .setDesc("Build a local per-device vector index with OpenRouter embeddings. Choose a model and folders first.")
@@ -355,6 +360,7 @@ export class BrainSettingTab extends PluginSettingTab {
           await this.plugin.setSensitiveSemanticEnabled(value);
         }));
 
+    new Setting(containerEl).setName("Privacy & exclusions").setHeading();
     new Setting(containerEl)
       .setName("Excluded paths")
       .setDesc("Comma-separated paths that retrieval must never index or send to a model.")

@@ -1801,7 +1801,7 @@ test("bundled EXP skill has valid metadata, workflow, references, and calibratio
   assert.match(EXP_SKILL, /record_task_exp/);
   assert.match(EXP_RUBRIC, /Round to the nearest 25/);
   assert.match(EXP_EXAMPLES, /Read 15 pages of the Bible: 200 EXP/);
-  assert.match(EXP_SCHEMA, /immutable ordinary Markdown/);
+  assert.match(EXP_SCHEMA, /immutable EXP ledger/);
   assert.match(EXP_SCHEMA, /exp_schema: 2/);
   assert.match(EXP_SCHEMA, /model, token usage, cost/);
   assert.match(EXP_GOALS, /overall target and every lane minimum/);
