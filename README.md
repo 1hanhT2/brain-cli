@@ -1,3 +1,8 @@
+<p align="center">
+  <img src="docs/images/banner.png" alt="brain-cli" width="640" />
+</p>
+
+[![release](https://img.shields.io/github/v/release/1hanhT2/brain-cli)](https://github.com/1hanhT2/brain-cli/releases) [![license: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue)](package.json) [![Obsidian](https://img.shields.io/badge/Obsidian-purple)](manifest.json) [![homepage](https://img.shields.io/badge/home-buitanhthanh.uk-black)](https://buitanhthanh.uk)
 # Brain CLI
 
 Android-safe Obsidian agent foundation, derived selectively from OpenCode's interaction and permission concepts.
@@ -387,3 +392,12 @@ can optionally customize the Brain surface by overriding these variables on
   --brain-content-width: 58rem;
 }
 ```
+
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+<p align="center"><a href="https://buitanhthanh.uk">Bui Tan Thanh — buitanhthanh.uk — 26531852@gm.uit.edu.vn</a></p>
